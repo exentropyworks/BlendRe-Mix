@@ -27,8 +27,11 @@ rtx (the real runtime):
 import os
 import shutil
 
-# P9.8 (decided 5 Nov): known, fixed with P10's tile bakes
-SEAMS_KNOWN = {"BRICK": "dark bricks along the baked tile's repeat edges (the cross-fade on a regular pattern)"}
+# P9.8 (decided 5 Nov): known, fixed with P10's tile bakes; BGE-Remix P10.2:
+# fixed (Brick's tile holds whole repeats, no cross-fade; its black brick
+# at each tile corner, the Math node's Modulo of 0 in the game's GLSL, gone):
+# Brick is gated again
+SEAMS_KNOWN = {}
 
 PRESET_CHECK = r'''
 import bpy, json, os, sys, time
@@ -177,8 +180,15 @@ def _ppm_seam(path):
     dy = float(abs(a[1:] - a[:-1]).mean())
     wx = float(abs(a[:, 0] - a[:, -1]).mean())
     wy = float(abs(a[0] - a[-1]).mean())
+    # BGE-Remix P10.2 (fix round 1): and the step half a tile in, the same
+    # place in a regular pattern's repeat: Brick's tile starts on a joint,
+    # so its wrap-around step is a joint's, as at its middle (the first PC
+    # run: wrap 25.7 / 60.3 against steps 2.1 / 5.3, a periodic tile)
+    hx = float(abs(a[:, a.shape[1] // 2] - a[:, a.shape[1] // 2 - 1]).mean())
+    hy = float(abs(a[a.shape[0] // 2] - a[a.shape[0] // 2 - 1]).mean())
     return {"step_x": round(dx, 2), "wrap_x": round(wx, 2), "step_y": round(dy, 2), "wrap_y": round(wy, 2),
-            "seamless": wx <= SEAM_RATIO * dx + SEAM_SLACK and wy <= SEAM_RATIO * dy + SEAM_SLACK}
+            "half_x": round(hx, 2), "half_y": round(hy, 2),
+            "seamless": wx <= SEAM_RATIO * max(dx, hx) + SEAM_SLACK and wy <= SEAM_RATIO * max(dy, hy) + SEAM_SLACK}
 
 
 def normal(args, out, scenes, E, tests, sheets):
@@ -230,7 +240,10 @@ def normal(args, out, scenes, E, tests, sheets):
         shutil.rmtree(folder, ignore_errors=True)
     os.makedirs(dump)
     log, env = p8.mock_env(args, out, "p9_presets_mock", cache, dump=dump)
-    run = r9.pipe_play(args.ours, out, "p9_presets_mock", S("p9_presets_remix"), env, seconds=20)
+    # (P10.4, 7 Nov: the random presets are 16-tile sets in Remix by default,
+    # their atlases 4 x the plain tile's side: they take longer to bake and
+    # encode, on the CPU here; the time to every texture is measured)
+    run = r9.pipe_play(args.ours, out, "p9_presets_mock", S("p9_presets_remix"), env, seconds=120)
     st = run.get("stats") or {}
     c["Remix drew the presets (the fake runtime)"] = bool(run["ran"]) and st.get("running") is True
     c["every texture encoded before the game ended"] = r9.textures_in(run)
@@ -253,11 +266,27 @@ def normal(args, out, scenes, E, tests, sheets):
             c["%s: and roughness, normal map" % key] = m.get("roughness_tex", "-") != "-" and \
                 m.get("normal_tex", "-") != "-"
         if T[key]["displace"] >= RELIEF_DEPTH:
-            c["%s: a height map, %.3f m deep" % (key, T[key]["displace"])] = \
-                m.get("height_tex", "-") != "-" and r9.near(m.get("displace_in"), T[key]["displace"], 1e-4)
+            want = T[key]["displace"]
+            if "_tiles_" in (m.get("albedo_tex") or ""):
+                # (P10.4, 7 Nov: a 16-tile set's cell covers a quarter of the
+                # atlas's UVs less its gap, and Remix's relief depth is in
+                # texture coordinates: the depth sent is the preset's times
+                # that share)
+                try:
+                    got = float(m.get("displace_in"))
+                except (TypeError, ValueError):
+                    got = -1.0
+                c["%s: a height map, %.3f m deep (a tile set: about a quarter of it in its cell)" % (key, want)] = \
+                    m.get("height_tex", "-") != "-" and 0.18 * want <= got <= 0.2501 * want
+            else:
+                c["%s: a height map, %.3f m deep" % (key, want)] = \
+                    m.get("height_tex", "-") != "-" and r9.near(m.get("displace_in"), want, 1e-4)
     bakes, cached = st.get("procedural_bakes"), st.get("procedural_bakes_cached")
     d["bakes"] = {"baked": bakes, "from the cache": cached, "rebaked": st.get("procedural_rebakes"),
-                  "ms": st.get("procedural_bake_ms"), "gpu ms": st.get("procedural_bake_gpu_ms")}
+                  "ms": st.get("procedural_bake_ms"), "gpu ms": st.get("procedural_bake_gpu_ms"),
+                  # (measured: seconds from the start to every texture in)
+                  "every texture in after (s)": st.get("first_textured_seconds"),
+                  "encode s": st.get("encode_seconds")}
     c["each preset baked once for its tile and sphere (%s baked, %s from the cache)" % (bakes, cached)] = \
         bakes is not None and 0 < bakes <= len(order)
     seams = {}
@@ -278,7 +307,10 @@ def normal(args, out, scenes, E, tests, sheets):
 
 def _seam_steps(a, rect, cols, rows, p8):
     """per boundary: the mean pixel step across it, and the median of the
-    steps 2 to 8 pixels either side"""
+    steps 2 to 8 pixels either side; BGE-Remix P10.2 (fix round 1): and the
+    step across the line half a tile in (the same place in a regular
+    pattern's repeat: Brick's joints lie on the tile's edges, so a joint's
+    step is no seam)"""
     import numpy as np
     sub = p8.crop(a, rect)
     left, top = rect[0], rect[1]
@@ -286,14 +318,25 @@ def _seam_steps(a, rect, cols, rows, p8):
     gy = abs(sub[1:] - sub[:-1]).mean(axis=(1, 2))
     res = []
     for g, lines, origin in ((gx, cols, left), (gy, rows, top)):
+        tile = abs(lines[1] - lines[0]) if len(lines) > 1 else 0
         for line in lines:
             i = line - origin - 1
             if i < 9 or i > len(g) - 10:
                 continue
             across = float(g[i - 1:i + 2].max())
             beside = float(np.median(np.concatenate([g[i - 8:i - 1], g[i + 2:i + 9]])))
-            res.append({"at": line, "across": round(across, 2), "beside": round(beside, 2),
-                        "seam": across > SEAM_RATIO * beside + SEAM_SLACK})
+            half = 0.0
+            if tile >= 8:
+                # (fix round 2: within 3 pixels of half a tile in: the tile is
+                # a fraction of a pixel off whole pixels on screen, and a
+                # joint under a pixel wide moves by one; the second RTX run's
+                # Brick missed its joint at 270 by one pixel, its step 4.5
+                # against 11 there and 13 at every joint beside the edge)
+                j = i - tile // 2 if i - tile // 2 >= 3 else i + tile // 2
+                if 3 <= j <= len(g) - 4:
+                    half = float(g[j - 3:j + 4].max())
+            res.append({"at": line, "across": round(across, 2), "beside": round(beside, 2), "half": round(half, 2),
+                        "seam": across > SEAM_RATIO * max(beside, half) + SEAM_SLACK})
     return res
 
 
@@ -362,6 +405,8 @@ def rtx(args, out, scenes, E, tests, sheets, report_lines):
     report_lines += ["", "Preset bakes (Remix runs):"]
     for tag, r in (("presets", rt), ("seams", sr)):
         st = r.get("stats") or {}
-        report_lines.append("  %-8s baked %s, from the cache %s, %s ms (%s ms on the graphics card)" % (
-            tag, st.get("procedural_bakes"), st.get("procedural_bakes_cached"), st.get("procedural_bake_ms"),
-            st.get("procedural_bake_gpu_ms")))
+        report_lines.append("  %-8s baked %s, from the cache %s, %s ms (%s ms on the graphics card); every texture in "
+                            "after %s s (encoding %s s)" % (
+                                tag, st.get("procedural_bakes"), st.get("procedural_bakes_cached"),
+                                st.get("procedural_bake_ms"), st.get("procedural_bake_gpu_ms"),
+                                st.get("first_textured_seconds"), st.get("encode_seconds")))

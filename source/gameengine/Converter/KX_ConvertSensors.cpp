@@ -49,6 +49,8 @@
 #include "DNA_object_types.h"
 #include "DNA_material_types.h"
 #include "DNA_sensor_types.h"
+#include "BLI_listbase.h"  /* BGE-Remix P10.10 */
+#include <stddef.h>
 #include "DNA_controller_types.h"
 #include "DNA_actuator_types.h" /* for SENS_ALL_KEYS ? this define is
                                  * probably misplaced */
@@ -70,6 +72,7 @@
 #include "KX_NetworkMessageSensor.h"
 #include "SCA_ActuatorSensor.h"
 #include "SCA_DelaySensor.h"
+#include "SCA_TimerSensor.h"  /* BGE-Remix P10.12 */
 
 
 #include "SCA_PropertySensor.h"
@@ -162,6 +165,22 @@ void BL_ConvertSensors(struct Object* blenderobject,
 					break;
 				}
 
+			case SENS_TIMER:
+				{
+					/* BGE-Remix P10.12: the Timer sensor (the Always event
+					 * manager runs it every tick, as the Delay sensor) */
+					SCA_EventManager* eventmgr = logicmgr->FindEventManager(SCA_EventManager::BASIC_EVENTMGR);
+					const bTimerSensor *timersensor = (const bTimerSensor *)sens->data;
+					if (eventmgr && timersensor)
+					{
+						gamesensor = new SCA_TimerSensor(eventmgr,
+							gameobj,
+							timersensor->seconds,
+							(timersensor->flag & SENS_TIMER_REPEAT) != 0);
+					}
+					break;
+				}
+
 			case SENS_COLLISION:
 				{
 					SCA_EventManager* eventmgr = logicmgr->FindEventManager(SCA_EventManager::TOUCH_EVENTMGR);
@@ -205,12 +224,17 @@ void BL_ConvertSensors(struct Object* blenderobject,
 						NG_NetworkScene *NetworkScene = kxscene->GetNetworkScene();
 						/* filter on the incoming subjects, might be empty */
 						const STR_String subject = msgSens->subject;
+						/* BGE-Remix P10.13 (A13): the sender and body filters */
+						const STR_String from = msgSens->fromObject ? msgSens->fromObject->id.name + 2 : "";
+						const STR_String body = msgSens->body;
 
 						gamesensor = new KX_NetworkMessageSensor(
 							eventmgr,		// our eventmanager
 							NetworkScene,	// our NetworkScene
 							gameobj,		// the sensor controlling object
-							subject);		// subject to filter on
+							subject,		// subject to filter on
+							from,
+							body);
 					}
 					break;
 				}
@@ -267,6 +291,8 @@ void BL_ConvertSensors(struct Object* blenderobject,
 							blenderkeybdsensor->toggleName,
 							gameobj,
 							KX_KetsjiEngine::GetExitKey()); //			blenderkeybdsensor->pad);
+						/* BGE-Remix P10.13 (A2) */
+						((SCA_KeyboardSensor *)gamesensor)->SetReadHeld((sens->flag & SENS_KEY_READ_HELD) != 0);
 
 					}
 
@@ -609,6 +635,13 @@ void BL_ConvertSensors(struct Object* blenderobject,
 				gamesensor->SetTap(tap);
 				gamesensor->SetName(sens->name);
 				gamesensor->SetLogicManager(logicmgr);
+				/* BGE-Remix P10.10: an Actuator sensor watching no actuator of
+				 * its object (the live brick state's Red) */
+				if (sens->type == SENS_ACTUATOR && sens->data) {
+					const char *actname = ((bActuatorSensor *)sens->data)->name;
+					gamesensor->SetMissing(BLI_findstring(&blenderobject->actuators, actname,
+					                                      offsetof(bActuator, name)) == NULL);
+				}
 
 				gameobj->AddSensor(gamesensor);
 

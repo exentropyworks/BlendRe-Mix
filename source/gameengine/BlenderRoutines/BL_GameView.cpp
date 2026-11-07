@@ -54,6 +54,7 @@
 
 #include "BL_GameView.h"
 #include "BL_GameViewBuild.h"
+#include "BL_GameViewRun.h"  /* BGE-Remix P10.9: Run mode's Python functions */
 
 extern "C" {
 	#include "DNA_material_types.h"
@@ -221,6 +222,7 @@ static const GVKind g_kinds[] = {
 	KS("sensor:RADAR", LOGIC, "GV_RADAR"),
 	KS("sensor:RANDOM", LOGIC, "RNDCURVE"),
 	KS("sensor:RAY", LOGIC, "FORWARD"),
+	KS("sensor:TIMER", LOGIC, "TIME"),            /* BGE-Remix P10.12 */
 	KS("controller:LOGIC_AND", LOGIC, "GV_AND"),
 	KS("controller:LOGIC_OR", LOGIC, "GV_OR"),
 	KS("controller:LOGIC_NAND", LOGIC, "GV_NAND"),
@@ -248,6 +250,9 @@ static const GVKind g_kinds[] = {
 	KS("actuator:STATE", LOGIC, "SETTINGS"),
 	KS("actuator:STEERING", LOGIC, "CURVE_PATH"),
 	KS("actuator:VISIBILITY", LOGIC, "RESTRICT_VIEW_OFF"),
+	KS("actuator:REMIX", LOGIC, "LIGHTPAINT"),    /* BGE-Remix P10.12 */
+	/* BGE-Remix P10.11: a state of an object's logic, its bricks grouped under it */
+	KS("state:GROUP", LOGIC, "LOGIC"),
 
 	K("python:SCRIPT", PYTHON, "SCRIPT"),
 	K("python:MODULE", PYTHON, "FILE_SCRIPT"),
@@ -329,6 +334,7 @@ struct Store {
 	bool dirty;
 	int generation;
 	int selected;
+	std::string selected_key;  /* BGE-Remix P10.7: kind|owner|name, kept across rebuilds */
 	Store() : built(false), dirty(true), generation(0), selected(-1)
 	{
 		memset(&model, 0, sizeof(model));
@@ -380,6 +386,18 @@ void publish(GVBuilder &b, const char *scene, bool converted, double build_ms, d
 	if (s.selected >= m.element_count) {
 		s.selected = -1;
 	}
+	/* BGE-Remix P10.7: the selection follows its element (an edit rebuilds
+	 * the model and the indices move) */
+	if (!s.selected_key.empty()) {
+		s.selected = -1;
+		for (int i = 0; i < m.element_count; i++) {
+			const GVElement &e = s.elements[i];
+			if (s.selected_key == std::string(e.kind) + "|" + e.owner + "|" + e.name) {
+				s.selected = i;
+				break;
+			}
+		}
+	}
 }
 
 }  /* namespace */
@@ -410,6 +428,7 @@ extern "C" void BL_GameViewClear(void)
 	s.built = false;
 	s.dirty = true;
 	s.selected = -1;
+	s.selected_key.clear();
 }
 
 extern "C" int BL_GameViewSelected(void)
@@ -421,6 +440,11 @@ extern "C" void BL_GameViewSetSelected(int element)
 {
 	Store &s = store();
 	s.selected = (element >= 0 && element < (int)s.elements.size()) ? element : -1;
+	s.selected_key.clear();
+	if (s.selected >= 0) {
+		const GVElement &e = s.elements[s.selected];
+		s.selected_key = std::string(e.kind) + "|" + e.owner + "|" + e.name;
+	}
 }
 
 /* ------------------------------------------------------------------------- */
@@ -440,13 +464,13 @@ void BL_GameViewCollect(KX_Scene *kxscene, GVConverted &r)
 				r.hidden.insert(name);
 			}
 			for (SCA_ISensor *s : gameobj->GetSensors()) {
-				r.bricks.insert(name + "/" + s->GetName().ReadPtr());
+				r.bricks.insert(name + "/sensor/" + s->GetName().ReadPtr());  /* BGE-Remix P10.13 (B1) */
 			}
 			for (SCA_IController *c : gameobj->GetControllers()) {
-				r.bricks.insert(name + "/" + c->GetName().ReadPtr());
+				r.bricks.insert(name + "/controller/" + c->GetName().ReadPtr());
 			}
 			for (SCA_IActuator *a : gameobj->GetActuators()) {
-				r.bricks.insert(name + "/" + a->GetName().ReadPtr());
+				r.bricks.insert(name + "/actuator/" + a->GetName().ReadPtr());
 			}
 			if (gameobj->GetPhysicsController()) {
 				r.physics.insert(name);
@@ -772,6 +796,39 @@ static PyObject *gv_warnings(PyObject *, PyObject *)
 	return list;
 }
 
+/* BGE-Remix P10.11: the shapes (links, state arrows, ranges), optionally of
+ * one layer, for the tests and the UI */
+static PyObject *gv_shapes(PyObject *, PyObject *args)
+{
+	static const char *types[] = {"LINE", "SPHERE", "CONE", "FRUSTUM", "BOX", "CAPSULE", "RING", "ARROW",
+	                              "POINTS", "TRIS", "RECT", "ARC", "PANEL"};
+	const char *layer = NULL;
+	if (!PyArg_ParseTuple(args, "|z", &layer)) {
+		return NULL;
+	}
+	const GVModel *m = BL_GameViewModel();
+	PyObject *list = PyList_New(0);
+	if (!m) {
+		return list;
+	}
+	for (int i = 0; i < m->shape_count; i++) {
+		const GVShape &s = m->shapes[i];
+		if (layer && strcmp(layer, BL_GameViewLayerId(s.layer)) != 0) {
+			continue;
+		}
+		const int ntypes = (int)(sizeof(types) / sizeof(types[0]));
+		PyObject *d = Py_BuildValue("{s:i,s:s,s:s,s:s,s:i,s:i,s:O,s:O}",
+		                            "index", i, "type", (s.type >= 0 && s.type < ntypes) ? types[s.type] : "?",
+		                            "layer", BL_GameViewLayerId(s.layer), "state", state_name(s.state),
+		                            "a", s.a, "b", s.b,
+		                            "dashed", s.dashed ? Py_True : Py_False,
+		                            "arrow", s.p[7] != 0.0f ? Py_True : Py_False);
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	return list;
+}
+
 static PyObject *gv_select(PyObject *, PyObject *args)
 {
 	int i;
@@ -795,6 +852,7 @@ static PyMethodDef gv_methods[] = {
 	{"elements", gv_elements, METH_VARARGS, "The model's elements, optionally of one layer (layer id)"},
 	{"element", gv_element, METH_VARARGS, "One element by index"},
 	{"warnings", gv_warnings, METH_NOARGS, "Every warning of the model"},
+	{"shapes", gv_shapes, METH_VARARGS, "The model's shapes, optionally of one layer (layer id) (P10.11)"},
 	{"select", gv_select, METH_VARARGS, "Select an element by index (-1: none)"},
 	{"tag_dirty", gv_tag_dirty, METH_NOARGS, "The model is out of date: rebuilt at the next draw"},
 	{NULL, NULL, 0, NULL}
@@ -807,7 +865,9 @@ static struct PyModuleDef gv_module = {
 
 extern "C" PyObject *BL_GameView_initPython(void)
 {
-	return PyModule_Create(&gv_module);
+	PyObject *module = PyModule_Create(&gv_module);
+	BL_GameViewRun_addPython(module);  /* BGE-Remix P10.9 */
+	return module;
 }
 
 #else

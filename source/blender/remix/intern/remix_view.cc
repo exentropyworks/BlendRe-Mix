@@ -949,6 +949,13 @@ private:
 		if (!dm) {
 			return false;
 		}
+		/* BGE-Remix P10 fix: the material slots, as Blender's drawing sets them
+		 * before it draws (drawobject.c). A derived mesh made anew (the bake's
+		 * mask asks for the original coordinates and vertex colours, which
+		 * Solid shading does not) has none, and Blender's GLSL drawing of it
+		 * for a bake then wrote past an empty table: the 3D view crashed when
+		 * it was switched to Rendered with RTX Remix on */
+		DM_update_materials(dm, ob);
 		struct DMRelease {
 			DerivedMesh *dm;
 			~DMRelease() { if (dm) dm->release(dm); }
@@ -1571,6 +1578,7 @@ static void prebake_for_render(Scene *scene)
 		if (!dm) {
 			continue;
 		}
+		DM_update_materials(dm, ob);  /* (P10 fix: as build_mesh) */
 		for (int i = 1; i <= n; i++) {
 			Material *ma = give_current_material(ob, (short)i);
 			if (brmx::bake_slots(ma)) {
@@ -2092,7 +2100,12 @@ const char *BRMX_object_inspect_json(Object *ob, Scene *scene)
 			json += std::string(", \"baked\": ") + (req.baked ? "true" : "false") + ", \"file\": ";
 			json_string(json, utf8_of(file));
 			json += std::string(", \"exact\": ") + (exact ? "true" : "false") + ", \"cached\": " +
-			        ((exact && brmx::TextureCache::cached(req)) ? "true" : "false") + "}";
+			        ((exact && brmx::TextureCache::cached(req)) ? "true" : "false");
+			/* BGE-Remix P10.3: a colour image's scale (a Classic material's
+			 * Diffuse Intensity) */
+			char scale[32];
+			snprintf(scale, sizeof(scale), ", \"scale\": %.4f}", req.scale);
+			json += scale;
 		}
 		json += "], \"match\": ";
 		if (ma) {

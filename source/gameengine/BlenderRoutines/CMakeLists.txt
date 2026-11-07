@@ -39,6 +39,8 @@ set(INC_SYS
 set(SRC
 	BL_GameView.cpp
 	BL_GameViewLayers.cpp
+	BL_GameViewRun.cpp
+	BL_GameViewLogic.cpp  # BGE-Remix P10.11
 	BL_KetsjiEmbedStart.cpp
 	BL_System.cpp
 	KX_BlenderCanvas.cpp
@@ -49,6 +51,8 @@ set(SRC
 
 	BL_GameView.h
 	BL_GameViewBuild.h
+	BL_GameViewLive.h
+	BL_GameViewRun.h
 	BL_System.h
 	KX_BlenderCanvas.h
 	KX_BlenderInputDevice.h

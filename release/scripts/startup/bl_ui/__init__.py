@@ -67,6 +67,7 @@ _modules = [
     "space_filebrowser",
     "space_graph",
     "space_image",
+    "space_image_remix_atlas",  # BGE-Remix P10.4
     "space_info",
     "space_logic",
     "space_nla",
@@ -78,6 +79,8 @@ _modules = [
     "space_time",
     "space_userpref",
     "space_view3d_gameview",  # BGE-Remix P7: before space_view3d, its panels come first
+    "space_view3d_gameview_modes",  # BGE-Remix P10.6: the Remix View's Edit and Run modes
+    "space_view3d_gameview_logic",  # BGE-Remix P10.11: the starting states (Edit mode)
     "space_view3d",
     "space_view3d_toolbar",
     ]

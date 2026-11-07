@@ -377,6 +377,8 @@ static void shadeless_glow(const Material *ma, MaterialSpec &s, bool face_image)
 		return;
 	}
 	s.textures[TEX_EMISSIVE] = s.textures[TEX_ALBEDO];
+	/* (P10.3: shadeless shows the image as it is, without the intensity) */
+	s.textures[TEX_EMISSIVE].scale = 1.0f;
 	if (face_image) {
 		set3(d.emissive, 1.0f, 1.0f, 1.0f);
 	}
@@ -746,6 +748,16 @@ void image_slots(const Material *ma, MaterialSpec &s, bool physical)
 		if ((mtex->mapto & MAP_COL) && !s.textures[TEX_ALBEDO].image) {
 			s.textures[TEX_ALBEDO] = texture(tex->ima, BRB_TEXTURE_COLOR);
 			albedo_image = tex->ima;
+			if (!physical) {
+				/* BGE-Remix P10.3: the image replaces the colour, and the game
+				 * multiplies it by Diffuse Intensity; Remix uses its albedo
+				 * colour only without an image, so the image itself carries
+				 * the intensity (these tiles read about 25 levels brighter in
+				 * Remix than in the game before, P9.4's texture wall); the
+				 * colour 1, so either way Remix reads it the image is it */
+				s.textures[TEX_ALBEDO].scale = ma->ref;
+				set3(d.albedo, 1.0f, 1.0f, 1.0f);
+			}
 		}
 		if ((mtex->mapto & MAP_NORM) && !s.textures[TEX_NORMAL].image) {
 			s.textures[TEX_NORMAL] = texture(tex->ima, BRB_TEXTURE_NORMAL);
@@ -1225,9 +1237,68 @@ static int socket_index(const ListBase *list, const bNodeSocket *sock)
  * clipping), whose transform goes in r_sampling with the image's own
  * settings. r_output: the texture node's output used (0 Value = the
  * image's alpha, 1 Color, 2 Normal). NULL: none, or not so (a bake). */
-static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, int *r_output, const Tex **r_tex,
-                                 Sampling *r_sampling = NULL)
+/* BGE-Remix P10 (Ayhan's decision, 6 Nov): a Classic material made RTX
+ * Remix keeps its Diffuse Intensity as a MixRGB Multiply node between its
+ * colour image and the Albedo input (bge_remix_material.py): Fac 1, Color2 a
+ * grey k, unwired. It reaches Remix as the image times k (TextureRequest.
+ * scale, P10.3), not as a bake. The link from it into Albedo: the link
+ * from the image into the Multiply node, and k; NULL when it is not one. */
+static const bNodeLink *albedo_scale_link(const bNodeTree *tree, const bNodeLink *link, float *r_scale)
 {
+	const bNode *mix = link->fromnode;
+	if (!mix || mix->type != SH_NODE_MIX_RGB || mix->custom1 != MA_RAMP_MULT || (mix->flag & NODE_MUTED) ||
+	    !link->tonode || link->tonode->type != SH_NODE_REMIX_MATERIAL ||
+	    socket_index(&link->tonode->inputs, link->tosock) != SH_REMIX_IN_ALBEDO)
+	{
+		return NULL;
+	}
+	const bNodeSocket *fac = (const bNodeSocket *)BLI_findlink(&mix->inputs, 0);
+	const bNodeSocket *c1 = (const bNodeSocket *)BLI_findlink(&mix->inputs, 1);
+	const bNodeSocket *c2 = (const bNodeSocket *)BLI_findlink(&mix->inputs, 2);
+	if (!fac || !c1 || !c2 || !fac->default_value || !c2->default_value) {
+		return NULL;
+	}
+	const bNodeLink *in = NULL;
+	for (const bNodeLink *l = (const bNodeLink *)tree->links.first; l; l = l->next) {
+		if (l->tosock == fac || l->tosock == c2) {
+			return NULL;
+		}
+		if (l->tosock == c1) {
+			in = l;
+		}
+	}
+	const float f = ((const bNodeSocketValueFloat *)fac->default_value)->value;
+	const float *k = ((const bNodeSocketValueRGBA *)c2->default_value)->value;
+	if (!in || f != 1.0f || k[0] != k[1] || k[1] != k[2] || k[0] < 0.0f ||
+	    ((mix->custom2 & SHD_MIXRGB_CLAMP) && k[0] > 1.0f))
+	{
+		return NULL;
+	}
+	if (r_scale) {
+		*r_scale = k[0];
+	}
+	return in;
+}
+
+static Image *remix_direct_image(const bNodeTree *tree, const bNodeLink *link, int *r_output, const Tex **r_tex,
+                                 Sampling *r_sampling = NULL, float *r_scale = NULL)
+{
+	if (r_scale) {
+		*r_scale = 1.0f;
+	}
+	if (tree && link && link->fromnode && link->fromnode->type == SH_NODE_MIX_RGB) {
+		/* (P10: the Albedo's image times the Classic material's intensity) */
+		float k = 1.0f;
+		const bNodeLink *in = albedo_scale_link(tree, link, &k);
+		if (!in || !in->fromnode || in->fromnode->type != SH_NODE_TEXTURE) {
+			return NULL;
+		}
+		Image *ima = remix_direct_image(tree, in, r_output, r_tex, r_sampling, NULL);
+		if (ima && r_scale) {
+			*r_scale = k;
+		}
+		return ima;
+	}
 	if (!tree || !link || !link->fromnode || link->fromnode->type != SH_NODE_TEXTURE || !link->fromnode->id) {
 		return NULL;
 	}
@@ -1515,7 +1586,8 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 		int out = -1;
 		const Tex *tex = NULL;
 		Sampling one;
-		Image *ima = remix_direct_image(tree, link, &out, &tex, &one);
+		float scale = 1.0f;
+		Image *ima = remix_direct_image(tree, link, &out, &tex, &one, &scale);
 		if (in.input == SH_REMIX_IN_OPACITY) {
 			/* the albedo image's alpha (else baked with the albedo) */
 			if (!baked_alpha && (d.alpha_blend || d.alpha_test)) {
@@ -1540,6 +1612,10 @@ bool from_remix_node(const Material *ma, MaterialSpec &s)
 				mark(s, in.field, MATCH_APPROX, what + ": not the texture's Color");
 			}
 			s.textures[in.tex] = texture(ima, in.kind, channel, flags);
+			if (in.kind == BRB_TEXTURE_COLOR && scale != 1.0f) {
+				/* P10: the Classic material's Diffuse Intensity, kept */
+				s.textures[in.tex].scale = scale;
+			}
 			const int bslot = input_bake_slot(in.input);
 			if (bslot < 0 || !(s.bake_slots & (1u << bslot))) {
 				if (!have_smp) {
@@ -1955,7 +2031,11 @@ void apply_face_image(const Material *ma, Image *face_image, MaterialSpec &r_spe
 	}
 	r_spec.textures[TEX_ALBEDO] = texture(face_image, BRB_TEXTURE_COLOR);
 	if (r_spec.source == MaterialSpec::BLENDER_INTERNAL) {
-		/* the image replaces the material colour */
+		/* the image replaces the material colour (BGE-Remix P10.3: left as
+		 * P8 made it; Remix does not use this colour with an image, so a
+		 * face image reaches Remix without Diffuse Intensity: P8's
+		 * Multitexture scenes, whose fixed-function drawing differs, are
+		 * matched as they are) */
 		set3(d.albedo, ma->ref, ma->ref, ma->ref);
 	}
 	if ((ma->mode & MA_FACETEXTURE_ALPHA) && (d.alpha_blend || d.alpha_test)) {

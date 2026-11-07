@@ -40,10 +40,12 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
 
+#include "BRMX_atlas.h"
 #include "BRMX_bake.h"
 #include "BRMX_material.h"
 
@@ -126,7 +128,23 @@ const wchar_t *kind_tag(const TextureRequest &r)
 
 int key_bits(const TextureRequest &r)
 {
-	return r.kind | ((r.channel & 3) << 4) | (r.flags << 8) | (r.max_size << 16);
+	int bits = r.kind | ((r.channel & 3) << 4) | (r.flags << 8) | (r.max_size << 16);
+	/* (P10.3: a scaled colour image is another file: its scale in the key) */
+	if (r.scale != 1.0f) {
+		bits ^= (int)(r.scale * 1000.0f + 0.5f) * 7919 + 1;
+	}
+	return bits;
+}
+
+float srgb_to_linear_f(float c)
+{
+	return (c < 0.04045f) ? ((c < 0.0f) ? 0.0f : c * (1.0f / 12.92f)) :
+	                        std::pow((c + 0.055f) * (1.0f / 1.055f), 2.4f);
+}
+
+float linear_to_srgb_f(float c)
+{
+	return (c < 0.0031308f) ? ((c < 0.0f) ? 0.0f : c * 12.92f) : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
 }
 
 /* P8.24: halved (2x2 means) until neither side is above max_size */
@@ -267,6 +285,14 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 		}
 		rgba8 = req.baked->rgba.data();
 		name = req.baked->name;
+		/* P10.4: an atlas's image with its own mipmaps */
+		if (req.baked->levels > 1 &&
+		    req.baked->rgba.size() < atlas_levels_size(w, h, req.baked->levels))
+		{
+			e.state = FAILED;
+			failed++;
+			return FAILED;
+		}
 	}
 	else {
 		ibuf = BKE_image_acquire_ibuf(req.image, NULL, &lock);
@@ -325,6 +351,35 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 			}
 		}
 	}
+	/* BGE-Remix P10.3: a colour image times its material's Diffuse
+	 * Intensity, in linear light (8-bit images hold sRGB values, float ones
+	 * linear values); the alpha as it is */
+	if (req.scale != 1.0f && !req.baked && req.kind == BRB_TEXTURE_COLOR) {
+		const float k = std::max(req.scale, 0.0f);
+		if (rgba8) {
+			if (rgba8 != rgba8_small.data()) {
+				rgba8_small.assign(rgba8, rgba8 + (size_t)w * h * 4);
+			}
+			unsigned char lut[256];
+			for (int i = 0; i < 256; i++) {
+				const float v = linear_to_srgb_f(srgb_to_linear_f(i / 255.0f) * k);
+				lut[i] = (unsigned char)std::max(0, std::min(255, (int)(v * 255.0f + 0.5f)));
+			}
+			for (size_t i = 0; i < (size_t)w * h; i++) {
+				for (int c = 0; c < 3; c++) {
+					rgba8_small[i * 4 + c] = lut[rgba8_small[i * 4 + c]];
+				}
+			}
+			rgba8 = rgba8_small.data();
+		}
+		else {
+			for (size_t i = 0; i < (size_t)w * h; i++) {
+				for (int c = 0; c < 3; c++) {
+					rgbaf[i * 4 + c] *= k;
+				}
+			}
+		}
+	}
 	BLI_HashMurmur2A mm;
 	/* P8.24: "RMX2": rows from the bottom (interface 10), so no file from
 	 * before (rows from the top) is taken for one */
@@ -343,12 +398,21 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	wchar_t hex[16];
 	swprintf(hex, 16, L"%08x", hash);
 	if (!(req.baked && req.baked->key)) {
+		/* (P10.3: a scaled image's name as an unscaled one's: its pixels, so
+		 * its hash, differ) */
 		e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + L"_" + hex + L".dds";
 		if (req.max_size > 0) {
 			wchar_t size[16];
 			swprintf(size, 16, L"_m%d", req.max_size);
 			e.path = dir + L"\\" + safe_name(name.c_str()) + L"_" + kind_tag(req) + size + L"_" + hex + L".dds";
 		}
+	}
+	/* P10.4: a packed page: its own mipmaps (each level within its cells),
+	 * in a file of its own */
+	std::vector<unsigned char> atlas_levels;
+	int levels = (req.baked && req.baked->levels > 1) ? req.baked->levels : 1;
+	if (req.atlas && !req.baked && rgba8 && e.path.size() > 4) {
+		e.path = e.path.substr(0, e.path.size() - 4) + L"_a.dds";
 	}
 	r_path = e.path;
 	if (exists(e.path)) {
@@ -360,8 +424,13 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 		return READY;
 	}
 	make_dirs(dir);
+	if (req.atlas && !req.baked && rgba8) {
+		atlas_mips(*req.atlas, req.kind, rgba8, w, h, atlas_levels, levels);
+		rgba8 = atlas_levels.data();
+	}
 	brb_texture_desc d;
 	memset(&d, 0, sizeof(d));
+	d.levels = levels;
 	d.path = e.path.c_str();
 	d.kind = req.kind;
 	d.width = w;

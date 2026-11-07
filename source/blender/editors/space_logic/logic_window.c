@@ -70,6 +70,9 @@
 
 #include "logic_intern.h"
 
+#include "WM_api.h"  /* BGE-Remix P10.11: WM_operatortype_find */
+#include "WM_types.h"
+
 #define B_REDR		1
 
 #define B_ADD_SENS		2703
@@ -363,6 +366,8 @@ static const char *sensor_name(int type)
 		return N_("Message");
 	case SENS_JOYSTICK:
 		return N_("Joystick");
+	case SENS_TIMER:  /* BGE-Remix P10.12 */
+		return N_("Timer");
 	}
 	return N_("Unknown");
 }
@@ -437,6 +442,8 @@ static const char *actuator_name(int type)
 		return N_("Steering");
 	case ACT_MOUSE:
 		return N_("Mouse");
+	case ACT_REMIX:  /* BGE-Remix P10.12 */
+		return N_("RTX Remix");
 	}
 	return N_("Unknown");
 }
@@ -790,14 +797,37 @@ static uiBlock *actuator_menu(bContext *C, ARegion *ar, void *UNUSED(arg))
 	return block;
 }
 
-static void check_controller_state_mask(bContext *UNUSED(C), void *arg1_but, void *arg2_mask)
+static void check_controller_state_mask(bContext *C, void *arg1_but, void *arg2_mask)
 {
 	unsigned int *cont_mask = arg2_mask;
 	uiBut *but = arg1_but;
+	wmWindow *win = CTX_wm_window(C);
 	
-	/* a controller is always in a single state */
-	*cont_mask = (1<<but->retval);
+	/* BGE-Remix P10.13 (A3): Shift+click adds or removes a state (the engine
+	 * always allowed several; at least one stays); a click alone picks one
+	 * state, as stock 2.79b */
+	if (win && win->eventstate && win->eventstate->shift) {
+		if (*cont_mask == 0)
+			*cont_mask = (1u << but->retval);
+	}
+	else {
+		*cont_mask = (1u << but->retval);
+	}
 	but->retval = B_REDR;
+}
+
+/* BGE-Remix P10.13 (A3): the controller's states as the header shows them:
+ * its first state, "+" when it is in more */
+static void controller_state_label(const bController *cont, char *r_str, size_t size)
+{
+	int bit, first = 0, count = 0;
+	for (bit = 0; bit < 30; bit++) {
+		if (cont->state_mask & (1u << bit)) {
+			if (!count) first = bit + 1;
+			count++;
+		}
+	}
+	BLI_snprintf(r_str, size, "%d%s", first, count > 1 ? "+" : "");
 }
 
 static uiBlock *controller_state_mask_menu(bContext *C, ARegion *ar, void *arg_cont)
@@ -985,6 +1015,39 @@ static void draw_sensor_delay(uiLayout *layout, PointerRNA *ptr)
 	uiItemR(row, ptr, "use_repeat", 0, NULL, ICON_NONE);
 }
 
+/* BGE-Remix P10.11: a small button beside a text field that lists what the
+ * game already uses (a Python operator, bl_operators/bge_remix_logic.py),
+ * for the brick at ptr; the field itself stays, for typing */
+static void draw_pick_button(uiLayout *row, const char *opname, PointerRNA *ptr, bool sensor)
+{
+	Object *ob = (Object *)ptr->id.data;
+	PointerRNA op_ptr;
+	if (!ob || !WM_operatortype_find(opname, true)) {
+		return;
+	}
+	op_ptr = uiItemFullO(row, opname, "", ICON_COLLAPSEMENU, NULL, WM_OP_INVOKE_DEFAULT, UI_ITEM_O_RETURN_PROPS);
+	RNA_string_set(&op_ptr, "object", ob->id.name + 2);
+	RNA_string_set(&op_ptr, "brick", sensor ? ((bSensor *)ptr->data)->name : ((bActuator *)ptr->data)->name);
+	RNA_string_set(&op_ptr, "kind", sensor ? "SENSOR" : "ACTUATOR");
+}
+
+/* BGE-Remix P10.11: a message's subject, typed or picked from the subjects
+ * the game already uses */
+static void draw_subject(uiLayout *layout, PointerRNA *ptr, bool sensor)
+{
+	uiLayout *row = uiLayoutRow(layout, true);
+	uiItemR(row, ptr, "subject", 0, NULL, ICON_NONE);
+	draw_pick_button(row, "LOGIC_OT_bge_remix_subject", ptr, sensor);
+}
+
+/* BGE-Remix P10.12: the Timer sensor */
+static void draw_sensor_timer(uiLayout *layout, PointerRNA *ptr)
+{
+	uiLayout *row = uiLayoutRow(layout, false);
+	uiItemR(row, ptr, "seconds", 0, NULL, ICON_NONE);
+	uiItemR(row, ptr, "use_repeat", 0, NULL, ICON_NONE);
+}
+
 static void draw_sensor_joystick(uiLayout *layout, PointerRNA *ptr)
 {
 	uiLayout *col, *row;
@@ -1053,11 +1116,15 @@ static void draw_sensor_keyboard(uiLayout *layout, PointerRNA *ptr)
 	RNA_pointer_create((ID *)ob, &RNA_GameObjectSettings, ob, &settings_ptr);
 	uiItemPointerR(layout, ptr, "log", &settings_ptr, "properties", NULL, ICON_NONE);
 	uiItemPointerR(layout, ptr, "target", &settings_ptr, "properties", NULL, ICON_NONE);
+	uiItemR(layout, ptr, "use_read_held_keys", 0, NULL, ICON_NONE);  /* BGE-Remix P10.13 (A2) */
 }
 
 static void draw_sensor_message(uiLayout *layout, PointerRNA *ptr)
 {
-	uiItemR(layout, ptr, "subject", 0, NULL, ICON_NONE);
+	draw_subject(layout, ptr, true);  /* BGE-Remix P10.11 */
+	/* BGE-Remix P10.13 (A13): the sender and body filters */
+	uiItemR(layout, ptr, "from_object", 0, NULL, ICON_OBJECT_DATA);
+	uiItemR(layout, ptr, "body", 0, NULL, ICON_NONE);
 }
 
 static void draw_sensor_mouse(uiLayout *layout, PointerRNA *ptr, bContext *C)
@@ -1221,6 +1288,9 @@ static void draw_brick_sensor(uiLayout *layout, PointerRNA *ptr, bContext *C)
 		case SENS_RAY:
 			draw_sensor_ray(box, ptr, C);
 			break;
+		case SENS_TIMER:  /* BGE-Remix P10.12 */
+			draw_sensor_timer(box, ptr);
+			break;
 	}
 }
 
@@ -1230,8 +1300,8 @@ static void draw_controller_header(uiLayout *layout, PointerRNA *ptr, int xco, i
 	uiLayout *box, *row, *sub;
 	bController *cont= (bController *)ptr->data;
 
-	char state[3];
-	BLI_snprintf(state, sizeof(state), "%d", RNA_int_get(ptr, "states"));
+	char state[8];
+	controller_state_label(cont, state, sizeof(state));  /* BGE-Remix P10.13 (A3) */
 	
 	box = uiLayoutBox(layout);
 	row = uiLayoutRow(box, false);
@@ -1243,7 +1313,7 @@ static void draw_controller_header(uiLayout *layout, PointerRNA *ptr, int xco, i
 		uiItemR(sub, ptr, "type", 0, "", ICON_NONE);
 		uiItemR(sub, ptr, "name", 0, "", ICON_NONE);
 		/* XXX provisory for Blender 2.50Beta */
-		uiDefBlockBut(uiLayoutGetBlock(layout), controller_state_mask_menu, cont, state, (short)(xco+width-44), yco, 22+22, UI_UNIT_Y, IFACE_("Set controller state index (from 1 to 30)"));
+		uiDefBlockBut(uiLayoutGetBlock(layout), controller_state_mask_menu, cont, state, (short)(xco+width-44), yco, 22+22, UI_UNIT_Y, IFACE_("Set controller state index (from 1 to 30); Shift+click: in several states"));
 	}
 	else {
 		uiItemL(sub, IFACE_(controller_name(cont->type)), ICON_NONE);
@@ -1712,7 +1782,7 @@ static void draw_actuator_message(uiLayout *layout, PointerRNA *ptr, bContext *C
 	RNA_pointer_create((ID *)ob, &RNA_GameObjectSettings, ob, &settings_ptr);
 
 	uiItemPointerR(layout, ptr, "to_property", &main_ptr, "objects", NULL, ICON_OBJECT_DATA);
-	uiItemR(layout, ptr, "subject", 0, NULL, ICON_NONE);
+	draw_subject(layout, ptr, false);  /* BGE-Remix P10.11 */
 
 	row = uiLayoutRow(layout, true);
 	uiItemR(row, ptr, "body_type", 0, NULL, ICON_NONE);
@@ -1721,6 +1791,16 @@ static void draw_actuator_message(uiLayout *layout, PointerRNA *ptr, bContext *C
 		uiItemR(row, ptr, "body_message", 0, "", ICON_NONE);
 	else // mode == ACT_MESG_PROP
 		uiItemPointerR(row, ptr, "body_property", &settings_ptr, "properties", "", ICON_NONE);
+}
+
+/* BGE-Remix P10.12: the RTX Remix actuator: a setting from Remix's list (or
+ * typed) and its value */
+static void draw_actuator_remix(uiLayout *layout, PointerRNA *ptr)
+{
+	uiLayout *row = uiLayoutRow(layout, true);
+	uiItemR(row, ptr, "setting", 0, NULL, ICON_NONE);
+	draw_pick_button(row, "LOGIC_OT_bge_remix_setting", ptr, false);
+	uiItemR(layout, ptr, "value", 0, NULL, ICON_NONE);
 }
 
 static void draw_actuator_motion(uiLayout *layout, PointerRNA *ptr)
@@ -1874,6 +1954,7 @@ static void draw_actuator_property(uiLayout *layout, PointerRNA *ptr)
 			break;
 		case ACT_PROP_ADD:
 			uiItemR(layout, ptr, "value", 0, NULL, ICON_NONE);
+			uiItemR(layout, ptr, "use_add_per_message", 0, NULL, ICON_NONE);  /* BGE-Remix P10.13 (A1) */
 			break;
 		case ACT_PROP_ASSIGN:
 			uiItemR(layout, ptr, "value", 0, NULL, ICON_NONE);
@@ -2062,6 +2143,7 @@ static void draw_actuator_state(uiLayout *layout, PointerRNA *ptr)
 	uiItemR(split, ptr, "operation", 0, NULL, ICON_NONE);
 
 	uiTemplateLayers(split, ptr, "states", &settings_ptr, "used_states", 0);
+	uiItemR(layout, ptr, "use_stop_left_state", 0, NULL, ICON_NONE);  /* BGE-Remix P10.13 (A5) */
 }
 
 static void draw_actuator_visibility(uiLayout *layout, PointerRNA *ptr)
@@ -2249,6 +2331,9 @@ static void draw_brick_actuator(uiLayout *layout, PointerRNA *ptr, bContext *C)
 			break;
 		case ACT_MOUSE:
 			draw_actuator_mouse(box, ptr);
+			break;
+		case ACT_REMIX:  /* BGE-Remix P10.12 */
+			draw_actuator_remix(box, ptr);
 			break;
 	}
 }

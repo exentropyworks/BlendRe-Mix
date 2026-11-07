@@ -247,6 +247,17 @@ typedef struct bSteeringActuator {
 	struct Object *navmesh;
 } bSteeringActuator;
 
+/* BGE-Remix P10.12: the RTX Remix actuator. On a pulse it sends one of RTX
+ * Remix's own settings (rtx.*) to Remix, as bge.render.remixSetOption does;
+ * the value as Remix writes it in its option list (True/False, numbers,
+ * "a, b" for pairs). It does nothing in the Classic pipeline.
+ * Stock 2.79b knows neither the type nor this struct: it reads the actuator
+ * without its data, and its converter makes nothing for it. */
+typedef struct bRemixActuator {
+	char setting[128];
+	char value[64];
+} bRemixActuator;
+
 typedef struct bMouseActuator {
 	short type; /* 0=Visibility, 1=Look */
 	short flag;
@@ -329,6 +340,8 @@ typedef struct bActuator {
 #define ACT_ARMATURE	23
 #define ACT_STEERING    24
 #define ACT_MOUSE		25
+/* BGE-Remix P10.12: far from stock's values (stock 2.79b ignores it) */
+#define ACT_REMIX		40
 
 /* actuator flag */
 #define ACT_SHOW		1
@@ -338,6 +351,14 @@ typedef struct bActuator {
 #define ACT_VISIBLE		16	
 #define ACT_PIN			32
 #define ACT_DEACTIVATE  64
+/* BGE-Remix P10.13: options kept in actuator->flag (stock 2.79b keeps the
+ * bits and ignores them; off: stock behaviour)
+ * A1: a Property actuator's Add adds once per message its Message sensors
+ * caught this tic */
+#define ACT_PROP_PER_MESSAGE	256
+/* A5: a State actuator stops the left state's running actuators in the tic it
+ * runs (stock: one tic later) */
+#define ACT_STATE_STOP_NOW		512
 
 /* link codes */
 #define LINK_SENSOR		0

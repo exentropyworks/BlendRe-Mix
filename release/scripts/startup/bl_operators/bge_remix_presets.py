@@ -43,7 +43,10 @@ from bpy.props import EnumProperty
 
 from .bge_remix_material import is_remix, make_remix_material, remix_node
 
-VERSION = 1
+# BGE-Remix P10.2: version 2: Brick's value per brick never 0 - 1 (the
+# Math node's Modulo gives -1 for 0 in the game's GLSL: one black brick at
+# each tile corner, where its column and row hash to 0); the tiles' modes
+VERSION = 2
 GROUP_PREFIX = "Remix Preset: "
 BRICKS_GROUP = "Remix Bricks"
 
@@ -92,6 +95,12 @@ PRESETS = {
     'CONCRETE': dict(label="Concrete", colour=(0.51, 0.51, 0.50), albedo=(0.7, 1.12), rough=(0.75, 0.95),
                      displace=0.003),
 }
+# BGE-Remix P10.2: the presets whose pattern repeats exactly inside the
+# tile (regular: whole repeats, no cross-fade); the rest are random
+# (cross-faded, their contrast kept). The tile modes as remix_bake.cc reads
+# them ("bge_remix_tile_mode"; BRMX_bake.h TileMode)
+REGULAR = ('BRICK',)
+TILE_WHOLE, TILE_KEEP_CONTRAST = 1, 2
 ORDER = ('ROCK', 'GRAVEL', 'TARMAC', 'GRASS', 'BRICK', 'BARK', 'WATER', 'SKIN_LIGHT', 'SKIN_MEDIUM',
          'SKIN_DARK', 'DIRT', 'SAND', 'SNOW', 'CONCRETE')
 # the group's outputs, and the RTX Remix node's inputs they feed
@@ -334,7 +343,10 @@ def _bricks_group():
     cm = b.m('MODULO', col, b.m('MULTIPLY', g["Columns"], g["Period"]))
     rm = b.m('MODULO', row, b.m('MULTIPLY', g["Rows"], g["Period"]))
     s = b.m('SINE', b.m('ADD', b.m('MULTIPLY', cm, 12.9898), b.m('MULTIPLY', rm, 78.233)))
-    brick = b.m('MODULO', b.m('MULTIPLY', b.m('ABSOLUTE', s), 43758.5453), 1.0)
+    # its fraction as v - floor(v) (P10.2: not Modulo, which the game's GLSL
+    # makes -1 for 0: the brick at column and row 0 came out black)
+    v = b.m('MULTIPLY', b.m('ABSOLUTE', s), 43758.5453)
+    brick = b.m('SUBTRACT', v, floor(v))
     b.out("Mortar", mortar)
     b.out("Brick", brick)
     b.out("Edge", b.m('ADD', edge, 0.0, clamp=True))
@@ -484,6 +496,67 @@ def preset_group(key):
     return ng
 
 
+def _bricks_fraction_fixed(ng):
+    """BGE-Remix P10 (Ayhan's decision, 6 Nov): a version 1 "Remix Bricks"
+    group mended in place: its value per brick (Brick) taken as v - floor(v)
+    instead of Modulo(v, 1), which the game's GLSL makes -1 for 0 (one black
+    brick per tile). Returns whether it was changed."""
+    gout = next((n for n in ng.nodes if n.bl_idname == "NodeGroupOutput"), None)
+    if gout is None or gout.inputs.get("Brick") is None or not gout.inputs["Brick"].is_linked:
+        return False
+    link = gout.inputs["Brick"].links[0]
+    mod = link.from_node
+    if mod.bl_idname != "ShaderNodeMath" or mod.operation != 'MODULO' or not mod.inputs[0].is_linked or \
+            mod.inputs[1].is_linked or abs(mod.inputs[1].default_value - 1.0) > 1e-6:
+        return False
+    v = mod.inputs[0].links[0].from_socket
+    x, y = mod.location
+    shift = ng.nodes.new("ShaderNodeMath")
+    shift.operation = 'SUBTRACT'
+    shift.location = (x, y - 160)
+    ng.links.new(v, shift.inputs[0])
+    shift.inputs[1].default_value = 0.5
+    rnd = ng.nodes.new("ShaderNodeMath")
+    rnd.operation = 'ROUND'
+    rnd.location = (x + 100, y - 160)
+    ng.links.new(shift.outputs[0], rnd.inputs[0])
+    frac = ng.nodes.new("ShaderNodeMath")
+    frac.operation = 'SUBTRACT'
+    frac.location = (x + 200, y)
+    ng.links.new(v, frac.inputs[0])
+    ng.links.new(rnd.outputs[0], frac.inputs[1])
+    ng.links.new(frac.outputs[0], gout.inputs["Brick"])
+    ng.nodes.remove(mod)
+    return True
+
+
+def upgrade_old_presets():
+    """BGE-Remix P10 (Ayhan's decision, 6 Nov): the presets of a file made
+    before P10 brought up to this version when the file opens (P9.3's
+    conversion calls it): the Brick pattern's group mended in place, so every
+    material keeps its settings and only loses the black brick; the presets'
+    groups marked with this version (their nodes are the same). Runs once:
+    a group at this version is left alone. Returns the report's lines."""
+    lines = []
+    for ng in list(bpy.data.node_groups):
+        if ng.library is not None:
+            continue
+        if ng.name.startswith(BRICKS_GROUP) and ng.get("bge_remix_preset_version") == 1:
+            fixed = _bricks_fraction_fixed(ng)
+            ng["bge_remix_preset_version"] = VERSION
+            users = sorted(set(m.name for m in bpy.data.materials if m.node_tree is not None and any(
+                n.bl_idname == "ShaderNodeGroup" and n.node_tree is not None and n.node_tree.get("bge_remix_preset")
+                and any(k.bl_idname == "ShaderNodeGroup" and k.node_tree == ng for k in n.node_tree.nodes)
+                for n in m.node_tree.nodes)))
+            lines.append("%s: Brick's pattern brought up to P10 (%s; the black brick at each tile's corner "
+                         "gone, every setting kept)%s" % (ng.name, "mended" if fixed else "already right",
+                                                          ": " + ", ".join(users) if users else ""))
+    for ng in list(bpy.data.node_groups):
+        if ng.library is None and ng.get("bge_remix_preset") and ng.get("bge_remix_preset_version") == 1:
+            ng["bge_remix_preset_version"] = VERSION
+    return lines
+
+
 def preset_node(mat):
     """the material's preset group node, if it has one"""
     if mat is None or mat.node_tree is None:
@@ -539,11 +612,25 @@ def apply_preset(mat, key):
     if out is not None:
         out.inputs["Color"].default_value = tuple(p["colour"]) + (1.0,)
         out.inputs["Alpha"].default_value = 1.0
-    # baked for Remix as one seamless tile (remix_bake.cc)
+    # baked for Remix as one seamless tile (remix_bake.cc); P10.2: whole
+    # repeats (regular) or a contrast-keeping cross-fade (random)
     mat["bge_remix_tile"] = 1
     mat["bge_remix_tile_metres"] = 1.0
     mat["bge_remix_preset"] = key
+    mat["bge_remix_tile_mode"] = TILE_WHOLE if key in REGULAR else TILE_KEEP_CONTRAST
     return g
+
+
+def preset_inputs(key):
+    """BGE-Remix P10.2: the preset's settings a fit sets, with their ranges:
+    [(name, lo, hi, whole)] (whole: snapped to whole numbers; Brick's Scale
+    to halves, so the tile holds whole repeats)"""
+    p = PRESETS[key]
+    ins = [("Scale", 0.5, 16.0, False), ("Wear", 0.0, 1.0, False)]
+    if p.get("wet"):
+        ins.append(("Wetness", 0.0, 1.0, False))
+    ins.append(("Seed", 0.0, 20.0, True))
+    return ins
 
 
 class MATERIAL_OT_bge_remix_preset(Operator):

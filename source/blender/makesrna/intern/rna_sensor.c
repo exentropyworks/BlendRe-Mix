@@ -60,6 +60,7 @@ static EnumPropertyItem sensor_type_items[] = {
 	{SENS_RADAR, "RADAR", 0, "Radar", ""},
 	{SENS_RANDOM, "RANDOM", 0, "Random", ""},
 	{SENS_RAY, "RAY", 0, "Ray", ""},
+	{SENS_TIMER, "TIMER", 0, "Timer", ""},  /* BGE-Remix P10.12 */
 	{0, NULL, 0, NULL, NULL}
 };
 
@@ -101,6 +102,8 @@ static StructRNA *rna_Sensor_refine(struct PointerRNA *ptr)
 			return &RNA_ActuatorSensor;
 		case SENS_DELAY:
 			return &RNA_DelaySensor;
+		case SENS_TIMER:  /* BGE-Remix P10.12 */
+			return &RNA_TimerSensor;
 		default:
 			return &RNA_Sensor;
 	}
@@ -112,6 +115,20 @@ static void rna_Sensor_name_set(PointerRNA *ptr, const char *value)
 	bSensor *sens = ptr->data;
 	BLI_strncpy_utf8(sens->name, value, sizeof(sens->name));
 	BLI_uniquename(&ob->sensors, sens, DATA_("Sensor"), '.', offsetof(bSensor, name), sizeof(sens->name));
+}
+
+/* BGE-Remix P10.13 (A2): a flag of the sensor itself (the struct's sdna is
+ * its data) */
+static int rna_KeyboardSensor_read_held_get(PointerRNA *ptr)
+{
+	return (((bSensor *)ptr->data)->flag & SENS_KEY_READ_HELD) != 0;
+}
+
+static void rna_KeyboardSensor_read_held_set(PointerRNA *ptr, int value)
+{
+	bSensor *sens = (bSensor *)ptr->data;
+	if (value) sens->flag |= SENS_KEY_READ_HELD;
+	else sens->flag &= ~SENS_KEY_READ_HELD;
 }
 
 static void rna_Sensor_type_set(struct PointerRNA *ptr, int value)
@@ -170,6 +187,7 @@ EnumPropertyItem *rna_Sensor_type_itemf(bContext *C, PointerRNA *ptr, PropertyRN
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_RADAR);
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_RANDOM);
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_RAY);
+	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_TIMER);  /* BGE-Remix P10.12 */
 	RNA_enum_items_add_value(&item, &totitem, sensor_type_items, SENS_TOUCH);
 	
 	RNA_enum_item_end(&item, &totitem);
@@ -494,6 +512,13 @@ static void rna_def_keyboard_sensor(BlenderRNA *brna)
 	prop = RNA_def_property(srna, "use_all_keys", PROP_BOOLEAN, PROP_NONE);
 	RNA_def_property_boolean_sdna(prop, NULL, "type", 1);
 	RNA_def_property_ui_text(prop, "All Keys", "Trigger this sensor on any keystroke");
+
+	/* BGE-Remix P10.13 (A2) */
+	prop = RNA_def_property(srna, "use_read_held_keys", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_funcs(prop, "rna_KeyboardSensor_read_held_get", "rna_KeyboardSensor_read_held_set");
+	RNA_def_property_ui_text(prop, "Read Held Keys",
+	                         "Fire for a key already held when this sensor's state is entered (off: wait for a new "
+	                         "press, as stock 2.79b)");
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
 }
 
@@ -610,14 +635,15 @@ static void rna_def_delay_sensor(BlenderRNA *brna)
 	prop = RNA_def_property(srna, "delay", PROP_INT, PROP_NONE);
 	RNA_def_property_ui_text(prop, "Delay",
 	                         "Delay in number of logic tics before the positive trigger (default 60 per second)");
-	RNA_def_property_range(prop, 0, 5000);
+	/* BGE-Remix P10.13 (A8): as far as the file's number goes (stock: 5000) */
+	RNA_def_property_range(prop, 0, 32767);
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
 
 	prop = RNA_def_property(srna, "duration", PROP_INT, PROP_NONE);
 	RNA_def_property_ui_text(prop, "Duration",
 	                         "If >0, delay in number of logic tics before the negative trigger following "
 	                         "the positive trigger");
-	RNA_def_property_range(prop, 0, 5000);
+	RNA_def_property_range(prop, 0, 32767);  /* BGE-Remix P10.13 (A8) */
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
 
 	prop = RNA_def_property(srna, "use_repeat", PROP_BOOLEAN, PROP_NONE);
@@ -625,6 +651,32 @@ static void rna_def_delay_sensor(BlenderRNA *brna)
 	RNA_def_property_ui_text(prop, "Repeat",
 	                         "Toggle repeat option (if selected, the sensor restarts after Delay+Duration "
 	                         "logic tics)");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
+}
+
+/* BGE-Remix P10.12: the Timer sensor */
+static void rna_def_timer_sensor(BlenderRNA *brna)
+{
+	StructRNA *srna;
+	PropertyRNA *prop;
+
+	srna = RNA_def_struct(brna, "TimerSensor", "Sensor");
+	RNA_def_struct_ui_text(srna, "Timer Sensor",
+	                       "Sensor that fires a number of seconds after its state becomes active, once or repeating "
+	                       "(no timer property needed)");
+	RNA_def_struct_sdna_from(srna, "bTimerSensor", "data");
+
+	prop = RNA_def_property(srna, "seconds", PROP_FLOAT, PROP_NONE);
+	RNA_def_property_range(prop, 0.0f, 100000.0f);
+	RNA_def_property_ui_range(prop, 0.0f, 3600.0f, 10, 3);
+	RNA_def_property_ui_text(prop, "Seconds",
+	                         "Seconds of game time after its state becomes active before it fires (with Repeat: "
+	                         "between firings)");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
+
+	prop = RNA_def_property(srna, "use_repeat", PROP_BOOLEAN, PROP_NONE);
+	RNA_def_property_boolean_sdna(prop, NULL, "flag", SENS_TIMER_REPEAT);
+	RNA_def_property_ui_text(prop, "Repeat", "Fire again every Seconds, not only once");
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
 }
 
@@ -810,6 +862,20 @@ static void rna_def_message_sensor(BlenderRNA *brna)
 	                         "Optional subject filter: only accept messages with this subject, "
 	                         "or empty to accept all");
 	RNA_def_property_update(prop, NC_LOGIC, NULL);
+
+	/* BGE-Remix P10.13 (A13): the sender and body filters the file always kept */
+	prop = RNA_def_property(srna, "from_object", PROP_POINTER, PROP_NONE);
+	RNA_def_property_struct_type(prop, "Object");
+	RNA_def_property_pointer_sdna(prop, NULL, "fromObject");
+	RNA_def_property_flag(prop, PROP_EDITABLE);
+	RNA_def_property_ui_text(prop, "From",
+	                         "Optional sender filter: only accept messages this object sent, or empty to accept all");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
+
+	prop = RNA_def_property(srna, "body", PROP_STRING, PROP_NONE);
+	RNA_def_property_ui_text(prop, "Body",
+	                         "Optional body filter: only accept messages with this body, or empty to accept all");
+	RNA_def_property_update(prop, NC_LOGIC, NULL);
 }
 
 static void rna_def_joystick_sensor(BlenderRNA *brna)
@@ -928,6 +994,7 @@ void RNA_def_sensor(BlenderRNA *brna)
 	rna_def_armature_sensor(brna);
 	rna_def_actuator_sensor(brna);
 	rna_def_delay_sensor(brna);
+	rna_def_timer_sensor(brna);  /* BGE-Remix P10.12 */
 	rna_def_collision_sensor(brna);
 	rna_def_radar_sensor(brna);
 	rna_def_random_sensor(brna);

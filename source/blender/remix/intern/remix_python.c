@@ -37,6 +37,7 @@
 #include "BLI_utildefines.h"
 
 #include "BRMX_loader.h"
+#include "BRMX_remaster.h"
 #include "BRMX_remix.h"
 #include "BRMX_session.h"
 #include "BRMX_view.h"
@@ -415,6 +416,222 @@ static PyObject *brmx_debug_option(PyObject *UNUSED_self, PyObject *args)
 	Py_RETURN_NONE;
 }
 
+PyDoc_STRVAR(brmx_bake_tile_doc,
+".. function:: bake_tile(material_pointer, scene_pointer, size, slots)\n"
+"\n"
+"   BGE-Remix P10.2: a preset material's tile baked at size x size, always\n"
+"   drawn (not from the cache). slots: bits 1 << slot (0 albedo, 1 roughness,\n"
+"   2 emissive, 3 normal, 4 metallic, 5 height). Returns {slot: bytes} (RGBA,\n"
+"   bottom row first). Needs Blender's OpenGL context (not the background).\n"
+"\n"
+"   :rtype: dict\n");
+static PyObject *brmx_bake_tile(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long ma = 0, scene = 0;
+	int size = 256;
+	unsigned int slots = 1;
+	unsigned char *px[BRMX_REMASTER_SLOTS];
+	char error[256] = "";
+	unsigned done;
+	PyObject *r;
+	int i;
+	if (!PyArg_ParseTuple(args, "KK|iI:bake_tile", &ma, &scene, &size, &slots) || !ma || !scene) {
+		if (!PyErr_Occurred()) {
+			PyErr_SetString(PyExc_ValueError, "bake_tile: a material's and a scene's as_pointer() are needed");
+		}
+		return NULL;
+	}
+	if (size < 16 || size > 8192) {
+		PyErr_SetString(PyExc_ValueError, "bake_tile: size 16..8192");
+		return NULL;
+	}
+	done = BRMX_remaster_bake_tile(PTR(struct Scene, scene), PTR(struct Material, ma), size, slots, px, error,
+	                               (int)sizeof(error));
+	if (!done) {
+		PyErr_SetString(PyExc_RuntimeError, error[0] ? error : "the tile could not be baked");
+		return NULL;
+	}
+	r = PyDict_New();
+	for (i = 0; i < BRMX_REMASTER_SLOTS; i++) {
+		if (px[i]) {
+			PyObject *key = PyLong_FromLong(i);
+			PyObject *val = PyBytes_FromStringAndSize((const char *)px[i], (Py_ssize_t)size * size * 4);
+			PyDict_SetItem(r, key, val);
+			Py_DECREF(key);
+			Py_DECREF(val);
+			BRMX_remaster_free(px[i]);
+		}
+	}
+	return r;
+}
+
+PyDoc_STRVAR(brmx_precache_doc,
+".. function:: precache(object_pointer, scene_pointer)\n"
+"\n"
+"   BGE-Remix P10.5: the object's materials made into Remix's images as the\n"
+"   game makes them (bakes, the texture cache), the encodes started.\n"
+"   Returns the textures asked for. Needs Blender's OpenGL context for bakes.\n"
+"\n"
+"   :rtype: int\n");
+static PyObject *brmx_precache(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long ob = 0, scene = 0;
+	char error[256] = "";
+	int n;
+	if (!PyArg_ParseTuple(args, "KK:precache", &ob, &scene) || !ob || !scene) {
+		if (!PyErr_Occurred()) {
+			PyErr_SetString(PyExc_ValueError, "precache: an object's and a scene's as_pointer() are needed");
+		}
+		return NULL;
+	}
+	n = BRMX_remaster_precache(PTR(struct Scene, scene), PTR(struct Object, ob), error, (int)sizeof(error));
+	if (n < 0) {
+		PyErr_SetString(PyExc_RuntimeError, error[0] ? error : "precache failed");
+		return NULL;
+	}
+	return PyLong_FromLong(n);
+}
+
+PyDoc_STRVAR(brmx_precache_poll_doc,
+".. function:: precache_poll()\n"
+"\n"
+"   BGE-Remix P10.5: the up-front encodes: {waiting, encoded, reused, failed,\n"
+"   seconds, bakes}.\n"
+"\n"
+"   :rtype: dict\n");
+static PyObject *brmx_precache_poll(PyObject *UNUSED_self)
+{
+	int waiting = 0, encoded = 0, reused = 0, failed = 0, bakes = 0;
+	double seconds = 0.0;
+	BRMX_remaster_poll(&waiting, &encoded, &reused, &failed, &seconds, &bakes);
+	return Py_BuildValue("{s:i,s:i,s:i,s:i,s:d,s:i}", "waiting", waiting, "encoded", encoded, "reused", reused,
+	                     "failed", failed, "seconds", seconds, "bakes", bakes);
+}
+
+PyDoc_STRVAR(brmx_precache_reset_doc,
+".. function:: precache_reset()\n"
+"\n"
+"   BGE-Remix P10.5: the counts back to 0 (the next Apply).\n");
+static PyObject *brmx_precache_reset(PyObject *UNUSED_self)
+{
+	BRMX_remaster_reset();
+	Py_RETURN_NONE;
+}
+
+/* BGE-Remix P10.4: atlases (remix_atlas.cc, remix_atlas_pack.cc) */
+struct Material;
+struct Scene;
+const char *BRMX_atlas_bake_json(struct Material *ma, struct Scene *scene);
+const unsigned char *BRMX_atlas_preview(int *r_width, int *r_height);
+int BRMX_atlas_pack(const int *sizes, int count, int page, int padding, int *r_places);
+
+PyDoc_STRVAR(brmx_atlas_bake_doc,
+".. function:: atlas_bake(material_pointer, scene_pointer)\n"
+"\n"
+"   BGE-Remix P10.4: bake the material's tile set or flipbook now and encode\n"
+"   its files into the texture cache (OpenGL needed: not in the background).\n"
+"   Use bge_remix.atlas rather than this.\n"
+"\n"
+"   :rtype: str (JSON)\n");
+static PyObject *brmx_atlas_bake(PyObject *UNUSED_self, PyObject *args)
+{
+	unsigned long long ma = 0, scene = 0;
+	if (!PyArg_ParseTuple(args, "KK:atlas_bake", &ma, &scene) || !ma || !scene) {
+		if (!PyErr_Occurred()) {
+			PyErr_SetString(PyExc_ValueError, "atlas_bake: a material's and a scene's as_pointer() are needed");
+		}
+		return NULL;
+	}
+	return PyUnicode_FromString(BRMX_atlas_bake_json((struct Material *)(uintptr_t)ma,
+	                                                 (struct Scene *)(uintptr_t)scene));
+}
+
+PyDoc_STRVAR(brmx_atlas_preview_doc,
+".. function:: atlas_preview()\n"
+"\n"
+"   BGE-Remix P10.4: the last atlas_bake's albedo atlas, smaller (at most 1024\n"
+"   a side): (width, height, RGBA bytes, rows from the bottom), or None.\n");
+static PyObject *brmx_atlas_preview(PyObject *UNUSED_self, PyObject *UNUSED_args)
+{
+	int w = 0, h = 0;
+	const unsigned char *px = BRMX_atlas_preview(&w, &h);
+	if (!px || w <= 0 || h <= 0) {
+		Py_RETURN_NONE;
+	}
+	return Py_BuildValue("(iiy#)", w, h, (const char *)px, (Py_ssize_t)w * h * 4);
+}
+
+PyDoc_STRVAR(brmx_atlas_pack_doc,
+".. function:: atlas_pack(sizes, page, padding)\n"
+"\n"
+"   BGE-Remix P10.4: rectangles (a list of (width, height)) packed onto\n"
+"   pages of page x page pixels, padding apart, with xatlas: a list of\n"
+"   (page, x, y) (bottom-left corners), or None when one does not fit.\n");
+static PyObject *brmx_atlas_pack(PyObject *UNUSED_self, PyObject *args)
+{
+	PyObject *list = NULL, *seq = NULL, *out = NULL;
+	int page = 0, padding = 0;
+	Py_ssize_t n, i;
+	int *sizes, *places;
+	if (!PyArg_ParseTuple(args, "Oii:atlas_pack", &list, &page, &padding)) {
+		return NULL;
+	}
+	seq = PySequence_Fast(list, "atlas_pack: a list of (width, height) is needed");
+	if (!seq) {
+		return NULL;
+	}
+	n = PySequence_Fast_GET_SIZE(seq);
+	sizes = (int *)malloc(sizeof(int) * 2 * (size_t)(n + 1));
+	places = (int *)malloc(sizeof(int) * 3 * (size_t)(n + 1));
+	for (i = 0; i < n; i++) {
+		PyObject *item = PySequence_Fast_GET_ITEM(seq, i);
+		int w = 0, h = 0;
+		if (!PyArg_ParseTuple(item, "ii", &w, &h)) {
+			free(sizes);
+			free(places);
+			Py_DECREF(seq);
+			return NULL;
+		}
+		sizes[i * 2] = w;
+		sizes[i * 2 + 1] = h;
+	}
+	Py_DECREF(seq);
+	if (n > 0 && BRMX_atlas_pack(sizes, (int)n, page, padding, places) > 0) {
+		out = PyList_New(n);
+		for (i = 0; i < n; i++) {
+			PyList_SET_ITEM(out, i, Py_BuildValue("(iii)", places[i * 3], places[i * 3 + 1], places[i * 3 + 2]));
+		}
+	}
+	free(sizes);
+	free(places);
+	if (!out) {
+		Py_RETURN_NONE;
+	}
+	return out;
+}
+
+PyDoc_STRVAR(brmx_settings_doc,
+".. function:: settings()\n"
+"\n"
+"   BGE-Remix P10.12: the RTX Remix settings the RTX Remix actuator lists\n"
+"   (the Render tab's curated ones and the quality ones), as (key, kind,\n"
+"   default) with kind 'BOOL', 'INT' or 'FLOAT'.\n");
+static PyObject *brmx_settings(PyObject *UNUSED_self)
+{
+	PyObject *list = PyList_New(0);
+	const char *key, *def;
+	char kind;
+	int i;
+	for (i = 0; BRMX_setting_get(i, &key, &kind, &def); i++) {
+		PyObject *item = Py_BuildValue("(sss)", key, kind == 'b' ? "BOOL" : (kind == 'i' ? "INT" : "FLOAT"), def);
+		if (item) {
+			PyList_Append(list, item);
+			Py_DECREF(item);
+		}
+	}
+	return list;
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -433,6 +650,15 @@ static PyMethodDef brmx_methods[] = {
 	{"material_match", (PyCFunction)brmx_material_match, METH_VARARGS, brmx_material_match_doc},
 	{"inspect", (PyCFunction)brmx_inspect, METH_VARARGS, brmx_inspect_doc},
 	{"debug_option", (PyCFunction)brmx_debug_option, METH_VARARGS, brmx_debug_option_doc},
+	/* BGE-Remix P10.2, P10.5: the texture remaster */
+	{"bake_tile", (PyCFunction)brmx_bake_tile, METH_VARARGS, brmx_bake_tile_doc},
+	{"precache", (PyCFunction)brmx_precache, METH_VARARGS, brmx_precache_doc},
+	{"precache_poll", (PyCFunction)brmx_precache_poll, METH_NOARGS, brmx_precache_poll_doc},
+	{"precache_reset", (PyCFunction)brmx_precache_reset, METH_NOARGS, brmx_precache_reset_doc},
+	{"atlas_bake", (PyCFunction)brmx_atlas_bake, METH_VARARGS, brmx_atlas_bake_doc},
+	{"atlas_preview", (PyCFunction)brmx_atlas_preview, METH_NOARGS, brmx_atlas_preview_doc},
+	{"atlas_pack", (PyCFunction)brmx_atlas_pack, METH_VARARGS, brmx_atlas_pack_doc},
+	{"settings", (PyCFunction)brmx_settings, METH_NOARGS, brmx_settings_doc},  /* BGE-Remix P10.12 */
 	{NULL, NULL, 0, NULL}
 };
 
