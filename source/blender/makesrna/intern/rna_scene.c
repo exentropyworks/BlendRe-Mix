@@ -4734,7 +4734,8 @@ static void rna_def_scene_game_data(BlenderRNA *brna)
 	static EnumPropertyItem physx_device_items[] = {
 		{1, "CPU", 0, "CPU", "PhysX on the processor (soft bodies stay still)"},
 		{2, "GPU", 0, "GPU",
-		 "PhysX on an NVIDIA GPU: rigid bodies, cloth and soft bodies (the CPU when no GPU is found)"},
+		 "PhysX on an NVIDIA GPU: rigid bodies, cloth and soft bodies (the CPU when no GPU is found). "
+		 "Cloth and soft bodies need it; for rigid bodies alone the CPU is faster while RTX Remix runs"},
 		{0, NULL, 0, NULL, NULL}
 	};
 
