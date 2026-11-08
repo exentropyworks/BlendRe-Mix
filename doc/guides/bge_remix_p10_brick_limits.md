@@ -129,7 +129,7 @@ Each entry gives:
 - **Old games**: yes.
 
 ### A12. Collision sensors may miss hits with physics substeps above 1
-- **Not done**: test first (not approved).
+- **Fixed** (P11, test T11.a12): confirmed by the test first (a ball thrown at a wall six times: Bullet at 2 substeps saw 0 of 6 bounces, 4 substeps 3 of 6; PhysX at 4 substeps 3 of 6). A touch that began and ended inside one frame was gone before the frame's report. Bullet now reports contacts after each substep, and PhysX also reports the pairs that touched during the frame. With 1 substep nothing changed.
 - **What**: this was reported, but never confirmed by a developer.
 - **Evidence**: [developer.blender.org T39075](https://developer.blender.org/T39075), item 1.
 - **Who**: fast objects with substeps.

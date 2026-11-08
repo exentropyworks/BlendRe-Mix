@@ -52,33 +52,27 @@ MOTION_RUNS = (
 # detail options tried one at a time. Round 1 also ran ray reconstruction
 # off, render scale 1, reference mode and the orthographic camera nearer:
 # the fine bars were gone in every one, and in the perspective camera's too.
-# (set before Remix starts, and again once it runs: some of Remix's options
-# are read only at its start)
-_FH = "rtx.forceHighResolutionReplacementTextures=True"
-_NA = "rtx.enableAdaptiveResolutionReplacementTextures=False"
-FORCE_HI = {"BGE_REMIX_RTX_SET_EARLY": _FH, "BGE_REMIX_RTX_SET": _FH}
-NO_ADAPTIVE = {"BGE_REMIX_RTX_SET_EARLY": _NA, "BGE_REMIX_RTX_SET": _NA}
+# Round 3: where the detail is lost. Remix's debug view 34 (Base Albedo,
+# sRGB: the texture as the first hit sampled it, before light and denoising)
+# tells the texture's sampling from what comes after; reference mode
+# (accumulated, no denoiser) the denoiser; preset Ultra the Auto preset.
+# Round 2 tried Remix's texture mip bias -2 (no change) and two texture
+# options Remix 1.6.1 does not have; DLSS Quality and DLAA changed nothing.
+ALBEDO = {"BGE_REMIX_RTX_SET": "rtx.debugView.debugViewIdx=34"}
+REFERENCE = {"BGE_REMIX_RTX_SET": "rtx.useDenoiserReferenceMode=True"}
 SOFT_RUNS = (
     ("default", "your settings (Auto)", {}, None, "remix", "opengl", 100),
-    ("quality", "DLSS Quality (set in the scene)", {}, None, "remix_quality", "opengl", 100),
-    ("dlaa", "DLAA (set in the scene)", {}, None, "remix_dlaa", "opengl", 100),
-    ("dlaa_force_hi", "DLAA, Remix's 'force high resolution textures' on", FORCE_HI, None, "remix_dlaa",
-     "opengl", 100),
-    ("dlaa_no_adaptive", "DLAA, Remix's 'adaptive resolution textures' off", NO_ADAPTIVE, None, "remix_dlaa",
-     "opengl", 100),
-    ("dlaa_mip_bias", "DLAA, Remix's texture mip bias -2", {"BGE_REMIX_RTX_SET": "rtx.nativeMipBias=-2"}, None,
-     "remix_dlaa", "opengl", 100),
+    ("albedo", "Remix's debug view: the texture as sampled", ALBEDO, None, "remix", "opengl", 100),
+    ("ultra", "preset Ultra (set in the scene)", {}, None, "remix_ultra", "opengl", 100),
     ("big", "a 1920 x 1080 window (Auto)", {}, (1920, 1080), "remix", "opengl", 100),
     ("persp_default", "a perspective camera (Auto)", {}, None, "persp_remix", "persp_opengl", None),
-    ("persp_dlaa", "a perspective camera, DLAA (set in the scene)", {}, None, "persp_remix_dlaa", "persp_opengl",
+    ("persp_albedo", "a perspective camera, the texture as sampled", ALBEDO, None, "persp_remix", "persp_opengl",
      None),
-    ("persp_force_hi", "a perspective camera, DLAA, 'force high resolution textures' on", FORCE_HI, None,
-     "persp_remix_dlaa", "persp_opengl", None),
+    ("persp_ultra", "a perspective camera, preset Ultra", {}, None, "persp_remix_ultra", "persp_opengl", None),
+    ("persp_reference", "a perspective camera, preset Ultra, reference mode (no denoiser)", REFERENCE, None,
+     "persp_remix_ultra", "persp_opengl", None),
 )
-# whether Remix took them before its start (the player's line)
-OPTION_NAMES = {"dlaa_force_hi": "forceHighResolutionReplacementTextures = True (taken)",
-                "dlaa_no_adaptive": "enableAdaptiveResolutionReplacementTextures = False (taken)",
-                "persp_force_hi": "forceHighResolutionReplacementTextures = True (taken)"}
+OPTION_NAMES = {}
 SHOTS = 6
 AFTER = 8.0
 GAP = 0.5
