@@ -261,12 +261,12 @@ jobs:
           python -m compileall -q blender/tests/bge_remix
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=Pre-flight::a test script does not compile"; exit 1 }
 
-      - name: The P9 and P10 test scenes are made
+      - name: The P9, P10 and P11 test scenes are made
         shell: pwsh
         run: |
           $bl = Get-ChildItem ours -Recurse -Filter blender.exe | Select-Object -First 1
           $bad = 0
-          foreach ($p in @(@("p9", "make_scenes_p9.py", "p9_expected.json"), @("p10", "make_scenes_p10.py", "p10_expected.json"))) {
+          foreach ($p in @(@("p9", "make_scenes_p9.py", "p9_expected.json"), @("p10", "make_scenes_p10.py", "p10_expected.json"), @("p11", "make_scenes_p11.py", "p11_expected.json"))) {
             $out = "preflight/$($p[0])"
             New-Item -ItemType Directory -Force $out | Out-Null
             $env:BGE_REMIX_CONVERT = "0"

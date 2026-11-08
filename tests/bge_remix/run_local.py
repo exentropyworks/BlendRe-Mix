@@ -6,7 +6,7 @@ newest such download from C:\\BGE-Remix\\transfer, runs the phases' tests on
 this PC's graphics card, and packs the results as
 C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
 
-  run_local.bat              every phase (P0 to P10)
+  run_local.bat              every phase (P0 to P11)
   run_local.bat p8           only P8 (any list works: p4 p8)
   run_local.bat p8rtx        P8's RTX run: the real RTX Remix runtime, every
                              benchmark target, the picture sheets (also
@@ -31,6 +31,9 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
   run_local.bat p10rtx       P10's RTX run: the texture remaster, the Remix
                              View's Run mode and the logic bricks against
                              Remix (also run_p10_rtx.bat in the p10 folder)
+  run_local.bat p11rtx       P11's RTX run: motion trails, softness and
+                             sharing the graphics card, measured in Remix
+                             (also run_p11_rtx.bat in the p11 folder)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
 numpy), and the official Blender 2.79b unpacked into
@@ -58,8 +61,8 @@ MOCK = os.path.join(LOCAL, "mock")
 MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
-PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]
-EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu", "p10rtx", "smoke"]  # only when asked for
+PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11"]
+EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu", "p10rtx", "p11rtx", "smoke"]  # only when asked for
 
 
 def say(text=""):
@@ -153,6 +156,11 @@ def commands():
                                                                    "--out", os.path.join(RESULTS, "p10")],
         "p10rtx": run("p10", "run_p10.py") + ["--ours", OURS, "--rtx", "--results", RESULTS,
                                               "--out", os.path.join(RESULTS, "p10rtx")],
+        # P11: physics, motion and simulation in Remix's picture
+        "p11": run("p11", "run_p11.py") + ["--ours", OURS] + off + ["--mock", MOCK, "--normal", "--results", RESULTS,
+                                                                   "--out", os.path.join(RESULTS, "p11")],
+        "p11rtx": run("p11", "run_p11.py") + ["--ours", OURS, "--rtx", "--results", RESULTS,
+                                              "--out", os.path.join(RESULTS, "p11rtx")],
         # the crash check: Blender's window doing what a person does, real Remix
         "smoke": run("smoke", "run_smoke.py") + ["--ours", OURS, "--out", os.path.join(RESULTS, "smoke")],
     }

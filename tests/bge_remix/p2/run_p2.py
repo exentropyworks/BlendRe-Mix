@@ -805,21 +805,25 @@ def contact_sheet(items, target):
         from PIL import Image, ImageDraw
     except ImportError:
         return None
+    # (the label goes in a bar above each picture: P11 fix, the bar used to
+    # cover the picture's top 34 rows, which looked like a cut-off strip)
+    bar, tile_h = 34, 540 + 34
     tiles = []
     for label, path in items:
         if path and os.path.isfile(path):
-            img = Image.open(path).convert("RGB").resize((960, 540))
+            pic = Image.open(path).convert("RGB").resize((960, 540))
         else:
-            img = Image.new("RGB", (960, 540), (40, 0, 0))
+            pic = Image.new("RGB", (960, 540), (40, 0, 0))
             label += " (missing)"
+        img = Image.new("RGB", (960, tile_h), (0, 0, 0))
+        img.paste(pic, (0, bar))
         d = ImageDraw.Draw(img)
-        d.rectangle([0, 0, 960, 34], fill=(0, 0, 0))
         d.text((10, 10), label, fill=(255, 255, 255))
         tiles.append(img)
     rows = (len(tiles) + 1) // 2
-    sheet = Image.new("RGB", (1920, 540 * rows), (0, 0, 0))
+    sheet = Image.new("RGB", (1920, tile_h * rows), (0, 0, 0))
     for i, t in enumerate(tiles):
-        sheet.paste(t, ((i % 2) * 960, (i // 2) * 540))
+        sheet.paste(t, ((i % 2) * 960, (i // 2) * tile_h))
     try:
         sheet.save(target)
     except OSError as ex:

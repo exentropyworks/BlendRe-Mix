@@ -1240,7 +1240,10 @@ static void gv_draw_labels(GVView *gv)
 	}
 
 	if (live_labels) {
-		const float h = 13.0f * U.pixelsize;
+		/* BGE-Remix P11 fix: a line as tall as the font draws it, with its
+		 * shadow and a gap (a fixed 13 px let two labels a line apart touch:
+		 * "Crate: 1 contact" over "Crate" in P10's Run sheet) */
+		const float h = max_ff(13.0f * U.pixelsize, BLF_height_default("Agy|", 4) + 4.0f * U.pixelsize);
 		GVLabel *placed = MEM_mallocN(sizeof(GVLabel) * max_ii(live_count, 1), __func__);
 		int nplaced = 0, k;
 		qsort(live_labels, live_count, sizeof(GVLabel), gv_label_cmp);
@@ -1468,6 +1471,14 @@ static void gv_draw_run_strip(ARegion *ar)
 				break;
 			}
 		}
+	}
+	if (buf[0]) {
+		/* BGE-Remix P11 fix: a dark band behind the line, as tall as the
+		 * buttons (over a hologram or a light sky the white text was lost) */
+		const float tw = BLF_width_default(buf, sizeof(buf));
+		glColor4f(0.0f, 0.0f, 0.0f, 0.55f);
+		glRecti(stop[2] + 6 * (int)U.pixelsize, stop[1],
+		        stop[2] + (int)(18.0f * U.pixelsize + tw), stop[3]);
 	}
 	glColor4f(0.0f, 0.0f, 0.0f, 0.85f);
 	BLF_draw_default(stop[2] + 13.0f * U.pixelsize, stop[1] + 5.0f * U.pixelsize, 0.0f, buf, sizeof(buf));

@@ -1447,17 +1447,19 @@ def thumb_sheet(items, target, cols=6, w=320, h=180):
         from PIL import Image, ImageDraw
     except ImportError:
         return None
+    # (each label in a bar above its picture, not over the picture's top)
+    bar = 16
     rows = max(1, (len(items) + cols - 1) // cols)
-    sheet = Image.new("RGB", (cols * w, rows * h), (0, 0, 0))
+    sheet = Image.new("RGB", (cols * w, rows * (h + bar)), (0, 0, 0))
     for i, (label, path) in enumerate(items):
         if path and os.path.isfile(path):
-            img = Image.open(path).convert("RGB").resize((w, h))
+            pic = Image.open(path).convert("RGB").resize((w, h))
         else:
-            img = Image.new("RGB", (w, h), (40, 0, 0))
-        d = ImageDraw.Draw(img)
-        d.rectangle([0, 0, w, 16], fill=(0, 0, 0))
-        d.text((4, 2), label, fill=(255, 255, 0))
-        sheet.paste(img, ((i % cols) * w, (i // cols) * h))
+            pic = Image.new("RGB", (w, h), (40, 0, 0))
+        img = Image.new("RGB", (w, h + bar), (0, 0, 0))
+        img.paste(pic, (0, bar))
+        ImageDraw.Draw(img).text((4, 2), label, fill=(255, 255, 0))
+        sheet.paste(img, ((i % cols) * w, (i // cols) * (h + bar)))
     sheet.save(target)
     return target
 
