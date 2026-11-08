@@ -420,12 +420,14 @@ def make_motion(folder, E):
 # ---------------------------------------------------------------------------
 # A3: the softness check
 
-def lines_px(i, j):
-    """bars: the left third 1 pixel wide, the middle 2, the right 4; upright
-    in the top half, lying in the bottom half"""
-    third = BOARD_PX // 3
-    width = 1 if i < third else (2 if i < 2 * third else 4)
-    k = (i if j >= BOARD_PX // 2 else j) // width
+def lines_px(i, j, scale=1):
+    """bars: the left third 1 screen pixel wide, the middle 2, the right 4
+    (scale texture pixels each); upright in the top half, lying in the
+    bottom half"""
+    size = BOARD_PX * scale
+    third = size // 3
+    width = scale * (1 if i < third else (2 if i < 2 * third else 4))
+    k = (i if j >= size // 2 else j) // width
     v = 0.9 if k % 2 == 0 else 0.05
     return (v, v, v, 1.0)
 
@@ -450,13 +452,13 @@ def grooves_px(i, j):
     return (0.5 + 0.5 * nx, 0.5, 0.5 + 0.5 * nz, 1.0)
 
 
-def board_image(name, fn, non_color=False):
-    img = bpy.data.images.new(name, BOARD_PX, BOARD_PX, alpha=True)
+def board_image(name, fn, non_color=False, size=BOARD_PX):
+    img = bpy.data.images.new(name, size, size, alpha=True)
     if non_color:
         img.colorspace_settings.name = 'Non-Color'
     px = []
-    for j in range(BOARD_PX):
-        for i in range(BOARD_PX):
+    for j in range(size):
+        for i in range(size):
             px.extend(fn(i, j))
     img.pixels = px
     img.pack(as_png=True)
@@ -497,6 +499,15 @@ def make_soft(folder, E):
     scene["bge_remix_preset"] = 4
     files["remix_ultra"] = save(folder, "p11a_soft_remix_ultra", 1)
     del scene["bge_remix_preset"]
+    # A3 round 4: the bars from a 1024 pixel image (4 texture pixels a screen
+    # pixel): Remix dropping each texture's top levels shows them, Remix
+    # choosing blurrier levels for the screen does not
+    lines_tex = bpy.data.materials["P11_board_lines"].texture_slots[0].texture
+    small = lines_tex.image
+    lines_tex.image = board_image("P11_lines1024", lambda i, j: lines_px(i, j, 4), size=BOARD_PX * 4)
+    files["remix_1024"] = save(folder, "p11a_soft_remix_1024", 1)
+    big_image = lines_tex.image
+    lines_tex.image = small
     # the same through a perspective camera: 50 mm on a 32 mm wide sensor,
     # far enough back that the boards' plane is 12 m across, as before
     cam = scene.camera
@@ -514,6 +525,9 @@ def make_soft(folder, E):
     scene["bge_remix_preset"] = 4
     files["persp_remix_ultra"] = save(folder, "p11a_soft_persp_remix_ultra", 1)
     del scene["bge_remix_preset"]
+    lines_tex.image = big_image
+    files["persp_remix_1024"] = save(folder, "p11a_soft_persp_remix_1024", 1)
+    lines_tex.image = small
     E["soft"] = {"files": files, "rects": rects, "size": [m9.WIDTH, m9.HEIGHT],
                  # the orthographic camera reaches Remix moved back (factor x 12 m) and keeps
                  # its size KEEP m in front: at the boards (20 m) the picture is this much smaller

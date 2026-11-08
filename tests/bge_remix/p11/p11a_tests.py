@@ -52,25 +52,21 @@ MOTION_RUNS = (
 # detail options tried one at a time. Round 1 also ran ray reconstruction
 # off, render scale 1, reference mode and the orthographic camera nearer:
 # the fine bars were gone in every one, and in the perspective camera's too.
-# Round 3: where the detail is lost. Remix's debug view 34 (Base Albedo,
-# sRGB: the texture as the first hit sampled it, before light and denoising)
-# tells the texture's sampling from what comes after; reference mode
-# (accumulated, no denoiser) the denoiser; preset Ultra the Auto preset.
-# Round 2 tried Remix's texture mip bias -2 (no change) and two texture
-# options Remix 1.6.1 does not have; DLSS Quality and DLAA changed nothing.
-ALBEDO = {"BGE_REMIX_RTX_SET": "rtx.debugView.debugViewIdx=34"}
-REFERENCE = {"BGE_REMIX_RTX_SET": "rtx.useDenoiserReferenceMode=True"}
+# Round 4. Round 3: reference mode (no denoiser) and preset Ultra lose the
+# fine bars too, so neither the denoiser nor the Auto preset takes them;
+# debug view 34 showed the boards black (not the albedo after all). Now:
+# the bars from a 1024 pixel image (Remix dropping each texture's top
+# levels would show them; Remix choosing blurrier levels would not), and
+# the P9.0 study's two diffuse albedo views (25, 54).
 SOFT_RUNS = (
     ("default", "your settings (Auto)", {}, None, "remix", "opengl", 100),
-    ("albedo", "Remix's debug view: the texture as sampled", ALBEDO, None, "remix", "opengl", 100),
-    ("ultra", "preset Ultra (set in the scene)", {}, None, "remix_ultra", "opengl", 100),
-    ("big", "a 1920 x 1080 window (Auto)", {}, (1920, 1080), "remix", "opengl", 100),
-    ("persp_default", "a perspective camera (Auto)", {}, None, "persp_remix", "persp_opengl", None),
-    ("persp_albedo", "a perspective camera, the texture as sampled", ALBEDO, None, "persp_remix", "persp_opengl",
-     None),
-    ("persp_ultra", "a perspective camera, preset Ultra", {}, None, "persp_remix_ultra", "persp_opengl", None),
-    ("persp_reference", "a perspective camera, preset Ultra, reference mode (no denoiser)", REFERENCE, None,
-     "persp_remix_ultra", "persp_opengl", None),
+    ("img1024", "the bars from a 1024 pixel image", {}, None, "remix_1024", "opengl", 100),
+    ("persp_img1024", "a perspective camera, the bars from a 1024 pixel image", {}, None, "persp_remix_1024",
+     "persp_opengl", None),
+    ("albedo25", "Remix's debug view 25 (diffuse albedo, linear)",
+     {"BGE_REMIX_RTX_SET": "rtx.debugView.debugViewIdx=25"}, None, "remix", "opengl", 100),
+    ("albedo54", "Remix's debug view 54 (diffuse albedo)",
+     {"BGE_REMIX_RTX_SET": "rtx.debugView.debugViewIdx=54"}, None, "remix", "opengl", 100),
 )
 OPTION_NAMES = {}
 SHOTS = 6
