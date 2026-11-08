@@ -205,6 +205,9 @@ private:
 	void *m_triggerCallbacksUserPtrs[PHY_NUM_RESPONSE];
 	/* touching pairs (a < b), kept from found to lost, reported each frame */
 	std::map<std::pair<PxPhysicsController *, PxPhysicsController *>, Touch> m_touching;
+	/* BGE-Remix P11 fix (A12): pairs that touched during this frame's
+	 * sub-steps, also when they parted again before its end */
+	std::map<std::pair<PxPhysicsController *, PxPhysicsController *>, Touch> m_touchedThisFrame;
 
 	struct Constraint {
 		int id;

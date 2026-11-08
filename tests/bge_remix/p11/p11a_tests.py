@@ -45,27 +45,40 @@ MOTION_RUNS = (
 )
 # (round 1 also ran ray reconstruction off and frame generation off: no trail
 # either; the RTX 3080 has no frame generation, Remix's log says)
-DLAA = {"BGE_REMIX_RTX_SET": CUSTOM + ";rtx.qualityDLSS=5"}
 # (key, label, environment, window size, the scene, its OpenGL picture, the
 # orthographic camera's factor back: None for a perspective camera)
+# Round 2: DLSS set in the scene, as a person does (round 1 set it from
+# outside and Remix's Auto preset sometimes undid it); Remix's texture
+# detail options tried one at a time. Round 1 also ran ray reconstruction
+# off, render scale 1, reference mode and the orthographic camera nearer:
+# the fine bars were gone in every one, and in the perspective camera's too.
+# (set before Remix starts, and again once it runs: some of Remix's options
+# are read only at its start)
+_FH = "rtx.forceHighResolutionReplacementTextures=True"
+_NA = "rtx.enableAdaptiveResolutionReplacementTextures=False"
+FORCE_HI = {"BGE_REMIX_RTX_SET_EARLY": _FH, "BGE_REMIX_RTX_SET": _FH}
+NO_ADAPTIVE = {"BGE_REMIX_RTX_SET_EARLY": _NA, "BGE_REMIX_RTX_SET": _NA}
 SOFT_RUNS = (
-    ("default", "your settings", {}, None, "remix", "opengl", 100),
-    ("quality", "DLSS Quality", {"BGE_REMIX_RTX_SET": CUSTOM + ";rtx.qualityDLSS=3"}, None, "remix", "opengl", 100),
-    ("dlaa", "DLAA", DLAA, None, "remix", "opengl", 100),
-    ("rr_off", "ray reconstruction off", {"BGE_REMIX_RTX_SET": "rtx.enableRayReconstruction=False"}, None, "remix",
+    ("default", "your settings (Auto)", {}, None, "remix", "opengl", 100),
+    ("quality", "DLSS Quality (set in the scene)", {}, None, "remix_quality", "opengl", 100),
+    ("dlaa", "DLAA (set in the scene)", {}, None, "remix_dlaa", "opengl", 100),
+    ("dlaa_force_hi", "DLAA, Remix's 'force high resolution textures' on", FORCE_HI, None, "remix_dlaa",
      "opengl", 100),
-    ("scale1", "render scale 1.0", {"BGE_REMIX_RTX_SET": "rtx.graphicsPreset=4;rtx.resolutionScale=1.0"}, None,
-     "remix", "opengl", 100),
-    ("reference", "Remix's reference mode", {"BGE_REMIX_RTX_SET": "rtx.useDenoiserReferenceMode=True"}, None,
-     "remix", "opengl", 100),
-    ("big", "a 1920 x 1080 window", {}, (1920, 1080), "remix", "opengl", 100),
-    ("back20_dlaa", "DLAA, the orthographic camera 240 m back (not 1,200)", dict(DLAA, BGE_REMIX_ORTHO_BACK="20"),
-     None, "remix", "opengl", 20),
-    ("back5_dlaa", "DLAA, the orthographic camera 60 m back", dict(DLAA, BGE_REMIX_ORTHO_BACK="5"), None, "remix",
-     "opengl", 5),
-    ("persp_default", "a perspective camera, your settings", {}, None, "persp_remix", "persp_opengl", None),
-    ("persp_dlaa", "a perspective camera, DLAA", DLAA, None, "persp_remix", "persp_opengl", None),
+    ("dlaa_no_adaptive", "DLAA, Remix's 'adaptive resolution textures' off", NO_ADAPTIVE, None, "remix_dlaa",
+     "opengl", 100),
+    ("dlaa_mip_bias", "DLAA, Remix's texture mip bias -2", {"BGE_REMIX_RTX_SET": "rtx.nativeMipBias=-2"}, None,
+     "remix_dlaa", "opengl", 100),
+    ("big", "a 1920 x 1080 window (Auto)", {}, (1920, 1080), "remix", "opengl", 100),
+    ("persp_default", "a perspective camera (Auto)", {}, None, "persp_remix", "persp_opengl", None),
+    ("persp_dlaa", "a perspective camera, DLAA (set in the scene)", {}, None, "persp_remix_dlaa", "persp_opengl",
+     None),
+    ("persp_force_hi", "a perspective camera, DLAA, 'force high resolution textures' on", FORCE_HI, None,
+     "persp_remix_dlaa", "persp_opengl", None),
 )
+# whether Remix took them before its start (the player's line)
+OPTION_NAMES = {"dlaa_force_hi": "forceHighResolutionReplacementTextures = True (taken)",
+                "dlaa_no_adaptive": "enableAdaptiveResolutionReplacementTextures = False (taken)",
+                "persp_force_hi": "forceHighResolutionReplacementTextures = True (taken)"}
 SHOTS = 6
 AFTER = 8.0
 GAP = 0.5
@@ -406,6 +419,8 @@ def s_soft(args, out, scenes, P, tests, sheets, report):
         rects = _scaled_rects(S["rects"], k, size or S["size"], S["size"])
         m = soft_metrics(p8.picture(r.get("screenshot")), rects)
         c["%s: ran in Remix, every texture in" % label] = bool(r["ran"]) and r9.textures_in(r) and bool(m)
+        if key in OPTION_NAMES:
+            d.setdefault("remix_took_the_option", {})[key] = OPTION_NAMES[key] in (r.get("text") or "")
         ref = refs.get(ref_key)
         rel = {}
         if m and ref:
@@ -502,7 +517,10 @@ def s_gpu(args, out, scenes, P, tests, sheets, report):
 
 
 def rtx(args, out, scenes, E, tests, sheets, report):
+    """BGE_REMIX_P11A_ONLY (comma separated: motion, soft, gpu) runs only
+    those (a fix round's reruns)"""
     P = E.get("p11a") or {}
-    s_motion(args, out, scenes, P, tests, sheets, report)
-    s_soft(args, out, scenes, P, tests, sheets, report)
-    s_gpu(args, out, scenes, P, tests, sheets, report)
+    only = [x.strip() for x in os.environ.get("BGE_REMIX_P11A_ONLY", "").split(",") if x.strip()]
+    for name, fn in (("motion", s_motion), ("soft", s_soft), ("gpu", s_gpu)):
+        if not only or name in only:
+            fn(args, out, scenes, P, tests, sheets, report)

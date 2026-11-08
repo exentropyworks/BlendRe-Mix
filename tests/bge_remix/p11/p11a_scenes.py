@@ -486,6 +486,13 @@ def make_soft(folder, E):
                 rects["lines_flat_%d" % wpx] = [cols[k] + 4, mid + 4, cols[k + 1] - 4, b - 4]
     finish(scene, [])
     files = {"opengl": save(folder, "p11a_soft", 0), "remix": save(folder, "p11a_soft_remix", 1)}
+    # the Render tab's DLSS setting (BRMX_quality_from_scene: 4 Quality, 5 DLAA),
+    # the way a person sets it (round 1 set Remix's options from outside, and
+    # Remix's Auto preset sometimes undid them)
+    for tag, dlss in (("quality", 4), ("dlaa", 5)):
+        scene["bge_remix_dlss"] = dlss
+        files["remix_" + tag] = save(folder, "p11a_soft_remix_" + tag, 1)
+    del scene["bge_remix_dlss"]
     # the same through a perspective camera: 50 mm on a 32 mm wide sensor,
     # far enough back that the boards' plane is 12 m across, as before
     cam = scene.camera
@@ -497,6 +504,9 @@ def make_soft(folder, E):
     scene.update()
     files["persp_opengl"] = save(folder, "p11a_soft_persp", 0)
     files["persp_remix"] = save(folder, "p11a_soft_persp_remix", 1)
+    scene["bge_remix_dlss"] = 5
+    files["persp_remix_dlaa"] = save(folder, "p11a_soft_persp_remix_dlaa", 1)
+    del scene["bge_remix_dlss"]
     E["soft"] = {"files": files, "rects": rects, "size": [m9.WIDTH, m9.HEIGHT],
                  # the orthographic camera reaches Remix moved back (factor x 12 m) and keeps
                  # its size KEEP m in front: at the boards (20 m) the picture is this much smaller

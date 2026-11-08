@@ -713,6 +713,14 @@ void CcdPhysicsEnvironment::SimulationSubtickCallback(btScalar timeStep)
 	for (it = m_controllers.begin(); it != m_controllers.end(); it++) {
 		(*it)->SimulationTick(timeStep);
 	}
+	/* BGE-Remix P11 fix (A12): with sub-steps the contacts are reported after
+	 * each one: a touch that began and ended inside one frame (a fast ball
+	 * bouncing off a wall) was gone from the contact manifolds by the frame's
+	 * end, and the Collision sensor missed it. One sub-step: unchanged, once
+	 * a frame below. */
+	if (m_numTimeSubSteps > 1) {
+		CallbackTriggers();
+	}
 }
 
 bool	CcdPhysicsEnvironment::ProceedDeltaTime(double curTime,float timeStep,float interval)
@@ -731,6 +739,8 @@ bool	CcdPhysicsEnvironment::ProceedDeltaTime(double curTime,float timeStep,float
 
 	float subStep = timeStep / float(m_numTimeSubSteps);
 	i = m_dynamicsWorld->stepSimulation(interval,25,subStep);//perform always a full simulation step
+	/* (P11: with sub-steps the contacts were reported after each one) */
+	const bool reported = m_numTimeSubSteps > 1 && i > 0;
 //uncomment next line to see where Bullet spend its time (printf in console)
 //CProfileManager::dumpAll();
 
@@ -753,7 +763,9 @@ bool	CcdPhysicsEnvironment::ProceedDeltaTime(double curTime,float timeStep,float
 	}
 
 
-	CallbackTriggers();
+	if (!reported) {
+		CallbackTriggers();
+	}
 
 	return true;
 }

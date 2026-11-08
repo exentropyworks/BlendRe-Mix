@@ -379,12 +379,14 @@ bool PxPhysicsEnvironment::IsActiveController(PxPhysicsController *ctrl) const
 
 void PxPhysicsEnvironment::ForgetPairs(PxPhysicsController *ctrl)
 {
-	for (auto it = m_touching.begin(); it != m_touching.end();) {
-		if (it->first.first == ctrl || it->first.second == ctrl) {
-			it = m_touching.erase(it);
-		}
-		else {
-			++it;
+	for (auto *pairs : {&m_touching, &m_touchedThisFrame}) {
+		for (auto it = pairs->begin(); it != pairs->end();) {
+			if (it->first.first == ctrl || it->first.second == ctrl) {
+				it = pairs->erase(it);
+			}
+			else {
+				++it;
+			}
 		}
 	}
 }
@@ -444,6 +446,7 @@ void PxPhysicsEnvironment::ContactFound(PxPhysicsController *a, PxPhysicsControl
 	t.point1 = pa;
 	t.point2 = pb;
 	t.normal = normal;
+	m_touchedThisFrame[key] = t;
 }
 
 void PxPhysicsEnvironment::ContactLost(PxPhysicsController *a, PxPhysicsController *b)
@@ -457,12 +460,21 @@ void PxPhysicsEnvironment::CallbackTriggers()
 	if (!cb) {
 		return;
 	}
-	/* a copy: callbacks may remove objects */
+	/* a copy: callbacks may remove objects. P11 fix (A12): with sub-steps a
+	 * touch can begin and end inside one frame (a fast ball bouncing off a
+	 * wall); it was lost before the frame's report, and the Collision sensor
+	 * missed it. The pairs that touched this frame are reported too. */
 	std::vector<Touch> pairs;
-	pairs.reserve(m_touching.size());
+	pairs.reserve(m_touching.size() + m_touchedThisFrame.size());
 	for (auto &kv : m_touching) {
 		pairs.push_back(kv.second);
 	}
+	for (auto &kv : m_touchedThisFrame) {
+		if (!m_touching.count(kv.first)) {
+			pairs.push_back(kv.second);
+		}
+	}
+	m_touchedThisFrame.clear();
 	for (const Touch &t : pairs) {
 		if (!IsActiveController(t.a) || !IsActiveController(t.b)) {
 			continue;
