@@ -53,6 +53,8 @@ static struct {
 	GLuint sampler;
 	GLuint texture;
 	int tex_w, tex_h;
+	GLuint kept;              /* P11: the last direct-mode picture, copied from the window */
+	int kept_w, kept_h;
 	int direct_frames;
 	int error_noted;
 } present = {0};
@@ -165,6 +167,118 @@ int BRMX_present_direct_frames(void)
 	return present.direct_frames;
 }
 
+/* the rectangle x, y, width, height of the window covered by a texture;
+ * top_down: the texture's rows go from the top (the copied frame's) */
+static void quad_texture(GLuint tex, int x, int y, int width, int height, int top_down)
+{
+	GLint program = 0, texture = 0, active = 0;
+	const float t0 = top_down ? 1.0f : 0.0f, t1 = top_down ? 0.0f : 1.0f;
+	/* the shader program and the texture binding are not on the attribute stack */
+	if (GLEW_VERSION_2_0) {
+		glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+	}
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+	glActiveTexture(GL_TEXTURE0);
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+	glPushAttrib(GL_ALL_ATTRIB_BITS);
+	glBindTexture(GL_TEXTURE_2D, tex);
+
+	glMatrixMode(GL_TEXTURE);
+	glPushMatrix();
+	glLoadIdentity();
+	glMatrixMode(GL_PROJECTION);
+	glPushMatrix();
+	glLoadIdentity();
+	glMatrixMode(GL_MODELVIEW);
+	glPushMatrix();
+	glLoadIdentity();
+
+	if (GLEW_VERSION_2_0) {
+		glUseProgram(0);
+	}
+	glViewport(x, y, width, height);
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_LIGHTING);
+	glDisable(GL_BLEND);
+	glDisable(GL_ALPHA_TEST);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_FOG);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_SCISSOR_TEST);
+	glDepthMask(GL_FALSE);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+	glEnable(GL_TEXTURE_2D);
+	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+	glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+	glBegin(GL_QUADS);
+	glTexCoord2f(0.0f, t0); glVertex2f(-1.0f, -1.0f);
+	glTexCoord2f(1.0f, t0); glVertex2f(1.0f, -1.0f);
+	glTexCoord2f(1.0f, t1); glVertex2f(1.0f, 1.0f);
+	glTexCoord2f(0.0f, t1); glVertex2f(-1.0f, 1.0f);
+	glEnd();
+
+	glMatrixMode(GL_TEXTURE);
+	glPopMatrix();
+	glMatrixMode(GL_PROJECTION);
+	glPopMatrix();
+	glMatrixMode(GL_MODELVIEW);
+	glPopMatrix();
+
+	glPopAttrib();
+	glBindTexture(GL_TEXTURE_2D, (GLuint)texture);
+	glActiveTexture((GLenum)active);
+	if (GLEW_VERSION_2_0) {
+		glUseProgram((GLuint)program);
+	}
+}
+
+/* BGE-Remix P11: the picture just drawn, copied from the window into a
+ * texture of its own (on the graphics card), for a frame Remix has no new
+ * picture for (BRMX_present_draw_kept) */
+static void keep_copy(int x, int y, int width, int height)
+{
+	GLint texture = 0, active = 0;
+	if (width <= 0 || height <= 0) {
+		return;
+	}
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+	glActiveTexture(GL_TEXTURE0);
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
+	glPushAttrib(GL_PIXEL_MODE_BIT);
+	glReadBuffer(GL_BACK);
+	if (!present.kept) {
+		glGenTextures(1, &present.kept);
+	}
+	glBindTexture(GL_TEXTURE_2D, present.kept);
+	if (width != present.kept_w || height != present.kept_h) {
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		present.kept_w = width;
+		present.kept_h = height;
+	}
+	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, x, y, width, height);
+	glPopAttrib();
+	glBindTexture(GL_TEXTURE_2D, (GLuint)texture);
+	glActiveTexture((GLenum)active);
+	while (glGetError() != GL_NO_ERROR) {
+		/* (a failed copy only means no kept picture) */
+	}
+}
+
+int BRMX_present_draw_kept(int x, int y, int width, int height)
+{
+	if (!present.kept || present.fake || width != present.kept_w || height != present.kept_h) {
+		return 0;
+	}
+	quad_texture(present.kept, x, y, width, height, 0);
+	return 1;
+}
+
 /* GL_NV_draw_vulkan_image */
 static int draw_direct(const BRMX_Bridge *bridge, int x, int y, int width, int height)
 {
@@ -241,6 +355,9 @@ static int draw_direct(const BRMX_Bridge *bridge, int x, int y, int width, int h
 		present.direct_frames++;
 	}
 	present.signal(resume);
+	if (got == 1) {
+		keep_copy(x, y, width, height);
+	}
 
 	err = glGetError();
 	if (err != GL_NO_ERROR && !present.error_noted) {
@@ -260,21 +377,15 @@ static int draw_copy(const BRMX_Bridge *bridge, int x, int y, int width, int hei
 {
 	int w = 0, h = 0, pitch = 0;
 	const void *pixels = bridge->frame_pixels(&w, &h, &pitch);
-	GLint program = 0, texture = 0, active = 0;
+	GLint texture = 0, active = 0;
 
 	if (!pixels || w <= 0 || h <= 0) {
 		return 0;
 	}
-	/* the shader program and the texture binding are not on the attribute stack */
-	if (GLEW_VERSION_2_0) {
-		glGetIntegerv(GL_CURRENT_PROGRAM, &program);
-	}
 	glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
 	glActiveTexture(GL_TEXTURE0);
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
-	glPushAttrib(GL_ALL_ATTRIB_BITS);
 	glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
-
 	if (!present.texture) {
 		glGenTextures(1, &present.texture);
 	}
@@ -295,57 +406,11 @@ static int draw_copy(const BRMX_Bridge *bridge, int x, int y, int width, int hei
 	else {
 		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
 	}
-
-	glMatrixMode(GL_TEXTURE);
-	glPushMatrix();
-	glLoadIdentity();
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
-
-	if (GLEW_VERSION_2_0) {
-		glUseProgram(0);
-	}
-	glViewport(x, y, width, height);
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_LIGHTING);
-	glDisable(GL_BLEND);
-	glDisable(GL_ALPHA_TEST);
-	glDisable(GL_CULL_FACE);
-	glDisable(GL_FOG);
-	glDisable(GL_STENCIL_TEST);
-	glDepthMask(GL_FALSE);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	glEnable(GL_TEXTURE_2D);
-	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-	glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-	/* the picture's rows go from the top; OpenGL's from the bottom */
-	glBegin(GL_QUADS);
-	glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, -1.0f);
-	glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, -1.0f);
-	glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
-	glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, 1.0f);
-	glEnd();
-
-	glMatrixMode(GL_TEXTURE);
-	glPopMatrix();
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
-
 	glPopClientAttrib();
-	glPopAttrib();
 	glBindTexture(GL_TEXTURE_2D, (GLuint)texture);
 	glActiveTexture((GLenum)active);
-	if (GLEW_VERSION_2_0) {
-		glUseProgram((GLuint)program);
-	}
+	/* the picture's rows go from the top; OpenGL's from the bottom */
+	quad_texture(present.texture, x, y, width, height, 1);
 	return 1;
 }
 

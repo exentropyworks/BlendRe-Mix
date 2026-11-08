@@ -39,21 +39,32 @@ NO_REMIX = ["-g", "remix", "=", "0"]
 # dlssPreset Custom 2; qualityDLSS MaxQuality 3, FullResolution (DLAA) 5
 CUSTOM = "rtx.graphicsPreset=4;rtx.dlssPreset=2"
 MOTION_RUNS = (
-    ("default", "your settings (DLSS Auto, ray reconstruction, frame generation)", {}),
+    ("default", "your settings (DLSS Auto, ray reconstruction)", {}),
     ("dlaa", "DLAA (full resolution)", {"BGE_REMIX_RTX_SET": CUSTOM + ";rtx.qualityDLSS=5"}),
-    ("rr_off", "ray reconstruction off", {"BGE_REMIX_RTX_SET": "rtx.enableRayReconstruction=False"}),
-    ("fg_off", "frame generation off", {"BGE_REMIX_RTX_SET": "rtx.dlfg.enable=False"}),
     ("pan", "the camera panning (1.5 m/s)", {"BGE_REMIX_P11_PAN": "1.5"}),
 )
+# (round 1 also ran ray reconstruction off and frame generation off: no trail
+# either; the RTX 3080 has no frame generation, Remix's log says)
+DLAA = {"BGE_REMIX_RTX_SET": CUSTOM + ";rtx.qualityDLSS=5"}
+# (key, label, environment, window size, the scene, its OpenGL picture, the
+# orthographic camera's factor back: None for a perspective camera)
 SOFT_RUNS = (
-    ("default", "your settings", {}, None),
-    ("quality", "DLSS Quality", {"BGE_REMIX_RTX_SET": CUSTOM + ";rtx.qualityDLSS=3"}, None),
-    ("dlaa", "DLAA", {"BGE_REMIX_RTX_SET": CUSTOM + ";rtx.qualityDLSS=5"}, None),
-    ("rr_off", "ray reconstruction off", {"BGE_REMIX_RTX_SET": "rtx.enableRayReconstruction=False"}, None),
-    ("scale1", "render scale 1.0", {"BGE_REMIX_RTX_SET": "rtx.graphicsPreset=4;rtx.resolutionScale=1.0"}, None),
-    ("reference", "Remix's reference mode (the sharpest it gets)",
-     {"BGE_REMIX_RTX_SET": "rtx.useDenoiserReferenceMode=True"}, None),
-    ("big", "a 1920 x 1080 window", {}, (1920, 1080)),
+    ("default", "your settings", {}, None, "remix", "opengl", 100),
+    ("quality", "DLSS Quality", {"BGE_REMIX_RTX_SET": CUSTOM + ";rtx.qualityDLSS=3"}, None, "remix", "opengl", 100),
+    ("dlaa", "DLAA", DLAA, None, "remix", "opengl", 100),
+    ("rr_off", "ray reconstruction off", {"BGE_REMIX_RTX_SET": "rtx.enableRayReconstruction=False"}, None, "remix",
+     "opengl", 100),
+    ("scale1", "render scale 1.0", {"BGE_REMIX_RTX_SET": "rtx.graphicsPreset=4;rtx.resolutionScale=1.0"}, None,
+     "remix", "opengl", 100),
+    ("reference", "Remix's reference mode", {"BGE_REMIX_RTX_SET": "rtx.useDenoiserReferenceMode=True"}, None,
+     "remix", "opengl", 100),
+    ("big", "a 1920 x 1080 window", {}, (1920, 1080), "remix", "opengl", 100),
+    ("back20_dlaa", "DLAA, the orthographic camera 240 m back (not 1,200)", dict(DLAA, BGE_REMIX_ORTHO_BACK="20"),
+     None, "remix", "opengl", 20),
+    ("back5_dlaa", "DLAA, the orthographic camera 60 m back", dict(DLAA, BGE_REMIX_ORTHO_BACK="5"), None, "remix",
+     "opengl", 5),
+    ("persp_default", "a perspective camera, your settings", {}, None, "persp_remix", "persp_opengl", None),
+    ("persp_dlaa", "a perspective camera, DLAA", DLAA, None, "persp_remix", "persp_opengl", None),
 )
 SHOTS = 6
 AFTER = 8.0
@@ -159,29 +170,38 @@ def _screen(xz, cam, W, H, ortho):
     return (W / 2.0 + (xz[0] - cam[0]) * ppm, H / 2.0 - (xz[1] - cam[1]) * ppm)
 
 
-def _band(lum, cx, cy, ux, uy, along0, along1, half_across):
-    """the pixels of a rectangle along (ux, uy) from along0 to along1 off
-    (cx, cy), half_across either side: None when it leaves the picture"""
+def _sample(img, cx, cy, ux, uy, along0, along1, half_across):
+    """an image's pixels in a rectangle along (ux, uy) from along0 to along1
+    off (cx, cy), half_across either side, and each one's place along: None
+    when it leaves the picture"""
     import numpy as np
-    H, W = lum.shape
+    H, W = img.shape[:2]
     a = np.arange(along0, along1, 1.0)
     b = np.arange(-half_across, half_across + 0.5, 1.0)
+    if a.size == 0 or b.size == 0:
+        return None, None
     A, B = np.meshgrid(a, b)
     xs = np.round(cx + A * ux - B * uy).astype(int)
     ys = np.round(cy + A * uy + B * ux).astype(int)
     if xs.min() < 0 or ys.min() < 0 or xs.max() >= W or ys.max() >= H:
-        return None
-    return lum[ys, xs]
+        return None, None
+    return img[ys, xs], A
 
 
-def motion_metrics(shot, M, wall):
-    """{thing: {"trail": behind - ahead (mean difference from the wall, 0-255),
-    "speed_px": pixels a frame}} for one shot"""
-    pic = p8.picture(shot["path"])
+OBJECT_DIST = 45.0   # colour difference from the wall (0-255 a channel, summed): the thing itself
+
+
+def motion_metrics(pic, shot, M, wall_rgb):
+    """for one picture, each moving thing found in the picture itself (its
+    pixels near where the probe put it, back along its motion): how far it
+    lags the probe (frames), and the wall just behind it against just ahead
+    of it ("trail": the mean colour difference from the wall behind minus
+    ahead, 0-255; 0 = no trail)"""
+    import numpy as np
     if pic is None:
         return None
-    lum = _lum(pic)
-    H, W = lum.shape
+    dist = np.abs(pic[:, :, :3] - np.asarray(wall_rgb)).sum(axis=2)
+    H, W = dist.shape
     out = {}
     for name, xz in shot["now"].items():
         base = name.split("#")[0]
@@ -199,16 +219,25 @@ def motion_metrics(shot, M, wall):
         ppm = W / M["ortho"]
         hx, hz = T["half"][0] * ppm, T["half"][1] * ppm
         reach = abs(ux) * hx + abs(uy) * hz          # the thing's extent along its motion
-        across = (abs(uy) * hx + abs(ux) * hz) * 0.8
-        gap = 4.0
-        behind = _band(lum, sx, sy, -ux, -uy, reach + gap, 3 * reach + gap, across)
-        ahead = _band(lum, sx, sy, ux, uy, reach + gap, 3 * reach + gap, across)
+        across = max(2.0, (abs(uy) * hx + abs(ux) * hz) * 0.7)
+        # where it is in the picture: up to 6 frames behind the probe
+        vals, A = _sample(dist, sx, sy, ux, uy, -(reach + 6 * speed), reach + speed, across)
+        if vals is None:
+            continue
+        on = A[vals > OBJECT_DIST]
+        if on.size < 10:
+            continue
+        trail_edge, lead_edge = float(np.percentile(on, 2)), float(np.percentile(on, 98))
+        lag = -0.5 * (trail_edge + lead_edge) / speed
+        gap, length = 3.0, 2.0 * reach
+        behind, _ = _sample(dist, sx, sy, ux, uy, trail_edge - gap - length, trail_edge - gap, across)
+        ahead, _ = _sample(dist, sx, sy, ux, uy, lead_edge + gap, lead_edge + gap + length, across)
         if behind is None or ahead is None:
             continue
-        db = float(abs(behind - wall).mean())
-        da = float(abs(ahead - wall).mean())
+        db, da = float(behind.mean()) / 3.0, float(ahead.mean()) / 3.0
         out[name] = {"trail": round(db - da, 2), "behind": round(db, 2), "ahead": round(da, 2),
-                     "speed_px": round(speed, 1)}
+                     "speed_px": round(speed, 1), "lag_frames": round(lag, 2),
+                     "length_px": round(lead_edge - trail_edge, 1), "expected_px": round(2 * reach, 1)}
     return out
 
 
@@ -261,13 +290,16 @@ def s_motion(args, out, scenes, P, tests, sheets, report):
         shots = (p2.read_json(res) or {}).get("shots") or []
         shots = [s for s in shots if os.path.isfile(s["path"])]
         c["%s: ran in Remix, %d pictures" % (label, SHOTS)] = bool(r["ran"]) and len(shots) == SHOTS
-        per, wheels = {}, []
+        per, wheels, black = {}, [], []
         for s in shots:
             pic = p8.picture(s["path"])
             if pic is None:
                 continue
-            wall = float(np.median(_lum(p8.crop(pic, M["wall_rect"]))))
-            m = motion_metrics(s, M, wall) or {}
+            if float(pic.mean()) < 20.0:
+                black.append(os.path.basename(s["path"]))
+                continue
+            wall = np.median(p8.crop(pic, M["wall_rect"])[:, :, :3].reshape(-1, 3), axis=0)
+            m = motion_metrics(pic, s, M, wall) or {}
             for name, v in m.items():
                 per.setdefault(name.split("#")[0], []).append(v)
             w = wheel_metrics(s, M)
@@ -276,27 +308,36 @@ def s_motion(args, out, scenes, P, tests, sheets, report):
         summary = {}
         for thing, vals in per.items():
             trails = sorted(v["trail"] for v in vals)
+            lags = sorted(v["lag_frames"] for v in vals)
             summary[thing] = {"trail_median": trails[len(trails) // 2], "trail_max": trails[-1],
-                              "samples": len(trails), "speed_px": vals[0]["speed_px"]}
-        d[key] = {"label": label, "things": summary, "wheel_sharpness": wheels, "fps": (r.get("stats") or {}).get(
-            "fps"), "all": per}
+                              "samples": len(trails), "speed_px": vals[0]["speed_px"],
+                              "lag_frames_median": lags[len(lags) // 2]}
+        st = r.get("stats") or {}
+        # (P11 fix: a frame Remix had no new picture for showed the cleared,
+        # black window; round 1 caught one in a picture)
+        c["%s: no black picture (%s)" % (label, ", ".join(black) or "none")] = not black
+        d[key] = {"label": label, "things": summary, "wheel_sharpness": wheels, "black": black,
+                  "frames_kept": st.get("frames_kept"), "frames_blank": st.get("frames_blank"), "all": per}
         table.append("  %-12s %s   wheel %s" % (key, "  ".join(
-            "%s %s" % (t, _r(summary[t]["trail_median"], 1)) for t in sorted(summary)),
-            _r(sorted(wheels)[len(wheels) // 2] if wheels else None, 2)))
+            "%s %s (lag %s)" % (t, _r(summary[t]["trail_median"], 1), _r(summary[t]["lag_frames_median"], 1))
+            for t in sorted(summary)),
+            _r(sorted(wheels)[len(wheels) // 2] if wheels else None, 2)) +
+            "   frames with no new picture: %s kept, %s blank" % (st.get("frames_kept"), st.get("frames_blank")))
         if shots:
             sheet.append(("%s: picture 1" % label, shots[0]["path"]))
             if key == "default" and len(shots) > 1:
                 sheet.append(("%s: picture 2" % label, shots[1]["path"]))
     tests["S11.a2 Motion trails in Remix (A2, numbers only)"] = _test(c, d)
     sheets["p11a_motion"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p11a_motion.png"))
-    report += ["", "A2 motion trails (brightness behind each thing minus ahead of it, 0-255: 0 = no trail;",
-               "wheel: its slices' contrast against the still wheel's, 1 = as sharp):"] + table
+    report += ["", "A2 motion trails (the wall behind each thing minus ahead of it, colour difference 0-255:",
+               "0 = no trail; lag: frames the picture is behind the game; wheel: its slices' contrast",
+               "against the still wheel's, 1 = as sharp):"] + table
 
 
 # ---------------------------------------------------------------------------
 # S11.a3: softness
 
-def soft_metrics(pic, rects, scale=1.0):
+def soft_metrics(pic, rects):
     """per board region: contrast (p95 - p5) / (p95 + p5) and fine detail
     (the mean step between neighbours over the mean brightness)"""
     import numpy as np
@@ -305,8 +346,7 @@ def soft_metrics(pic, rects, scale=1.0):
     lum = _lum(pic)
     out = {}
     for key, r in rects.items():
-        rr = [int(round(v * scale)) for v in r]
-        reg = lum[rr[1]:rr[3], rr[0]:rr[2]]
+        reg = lum[r[1]:r[3], r[0]:r[2]]
         if reg.size == 0:
             continue
         lo, hi = np.percentile(reg, 5), np.percentile(reg, 95)
@@ -317,6 +357,18 @@ def soft_metrics(pic, rects, scale=1.0):
     return out
 
 
+def _scaled_rects(rects, k, size, base):
+    """the rectangles shrunk by k about the picture's centre, then to the
+    window's size"""
+    cx, cy = base[0] / 2.0, base[1] / 2.0
+    f = size[0] / float(base[0])
+    out = {}
+    for key, r in rects.items():
+        out[key] = [int(round((cx + (r[0] - cx) * k) * f)), int(round((cy + (r[1] - cy) * k) * f)),
+                    int(round((cx + (r[2] - cx) * k) * f)), int(round((cy + (r[3] - cy) * k) * f))]
+    return out
+
+
 def s_soft(args, out, scenes, P, tests, sheets, report):
     import run_p9 as r9
     S = P.get("soft")
@@ -324,41 +376,50 @@ def s_soft(args, out, scenes, P, tests, sheets, report):
     if not S:
         tests["S11.a3 Softness in Remix (A3)"] = _test({"the scene was made": False})
         return
-    gl = p8.play(args.ours, out, "p11a_soft_opengl", _blend(scenes, S["files"]["opengl"]),
-                 {"BGE_REMIX_P2_SHOT_FRAME": "100"}, frames=120)
-    ref = soft_metrics(p8.picture(gl.get("screenshot")), S["rects"])
-    c["the OpenGL picture"] = bool(gl["ran"]) and bool(ref)
-    d["opengl"] = ref
-    table, sheet = [], [("OpenGL", gl.get("screenshot"))]
     keys = ["lines_up_1", "lines_up_2", "lines_up_4", "star", "grooves"]
-    if ref:
-        table.append("  %-12s %s" % ("opengl", "  ".join("%s %.2f" % (k, ref[k]["contrast"]) for k in keys if k in ref)))
-    for key, label, extra, size in SOFT_RUNS:
+    table, sheet, refs = [], [], {}
+    for ref in ("opengl", "persp_opengl"):
+        gl = p8.play(args.ours, out, "p11a_soft_" + ref, _blend(scenes, S["files"][ref]),
+                     {"BGE_REMIX_P2_SHOT_FRAME": "100"}, frames=120)
+        refs[ref] = soft_metrics(p8.picture(gl.get("screenshot")), S["rects"])
+        c["the %s picture" % ref.replace("_", " ")] = bool(gl["ran"]) and bool(refs[ref])
+        d[ref] = refs[ref]
+        sheet.append((ref.replace("_", " "), gl.get("screenshot")))
+        if refs[ref]:
+            table.append("  %-14s %s" % (ref, "  ".join("%s %.2f" % (k, refs[ref][k]["contrast"])
+                                                       for k in keys if k in refs[ref])))
+    for key, label, extra, size, scene_key, ref_key, factor in SOFT_RUNS:
         env = dict(r9.TEXTURE_ENV)
         env.update(extra)
         old = p8.SIZE
         if size:
             p8.SIZE = size
         try:
-            r = p8.play(args.ours, out, "p11a_soft_" + key, _blend(scenes, S["files"]["remix"]), env,
+            r = p8.play(args.ours, out, "p11a_soft_" + key, _blend(scenes, S["files"][scene_key]), env,
                         frames=p8.REMIX_FRAMES, seconds=r9.TEXTURE_SECONDS, debug=True)
         finally:
             p8.SIZE = old
-        m = soft_metrics(p8.picture(r.get("screenshot")), S["rects"], scale=(size[0] / S["size"][0]) if size else 1.0)
+        k = 1.0
+        if factor:
+            back = factor * 12.0
+            k = (back + S["ortho_keep"]) / (back + S["ortho_board_distance"])
+        rects = _scaled_rects(S["rects"], k, size or S["size"], S["size"])
+        m = soft_metrics(p8.picture(r.get("screenshot")), rects)
         c["%s: ran in Remix, every texture in" % label] = bool(r["ran"]) and r9.textures_in(r) and bool(m)
+        ref = refs.get(ref_key)
         rel = {}
         if m and ref:
-            for k in m:
-                if k in ref and ref[k]["contrast"] > 0:
-                    rel[k] = {"contrast_vs_opengl": round(m[k]["contrast"] / ref[k]["contrast"], 3),
-                              "detail_vs_opengl": round(m[k]["detail"] / max(ref[k]["detail"], 1e-6), 3)}
+            for kk in m:
+                if kk in ref and ref[kk]["contrast"] > 0:
+                    rel[kk] = {"contrast_vs_opengl": round(m[kk]["contrast"] / ref[kk]["contrast"], 3),
+                               "detail_vs_opengl": round(m[kk]["detail"] / max(ref[kk]["detail"], 1e-6), 3)}
         d[key] = {"label": label, "measured": m, "against_opengl": rel}
         if m:
-            table.append("  %-12s %s" % (key, "  ".join("%s %.2f" % (k, m[k]["contrast"]) for k in keys if k in m)))
+            table.append("  %-14s %s" % (key, "  ".join("%s %.2f" % (kk, m[kk]["contrast"]) for kk in keys if kk in m)))
         sheet.append((label, r.get("screenshot")))
     tests["S11.a3 Softness in Remix (A3, numbers only)"] = _test(c, d)
     sheets["p11a_soft"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p11a_soft.png"))
-    report += ["", "A3 softness (contrast of each board region, 0-1; the OpenGL picture first):"] + table
+    report += ["", "A3 softness (contrast of each board region, 0-1; the OpenGL pictures first):"] + table
 
 
 # ---------------------------------------------------------------------------

@@ -1460,6 +1460,11 @@ int BRMX_view_draw(RenderEngine *engine, Main *bmain, Scene *scene, ARegion *ar,
 	g_stats.textures_waiting = waiting;
 
 	const int got = BRMX_present_draw(ar->winrct.xmin, ar->winrct.ymin, width, height);
+	if (!got) {
+		/* P11 fix: no new picture for this redraw: the last one again (not the
+		 * cleared region) */
+		BRMX_present_draw_kept(ar->winrct.xmin, ar->winrct.ymin, width, height);
+	}
 	if (got == 2) {
 		g_stats.resized_frames++;
 	}

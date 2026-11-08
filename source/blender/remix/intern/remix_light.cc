@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 
@@ -201,7 +202,10 @@ bool camera_for_remix(const float view[16], const float proj[16], float r_view[1
 	 * size: a 1 % size change across a depth of one view size), the box's
 	 * size kept where the scene usually is: a little in front of the near
 	 * plane */
-	const float back = 100.0f * std::max(extent, 0.01f);
+	/* (BGE_REMIX_ORTHO_BACK: another factor than 100, for P11's softness check) */
+	const char *factor_env = getenv("BGE_REMIX_ORTHO_BACK");
+	const float factor = (factor_env && atof(factor_env) >= 1.0) ? (float)atof(factor_env) : 100.0f;
+	const float back = factor * std::max(extent, 0.01f);
 	const float keep = std::max(n, 0.0f) + 0.5f * std::min(std::max(f - n, 0.0f), 2.0f * extent);
 	const float zn = std::max(n, 0.0f) + back, zf = std::max(f, n + 1e-3f) + back;
 	const float k = zn / (keep + back);

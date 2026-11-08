@@ -420,6 +420,8 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	}
 	m_max_swap_ms = 0.0;
 	m_frame_ms_max = 0.0;
+	m_frames_kept = 0;
+	m_frames_blank = 0;
 	m_last_render = 0.0;
 	m_last_end = 0.0;
 	m_first_textured_frame = -1;
@@ -3385,7 +3387,17 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	const int win_y = win_vp ? win_vp[1] : viewport.GetBottom();
 	if (m_mode == BRB_MODE_DIRECT) {
 		const double t2 = now_seconds();
-		BRMX_present_draw(win_x, win_y, width, height);
+		if (!BRMX_present_draw(win_x, win_y, width, height)) {
+			/* P11 fix: Remix had no new picture for this frame, which left
+			 * the cleared window (black) on screen (P11's motion check: a
+			 * black screenshot); its last picture is drawn again */
+			if (BRMX_present_draw_kept(win_x, win_y, width, height)) {
+				m_frames_kept++;
+			}
+			else {
+				m_frames_blank++;
+			}
+		}
 		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
 		std::wstring path;
 		if (m_frames == m_screenshot_frame && env_path(L"BGE_REMIX_SCREENSHOT", path)) {
@@ -3499,6 +3511,8 @@ void KX_RemixRenderer::WriteStats()
 	fprintf(f, "  \"mode\": \"%s\",\n", m_mode == BRB_MODE_COPY ? "copy" : m_mode == BRB_MODE_CHILD ? "window" :
 	                                       m_mode == BRB_MODE_DIRECT ? "direct" : "none");
 	fprintf(f, "  \"direct_frames\": %d,\n", BRMX_present_direct_frames() - m_direct_frames_base);
+	fprintf(f, "  \"frames_kept\": %d,\n", m_frames_kept);
+	fprintf(f, "  \"frames_blank\": %d,\n", m_frames_blank);
 	fprintf(f, "  \"copy_mode_reason\": \"%s\",\n", m_direct_note.c_str());
 	fprintf(f, "  \"status\": \"%s\",\n", status.c_str());
 	fprintf(f, "  \"notice\": \"%s\",\n", notice.c_str());

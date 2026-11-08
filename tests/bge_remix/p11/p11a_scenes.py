@@ -27,6 +27,8 @@ p11a_soft.blend / p11a_soft_remix.blend   A3, the softness check (the OpenGL
     pixel): Lines (black and white bars 1, 2 and 4 texture pixels wide,
     upright above, lying below), Star (a 36-spoke star) and Grooves (a grey
     board with a normal map of grooves 8 pixels apart).
+p11a_soft_persp.blend / p11a_soft_persp_remix.blend   the same through a
+    perspective camera (50 mm, 18.75 m back: the boards the same size)
 p11a_gpu_<engine>.blend   A4, sharing the graphics card (bullet, physx_cpu,
     physx_gpu; RTX Remix on): P6's walled floor; BGE_REMIX_P11_BOXES boxes
     are added once Remix draws, and the probe measures the next 600 tics
@@ -87,6 +89,10 @@ BOARD = 3.2                       # metres: 256 pixels at 80 a metre
 BOARD_PX = 256
 BOARD_Z = 0.6
 BOARDS = (("lines", -4.0), ("star", 0.0), ("grooves", 4.0))
+PERSP_LENS = 50.0
+# camera_for_remix (source/blender/remix/intern/remix_light.cc): the size kept
+# at near + half of min(far - near, 2 x 12 m), P9's camera clipping 0.1..100
+ORTHO_KEEP = 0.1 + 0.5 * min(100.0 - 0.1, 2 * 12.0)
 
 
 def rect(x0, z0, x1, z1):
@@ -479,8 +485,22 @@ def make_soft(folder, E):
                 rects["lines_up_%d" % wpx] = [cols[k] + 4, t + 4, cols[k + 1] - 4, mid - 4]
                 rects["lines_flat_%d" % wpx] = [cols[k] + 4, mid + 4, cols[k + 1] - 4, b - 4]
     finish(scene, [])
-    E["soft"] = {"files": {"opengl": save(folder, "p11a_soft", 0), "remix": save(folder, "p11a_soft_remix", 1)},
-                 "rects": rects, "size": [m9.WIDTH, m9.HEIGHT]}
+    files = {"opengl": save(folder, "p11a_soft", 0), "remix": save(folder, "p11a_soft_remix", 1)}
+    # the same through a perspective camera: 50 mm on a 32 mm wide sensor,
+    # far enough back that the boards' plane is 12 m across, as before
+    cam = scene.camera
+    cam.data.type = 'PERSP'
+    cam.data.lens = PERSP_LENS
+    cam.data.sensor_width = 32.0
+    cam.data.sensor_fit = 'HORIZONTAL'
+    cam.location = (0.0, -m9.ORTHO * PERSP_LENS / 32.0, 0.0)
+    scene.update()
+    files["persp_opengl"] = save(folder, "p11a_soft_persp", 0)
+    files["persp_remix"] = save(folder, "p11a_soft_persp_remix", 1)
+    E["soft"] = {"files": files, "rects": rects, "size": [m9.WIDTH, m9.HEIGHT],
+                 # the orthographic camera reaches Remix moved back (factor x 12 m) and keeps
+                 # its size KEEP m in front: at the boards (20 m) the picture is this much smaller
+                 "ortho_keep": ORTHO_KEEP, "ortho_board_distance": 20.0}
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +608,7 @@ if tic % EVERY == 1 and len(st["throws"]) < THROWS:
     st["vx"] = speed
 else:
     vx = ball.worldLinearVelocity.x
-    if st["vx"] is not None and st["vx"] > 0.5 and vx < 0.0 and ball.worldPosition.x > WALL_NEAR:
+    if st["vx"] is not None and st["vx"] > 0.5 and vx < -0.5 and ball.worldPosition.x > WALL_NEAR:
         st["bounces"].append(tic)
     st["vx"] = vx
 s = ball.sensors["HitWall"]
@@ -628,7 +648,10 @@ def make_substeps(folder, E):
             scene.game_settings.physics_step_sub = sub
             ground = m6.material("SubGround", (0.5, 0.5, 0.5), friction=0.0)
             m6.box(scene, "Floor", (30.0, 6.0, 0.2), (0, 0, -0.1), ground, physics='STATIC')
-            wall = m6.box(scene, "Wall", (1.0, 6.0, 3.0), (WALL_X + 0.5, 0, 1.5), ground, physics='STATIC')
+            # (round 1 fix: the wall bounces too; with the floor's elasticity 0
+            # the ball, its 0.6 times the wall's 0, stopped dead at the wall)
+            bouncy = m6.material("SubWall", (0.6, 0.6, 0.6), friction=0.0, bounce=1.0)
+            wall = m6.box(scene, "Wall", (1.0, 6.0, 3.0), (WALL_X + 0.5, 0, 1.5), bouncy, physics='STATIC')
             prop = wall.game.properties
             bpy.context.scene.objects.active = wall
             bpy.ops.object.game_property_new(type='BOOL', name="wall")
