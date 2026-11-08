@@ -52,21 +52,35 @@ MOTION_RUNS = (
 # detail options tried one at a time. Round 1 also ran ray reconstruction
 # off, render scale 1, reference mode and the orthographic camera nearer:
 # the fine bars were gone in every one, and in the perspective camera's too.
-# Round 4. Round 3: reference mode (no denoiser) and preset Ultra lose the
-# fine bars too, so neither the denoiser nor the Auto preset takes them;
-# debug view 34 showed the boards black (not the albedo after all). Now:
-# the bars from a 1024 pixel image (Remix dropping each texture's top
-# levels would show them; Remix choosing blurrier levels would not), and
-# the P9.0 study's two diffuse albedo views (25, 54).
+# Round 5. Round 4: the same bars from a 1024 pixel image do show (2 and 4
+# pixel bars, contrast 0.51 and 0.75): Remix keeps a texture at less than its
+# full detail, more so a small one (a 256 pixel image loses even its 4 pixel
+# bars). NVIDIA's docs describe "adaptive resolution" for textures given by
+# file, driven by a graphics memory budget; runtime 1.6.1 refused two of
+# those option names. So first a run that sets each candidate name: Remix
+# warns about every one it does not have; then each one it has, tried.
+CANDIDATES = (
+    ("rtx.enableAdaptiveResolutionReplacementTextures", "False"),
+    ("rtx.adaptiveResolutionReservedGPUMemoryGiB", "0"),
+    ("rtx.minReplacementTextureMipMapLevel", "0"),
+    ("rtx.forceHighResolutionReplacementTextures", "True"),
+    ("rtx.upscalingMipBias", "-2"),
+    ("rtx.lowMemoryGpu", "False"),
+    ("rtx.texturemanager.budgetPercentageOfAvailableVram", "90"),
+    ("rtx.texturemanager.fixedBudgetEnable", "True"),
+    ("rtx.texturemanager.fixedBudgetMiB", "6000"),
+    ("rtx.texturemanager.samplerFeedbackEnable", "False"),
+    ("rtx.texturemanager.neverDownsampleTextures", "True"),
+    ("rtx.textureManager.budgetPercentageOfAvailableVram", "90"),
+    ("rtx.textureManager.fixedBudgetEnable", "True"),
+    ("rtx.textureManager.fixedBudgetMiB", "6000"),
+    ("rtx.textureManager.samplerFeedbackEnable", "False"),
+    ("rtx.textureManager.neverDownsampleTextures", "True"),
+    ("rtx.enableTextureStreaming", "False"),
+    ("rtx.textureQuality", "0"),
+)
 SOFT_RUNS = (
     ("default", "your settings (Auto)", {}, None, "remix", "opengl", 100),
-    ("img1024", "the bars from a 1024 pixel image", {}, None, "remix_1024", "opengl", 100),
-    ("persp_img1024", "a perspective camera, the bars from a 1024 pixel image", {}, None, "persp_remix_1024",
-     "persp_opengl", None),
-    ("albedo25", "Remix's debug view 25 (diffuse albedo, linear)",
-     {"BGE_REMIX_RTX_SET": "rtx.debugView.debugViewIdx=25"}, None, "remix", "opengl", 100),
-    ("albedo54", "Remix's debug view 54 (diffuse albedo)",
-     {"BGE_REMIX_RTX_SET": "rtx.debugView.debugViewIdx=54"}, None, "remix", "opengl", 100),
 )
 OPTION_NAMES = {}
 SHOTS = 6
@@ -422,6 +436,38 @@ def s_soft(args, out, scenes, P, tests, sheets, report):
         if m:
             table.append("  %-14s %s" % (key, "  ".join("%s %.2f" % (kk, m[kk]["contrast"]) for kk in keys if kk in m)))
         sheet.append((label, r.get("screenshot")))
+    # round 5: which candidate options Remix has, then each one tried
+    probe_set = ";".join("%s=%s" % kv for kv in CANDIDATES)
+    env = dict(r9.TEXTURE_ENV, BGE_REMIX_RTX_SET=probe_set)
+    r = p8.play(args.ours, out, "p11a_soft_probe_options", _blend(scenes, S["files"]["remix"]), env,
+                frames=60, seconds=5, debug=True)
+    text = r.get("text") or ""
+    have = [k for k, v in CANDIDATES if ("'%s' is not an RtxOption" % k) not in text]
+    d["options Remix has"] = have
+    d["options Remix does not have"] = [k for k, v in CANDIDATES if k not in have]
+    c["the option check ran (Remix answered for every name)"] = bool(r["ran"]) and \
+        "BGE_REMIX_RTX_SET" in text
+    table.append("  Remix 1.6.1 has: %s" % (", ".join(have) or "none of them"))
+    tried = [(k, v) for k, v in CANDIDATES if k in have]
+    # (the fixed budget needs both its options)
+    if any(k.endswith("fixedBudgetEnable") for k, v in tried):
+        tried = [(k, v) for k, v in tried if not k.endswith("fixedBudgetMiB")]
+    for k, v in tried:
+        setting = "%s=%s" % (k, v)
+        if k.endswith("fixedBudgetEnable"):
+            setting += ";%s=6000" % k.replace("fixedBudgetEnable", "fixedBudgetMiB")
+        key = "try_" + k.split(".")[-1]
+        env = dict(r9.TEXTURE_ENV, BGE_REMIX_RTX_SET=setting, BGE_REMIX_RTX_SET_EARLY=setting)
+        r = p8.play(args.ours, out, "p11a_soft_" + key, _blend(scenes, S["files"]["remix"]), env,
+                    frames=p8.REMIX_FRAMES, seconds=r9.TEXTURE_SECONDS, debug=True)
+        m = soft_metrics(p8.picture(r.get("screenshot")), _scaled_rects(S["rects"], 1.0, S["size"], S["size"]))
+        c["%s: ran in Remix" % setting] = bool(r["ran"]) and bool(m)
+        d[key] = {"setting": setting, "measured": m,
+                  "taken_before_start": "(taken)" in (r.get("text") or "")}
+        if m:
+            table.append("  %-14s %s   (%s)" % (key[:14], "  ".join("%s %.2f" % (kk, m[kk]["contrast"])
+                                                                  for kk in keys if kk in m), setting))
+        sheet.append((setting, r.get("screenshot")))
     tests["S11.a3 Softness in Remix (A3, numbers only)"] = _test(c, d)
     sheets["p11a_soft"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p11a_soft.png"))
     report += ["", "A3 softness (contrast of each board region, 0-1; the OpenGL pictures first):"] + table
