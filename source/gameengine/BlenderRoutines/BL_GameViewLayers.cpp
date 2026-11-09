@@ -1464,6 +1464,29 @@ void GVBuilder::Physics()
 				return false;
 		}
 	};
+	/* how many axes a joint leaves moving (6: none an articulation takes) */
+	auto freedom = [&](const bRigidBodyJointConstraint *dat) {
+		if (!articulable(dat)) {
+			return 6;
+		}
+		int n = 0;
+		switch (dat->type) {
+			case CONSTRAINT_RB_BALL:
+				return 3;
+			case CONSTRAINT_RB_HINGE:
+				return 1;
+			case CONSTRAINT_RB_CONETWIST:
+				for (int i = 3; i < 6; i++) {
+					n += (!(dat->flag & (1 << i)) || dat->maxLimit[i] != 0.0f) ? 1 : 0;
+				}
+				return n;
+			default:
+				for (int i = 0; i < 6; i++) {
+					n += (!(dat->flag & (1 << i)) || dat->minLimit[i] != dat->maxLimit[i]) ? 1 : 0;
+				}
+				return n;
+		}
+	};
 	std::map<bConstraint *, std::string> art_joint;   /* articulated: its root's name */
 	std::map<bConstraint *, const char *> art_left;   /* left ordinary: why */
 	std::map<Object *, Object *> art_of;              /* each link: its root */
@@ -1478,15 +1501,40 @@ void GVBuilder::Physics()
 			if (art_of.count(root)) {
 				continue;
 			}
+			/* (the stiffest joint reachable first, as PxArticulation.cpp: where
+			 * joints close a loop the loosest is left ordinary) */
 			std::vector<Object *> tree = {root};
 			art_of[root] = root;
 			std::set<bConstraint *> seen;
-			for (size_t at = 0; at < tree.size(); at++) {
-				Object *node = tree[at];
-				for (const JointRef &j : joints) {
-					if ((j.ob != node && j.dat->tar != node) || seen.count(j.con)) {
+			for (;;) {
+				const JointRef *best = NULL;
+				int best_free = 99, best_at = 0;
+				Object *node = NULL;
+				for (size_t k = 0; k < joints.size(); k++) {
+					const JointRef &c = joints[k];
+					if (seen.count(c.con)) {
 						continue;
 					}
+					std::vector<Object *>::iterator at = std::find(tree.begin(), tree.end(), c.ob);
+					if (at == tree.end()) {
+						at = std::find(tree.begin(), tree.end(), c.dat->tar);
+					}
+					if (at == tree.end()) {
+						continue;
+					}
+					const int f = freedom(c.dat);
+					if (f < best_free) {
+						best = &c;
+						best_free = f;
+						best_at = (int)(at - tree.begin());
+					}
+				}
+				if (!best) {
+					break;
+				}
+				const JointRef &j = *best;
+				node = tree[best_at];
+				{
 					seen.insert(j.con);
 					Object *other = j.ob == node ? j.dat->tar : j.ob;
 					const char *why = NULL;

@@ -1,6 +1,7 @@
 /* BGE-Remix P6: native checks of the PhysX backend (CPU), without Blender.
  * Each test builds a small world through the same calls the game engine
  * makes, runs it at 60 Hz and compares with what Bullet does. */
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -864,6 +865,112 @@ static void test_sleep()
 	CHECK(balls[2]->GetDynamic()->isSleeping(), "with a deactivation time of 2 s it sleeps when still");
 }
 
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P11 (B1): articulations */
+
+static int joint_e(World &w, PxPhysicsController *a, PxPhysicsController *b, PHY_ConstraintType t, MT_Vector3 piv,
+                   MT_Vector3 eul)
+{
+	/* as SetupObjectConstraints: the frame from the joint's Euler angles */
+	MT_Matrix3x3 m(eul);
+	MT_Vector3 x = m.getColumn(0), y = m.getColumn(1), z = m.getColumn(2);
+	return w.env->CreateConstraint(a, b, t, piv.x(), piv.y(), piv.z(), x.x(), x.y(), x.z(), y.x(), y.y(), y.z(),
+	                               z.x(), z.y(), z.z(), 128);
+}
+
+static const float kPi = 3.14159265358979f;
+
+static void test_articulation()
+{
+	printf("\narticulation (P11 B1)\n");
+	{
+		/* a rope bridge hanging on an arc, tied at both ends, with a loop */
+		World w;
+		ground(w);
+		PxPhysicsController *left = add(w, shape_box(0.15f, 0.15f, 1.0f), RIGID, -2.9f, 0, 1.0f, 20.0f, 0.5f, 0,
+		                                [](PxCtrlInfo &ci) { ci.articulation = 2; });
+		std::vector<PxPhysicsController *> p;
+		PxPhysicsController *prev = left;
+		const MT_Vector3 hy(0, 0, kPi / 2);
+		float ex = -2.75f, ez = 2.0f;
+		const float sag = 25.0f * kPi / 180.0f;
+		for (int i = 0; i < 10; i++) {
+			const float phi = -sag + 2.0f * sag * (i + 0.5f) / 10;
+			PxCtrlInfo ci;
+			ci.shape = shape_box(0.25f, 0.5f, 0.04f);
+			ci.mass = 2.0f;
+			ci.dyna = ci.rigid = true;
+			ci.filterGroup = PXF_DEFAULT;
+			ci.filterMask = PXF_ALL;
+			PxDefaultMotionState *ms = new PxDefaultMotionState();
+			ms->SetWorldPosition(ex + 0.25f * cosf(phi), 0, ez + 0.25f * sinf(phi));
+			ms->SetWorldOrientation(0.0f, sinf(-phi * 0.5f), 0.0f, cosf(-phi * 0.5f));
+			PxPhysicsController *c = w.env->CreateController(ci, ms, true);
+			ci.shape->Release();
+			w.ctrls.push_back(c);
+			ex += 0.5f * cosf(phi);
+			ez += 0.5f * sinf(phi);
+			w.env->SetConstraintParam(joint_e(w, c, prev, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(-0.25f, 0, 0), hy), 3,
+			                          1.0f, -1.0f);
+			p.push_back(c);
+			prev = c;
+		}
+		PxPhysicsController *right = add(w, shape_box(0.15f, 0.15f, 1.0f), STATIC, ex + 0.15f, 0, 1.0f, 0);
+		const int tie = joint_e(w, p[9], right, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(0.25f, 0, 0), hy);
+		w.env->SetConstraintParam(tie, 3, 1.0f, -1.0f);
+		const int loop = joint_e(w, p[4], p[6], PHY_POINT2POINT_CONSTRAINT, MT_Vector3(0.25f, 0, 0), MT_Vector3(0, 0, 0));
+		float fastest = 0.0f;
+		const float mid = (float)pos(p[4]).z();
+		for (int f = 0; f < 300; f++) {
+			w.step();
+			for (PxPhysicsController *c : p) {
+				fastest = std::max(fastest, (float)c->GetLinearVelocity().length());
+			}
+		}
+		PHY_ArticulationInfo info;
+		const bool art = w.env->GetArticulation(left, &info);
+		CHECK(art && info.links.size() == 11, "the bridge: one articulation of 11 links (%d)", (int)info.links.size());
+		CHECK(info.ordinary.size() == 2 &&
+		          std::count(info.ordinary.begin(), info.ordinary.end(), tie) &&
+		          std::count(info.ordinary.begin(), info.ordinary.end(), loop),
+		      "the tie to the still post and the loop's ball joint left ordinary, the hinges in it");
+		CHECK(fastest < 2.0f, "it hangs still (fastest plank %.3f m/s)", fastest);
+		CHECK(fabs(pos(p[4]).z() - mid) < 0.05, "plank 4 where it hung (%.3f, from %.3f)", (float)pos(p[4]).z(), mid);
+	}
+	{
+		/* a door: at rest, moving, at its limit, driven */
+		World w;
+		ground(w);
+		PxPhysicsController *post = add(w, shape_box(0.05f, 0.05f, 1.1f), RIGID, 0, 0, 1.3f, 5.0f, 0.5f, 0,
+		                                [](PxCtrlInfo &ci) { ci.articulation = 2; });
+		PxPhysicsController *door = add(w, shape_box(0.5f, 0.03f, 1.0f), RIGID, 0.55f, 0, 1.3f, 10.0f);
+		const int id = joint_e(w, door, post, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(-0.5f, 0, 0),
+		                       MT_Vector3(0, -kPi / 2, 0));
+		w.env->SetConstraintParam(id, 3, -kPi / 2, 10.0f * kPi / 180.0f);
+		int axis = -1;
+		float at = 0.0f;
+		w.step(10);
+		const int rest = w.env->GetArticulationJointActivity(id, &axis, &at);
+		door->ApplyImpulse(MT_Point3(1.0, 0, 1.3), MT_Vector3(0, 15, 0), false);
+		w.step(5);
+		const int moving = w.env->GetArticulationJointActivity(id, &axis, &at);
+		w.step(60);
+		const int limit = w.env->GetArticulationJointActivity(id, &axis, &at);
+		const float open = at;
+		const float speed = 1.0f;
+		w.env->SetArticulationDrive(id, -1, NULL, &speed, 0.0f, 1e5f, 500.0f);
+		w.step(20);
+		float now = 0.0f, vel = 0.0f;
+		const int driven = w.env->GetArticulationJointActivity(id, &axis, &at);
+		w.env->GetArticulationJoint(id, -1, &now, &vel);
+		CHECK(rest == 0 && moving == 1 && limit == 2 && driven == 3,
+		      "the hinge at rest, moving, at its limit, driven (%d %d %d %d)", rest, moving, limit, driven);
+		CHECK(axis == 3 && fabs(open + kPi / 2) < 0.01, "pushed open to its limit, the joint's -90 degrees (%.1f)",
+		      open * 57.2958f);
+		CHECK(fabs(vel - speed) < 0.05f, "driven at its speed (%.3f rad/s)", vel);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	const char *only = argc > 1 ? argv[1] : NULL;
@@ -891,6 +998,7 @@ int main(int argc, char **argv)
 	    {"timing", test_substeps},
 	    {"fh", test_fh},
 	    {"sleep", test_sleep},
+	    {"articulation", test_articulation},
 	};
 	for (const T &t : tests) {
 		if (only && strcmp(only, t.name)) {

@@ -88,6 +88,32 @@ int joint_kind(int type, const float lim[6][2])
 	}
 }
 
+/* how many axes the joint leaves moving (an articulation's tree takes the
+ * stiffest first); 6: none it can take */
+int joint_freedom(int type, const float lim[6][2])
+{
+	if (joint_kind(type, lim) < 0) {
+		return 6;
+	}
+	int n = 0;
+	switch (type) {
+		case PHY_POINT2POINT_CONSTRAINT:
+			return 3;
+		case PHY_LINEHINGE_CONSTRAINT:
+			return 1;
+		case PHY_CONE_TWIST_CONSTRAINT:
+			for (int i = 3; i < 6; i++) {
+				n += lim[i][0] != lim[i][1] ? 1 : 0;
+			}
+			return n;
+		default:
+			for (int i = 0; i < 6; i++) {
+				n += lim[i][0] != lim[i][1] ? 1 : 0;
+			}
+			return n;
+	}
+}
+
 const PxArticulationAxis::Enum AXES[6] = {PxArticulationAxis::eX, PxArticulationAxis::eY,
                                           PxArticulationAxis::eZ, PxArticulationAxis::eTWIST,
                                           PxArticulationAxis::eSWING1, PxArticulationAxis::eSWING2};
@@ -274,7 +300,9 @@ PxArticulationGroup *PxPhysicsEnvironment::BuildArticulation(PxPhysicsController
 		}
 		return nullptr;
 	}
-	/* the tree, breadth first from the root */
+	/* the tree, from the root: the stiffest joint reachable first (fewest
+	 * moving axes, then the oldest), so that where joints close a loop the
+	 * loosest one is left ordinary (a rope bridge's tie, not its hinges) */
 	PxArticulationGroup *g = new PxArticulationGroup();
 	g->root = root;
 	g->fixed = root->GetInfo().articulation == 2;
@@ -283,13 +311,31 @@ PxArticulationGroup *PxPhysicsEnvironment::BuildArticulation(PxPhysicsController
 	g->parents.push_back(-1);
 	std::set<PxPhysicsController *> inTree = {root};
 	std::set<int> seen;
-	for (size_t at = 0; at < g->links.size(); at++) {
-		PxPhysicsController *node = g->links[at];
-		for (int id : node->m_constraints) {
-			if (seen.count(id)) {
-				continue;
+	struct Edge {
+		int freedom, id, at;
+		bool operator<(const Edge &o) const { return freedom != o.freedom ? freedom < o.freedom : id < o.id; }
+	};
+	std::set<Edge> frontier;
+	auto reach = [&](int at) {
+		for (int id : g->links[at]->m_constraints) {
+			Constraint *c = GetConstraint(id);
+			if (c && !seen.count(id)) {
+				frontier.insert({joint_freedom(c->type, c->limits), id, at});
 			}
-			seen.insert(id);
+		}
+	};
+	reach(0);
+	while (!frontier.empty()) {
+		const Edge e = *frontier.begin();
+		frontier.erase(frontier.begin());
+		if (seen.count(e.id)) {
+			continue;
+		}
+		seen.insert(e.id);
+		const int at = e.at;
+		PxPhysicsController *node = g->links[at];
+		const int id = e.id;
+		{
 			Constraint *c = GetConstraint(id);
 			if (!c || !c->joint || c->link) {
 				continue;
@@ -320,7 +366,8 @@ PxArticulationGroup *PxPhysicsEnvironment::BuildArticulation(PxPhysicsController
 			inTree.insert(other);
 			g->links.push_back(other);
 			g->joints.push_back(id);
-			g->parents.push_back((int)at);
+			g->parents.push_back(at);
+			reach((int)g->links.size() - 1);
 		}
 	}
 	if (g->links.size() < 2) {

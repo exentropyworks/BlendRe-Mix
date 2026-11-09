@@ -36,9 +36,10 @@ p11b_arm_physx_cpu.blend   a two-joint arm: a 0.3 m base (the root, fixed),
     along x. The script drives them (setJointTarget) to 30 and -45 degrees
     at tic 2, to -20 and 60 at tic 240, to 45 and 30 at tic 480.
 p11b_bridge_<engine>.blend   (physx_cpu, bullet) a rope bridge: a post on
-    the left (the root, fixed), ten planks (0.5 x 1 x 0.08 m) joined by
-    Hinges about y, the last one hinged to a Static post on the right (tied
-    at both ends), and a Ball joint from plank 4 to plank 6 (a loop). At tic
+    the left (the root, fixed), ten planks (0.5 x 1 x 0.08 m) hanging on an
+    arc (the end ones sloping 25 degrees) joined by Hinges about y, the last
+    one hinged to a Static post on the right (tied at both ends), and a Ball
+    joint from plank 4 to plank 6 (a loop). At tic
     60 a 0.3 m box is set down on the second plank and sent across at 2 m/s.
 p11b_crash_physx_cpu.blend   the crash check: a 12 link chain (its block the
     root, fixed) and the mannequin on the floor. Tic 20 a link is removed;
@@ -332,10 +333,15 @@ if 32 <= tic < 300:
     if rag is not None and tic >= 33:
         try:
             lim = st.setdefault("limits", {"twist": 0.0, "swing": 0.0})
+            end = {"twist": 0.0, "swing": 0.0}
             for link in rag.links[1:]:
-                lim["twist"] = max(lim["twist"], abs(math.degrees(rag.getJointPosition(link, 3))))
-                lim["swing"] = max(lim["swing"], abs(math.degrees(rag.getJointPosition(link, 4))),
-                                   abs(math.degrees(rag.getJointPosition(link, 5))))
+                t = abs(math.degrees(rag.getJointPosition(link, 3)))
+                w = max(abs(math.degrees(rag.getJointPosition(link, 4))),
+                        abs(math.degrees(rag.getJointPosition(link, 5))))
+                end = {"twist": max(end["twist"], t), "swing": max(end["swing"], w)}
+            lim["twist"] = max(lim["twist"], end["twist"])
+            lim["swing"] = max(lim["swing"], end["swing"])
+            st["limits_end"] = end  # (where they are now: at the last tic, at rest)
         except Exception as ex:
             st["limits_error"] = repr(ex)
     # each bone's box against its capsule (both at the bone's middle)
@@ -456,7 +462,8 @@ if tic == 260:
 # (the hinge's range in the joint's terms, -90 to 10: the door opens 90
 # degrees towards the box's push and closes 10 past shut; closing, the joint
 # turns at +1 radian a second)
-DOOR = {"lo": -90.0, "hi": 10.0, "open": 90.0, "shut": -10.0, "speed": 1.0, "push": 3.0, "tics": 265}
+# (round 1: thrown at 3 m/s the box swung the door only 60 degrees)
+DOOR = {"lo": -90.0, "hi": 10.0, "open": 90.0, "shut": -10.0, "speed": 1.0, "push": 5.0, "tics": 265}
 
 
 def make_door(folder, E):
@@ -613,6 +620,24 @@ if tic == 300:
 
 PLANKS = 10
 ROLL = 2.0
+# (round 1 laid the planks straight, end to end between the posts: tied at
+# both ends, a straight bridge cannot sag, its joints pulled without end and
+# PhysX's flew apart. A rope bridge hangs: the planks laid on an arc, the
+# end ones sloping 25 degrees)
+SAG = 25.0
+
+
+def bridge_planks():
+    """each plank's middle (x, z) and slope (radians), from the left post's
+    face; and where the last one ends"""
+    out = []
+    ex, ez = -2.75, BRIDGE_Z
+    for i in range(PLANKS):
+        phi = math.radians(-SAG + 2.0 * SAG * (i + 0.5) / PLANKS)
+        out.append((ex + 0.25 * math.cos(phi), ez + 0.25 * math.sin(phi), phi))
+        ex += 0.5 * math.cos(phi)
+        ez += 0.5 * math.sin(phi)
+    return out, ex
 BRIDGE_Z = 2.0
 
 
@@ -632,14 +657,16 @@ def make_bridge(folder, E):
             # (Bullet has no articulations: the post stands still)
             left = m6.box(scene, "LeftPost", (0.3, 0.3, BRIDGE_Z), (-2.9, 0.0, BRIDGE_Z * 0.5), grey,
                           physics='STATIC')
-        right = m6.box(scene, "RightPost", (0.3, 0.3, BRIDGE_Z), (2.4, 0.0, BRIDGE_Z * 0.5), grey,
+        layout, end_x = bridge_planks()
+        right = m6.box(scene, "RightPost", (0.3, 0.3, BRIDGE_Z), (end_x + 0.15, 0.0, BRIDGE_Z * 0.5), grey,
                        physics='STATIC')
         hinge_y = (0.0, 0.0, math.radians(90.0))
         pairs = []
         prev = left
         planks = []
         for i in range(PLANKS):
-            p = m6.box(scene, "Plank%d" % i, (0.5, 1.0, 0.08), (-2.5 + 0.5 * i, 0.0, BRIDGE_Z), wood, mass=2.0)
+            px, pz, phi = layout[i]
+            p = m6.box(scene, "Plank%d" % i, (0.5, 1.0, 0.08), (px, 0.0, pz), wood, mass=2.0, rotation=(0.0, -phi, 0.0))
             c = joint(p, prev, 'HINGE', (-0.5, 0.0, 0.0), hinge_y)
             c.name = "Hinge%d" % i
             pairs.append(("Hinge%d" % i, p.name, prev.name, (-0.5, 0.0, 0.0)))
@@ -657,7 +684,7 @@ def make_bridge(folder, E):
         roller.layers[0] = False
         at = bpy.data.objects.new("RollerAt", None)
         scene.objects.link(at)
-        at.location = (-2.0, 0.0, BRIDGE_Z + 0.2)
+        at.location = (layout[1][0], 0.0, layout[1][1] + 0.25)
         p2.camera(scene, (0.0, -8.0, 2.6), (0.0, 0.0, 1.6), lens=30.0)
         m9.logic(scene, "P11bBridge", BRIDGE_SCRIPT.replace("PAIRS", repr(pairs)).replace("ROLL", repr(ROLL)))
         p2.add_probe(scene)
