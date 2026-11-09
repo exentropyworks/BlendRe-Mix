@@ -261,6 +261,14 @@ jobs:
           python -m compileall -q blender/tests/bge_remix
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=Pre-flight::a test script does not compile"; exit 1 }
 
+      - name: No undefined names in the test scripts
+        shell: pwsh
+        run: |
+          # (P11: a name left out of an edit stopped a whole RTX run)
+          python -m pip install --quiet pyflakes
+          $bad = python -m pyflakes blender/tests/bge_remix 2>&1 | Select-String "undefined name"
+          if ($bad) { $bad | ForEach-Object { Write-Output "::error title=Pre-flight::$_" }; exit 1 }
+
       - name: The P9, P10 and P11 test scenes are made
         shell: pwsh
         run: |

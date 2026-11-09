@@ -70,6 +70,7 @@ SOFT_RUNS = (
 # (what round 4's 1024 pixel image gave: 0.51 and 0.75; OpenGL 0.66)
 SHARP_MIN = {"lines_up_2": 0.3, "lines_up_4": 0.5}
 LOST_MAX = 0.1
+OPTION_NAMES = {}  # (no Remix option to check in the log this round)
 SHOTS = 6
 AFTER = 8.0
 GAP = 0.5
