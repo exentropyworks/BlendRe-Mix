@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 #include "BRMX_atlas.h"
@@ -52,6 +53,9 @@
 extern "C" {
 #include "DNA_ID.h"
 #include "DNA_image_types.h"
+#include "DNA_scene_types.h"
+
+#include "BKE_idprop.h"
 
 #include "BKE_appdir.h"
 #include "BKE_global.h"
@@ -126,9 +130,15 @@ const wchar_t *kind_tag(const TextureRequest &r)
 	return L"x";
 }
 
+/* BGE-Remix P11 (A3): images smaller than this on their longer side are
+ * enlarged before they go to Remix (0: never); see enlarge_factor */
+int g_enlarge_to = 1024;
+
 int key_bits(const TextureRequest &r)
 {
 	int bits = r.kind | ((r.channel & 3) << 4) | (r.flags << 8) | (r.max_size << 16);
+	/* (P11: the enlargement too: the Remix View may change it) */
+	bits ^= g_enlarge_to * 31;
 	/* (P10.3: a scaled colour image is another file: its scale in the key) */
 	if (r.scale != 1.0f) {
 		bits ^= (int)(r.scale * 1000.0f + 0.5f) * 7919 + 1;
@@ -145,6 +155,81 @@ float srgb_to_linear_f(float c)
 float linear_to_srgb_f(float c)
 {
 	return (c < 0.0031308f) ? ((c < 0.0f) ? 0.0f : c * 12.92f) : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+}
+
+/* Remix 1.6.1 keeps a texture given by file at less than its full detail, a
+ * small one more so (P11's softness check: 4 pixel bars from a 256 pixel
+ * image were lost, the same bars from a 1024 pixel one kept); none of its
+ * options changes that. The factor (1, 2 or 4) for an image of this size. */
+int enlarge_factor(int w, int h)
+{
+	int to = g_enlarge_to;
+	wchar_t env[16];
+	const DWORD n = GetEnvironmentVariableW(L"BGE_REMIX_TEXTURE_ENLARGE", env, 16);
+	if (n > 0 && n < 16) {
+		to = _wtoi(env);  /* the tests: 0 off, or the size */
+	}
+	if (to <= 0 || w < 2 || h < 2) {
+		return 1;
+	}
+	int f = 1;
+	while (f < 4 && std::max(w, h) * f < to) {
+		f *= 2;
+	}
+	return f;
+}
+
+/* Catmull-Rom, by a whole factor, wrapping at the edges (textures repeat):
+ * smooth as the game's own filtering up close, its edges kept */
+template<typename T> void enlarge(std::vector<T> &px, int &w, int &h, int f, float lo, float hi)
+{
+	const int nw = w * f, nh = h * f;
+	auto weights = [](float t, float r[4]) {
+		const float t2 = t * t, t3 = t2 * t;
+		r[0] = 0.5f * (-t3 + 2.0f * t2 - t);
+		r[1] = 0.5f * (3.0f * t3 - 5.0f * t2 + 2.0f);
+		r[2] = 0.5f * (-3.0f * t3 + 4.0f * t2 + t);
+		r[3] = 0.5f * (t3 - t2);
+	};
+	/* across, then down */
+	std::vector<float> mid((size_t)nw * h * 4);
+	for (int x = 0; x < nw; x++) {
+		const float sx = (x + 0.5f) / f - 0.5f;
+		const int x0 = (int)std::floor(sx);
+		float wt[4];
+		weights(sx - x0, wt);
+		for (int y = 0; y < h; y++) {
+			for (int c = 0; c < 4; c++) {
+				float v = 0.0f;
+				for (int k = 0; k < 4; k++) {
+					const int xx = ((x0 - 1 + k) % w + w) % w;
+					v += wt[k] * (float)px[((size_t)y * w + xx) * 4 + c];
+				}
+				mid[((size_t)y * nw + x) * 4 + c] = v;
+			}
+		}
+	}
+	std::vector<T> out((size_t)nw * nh * 4);
+	for (int y = 0; y < nh; y++) {
+		const float sy = (y + 0.5f) / f - 0.5f;
+		const int y0 = (int)std::floor(sy);
+		float wt[4];
+		weights(sy - y0, wt);
+		for (int x = 0; x < nw; x++) {
+			for (int c = 0; c < 4; c++) {
+				float v = 0.0f;
+				for (int k = 0; k < 4; k++) {
+					const int yy = ((y0 - 1 + k) % h + h) % h;
+					v += wt[k] * mid[((size_t)yy * nw + x) * 4 + c];
+				}
+				v = std::min(std::max(v, lo), hi);
+				out[((size_t)y * nw + x) * 4 + c] = (T)(std::is_integral<T>::value ? v + 0.5f : v);
+			}
+		}
+	}
+	px.swap(out);
+	w = nw;
+	h = nh;
 }
 
 /* P8.24: halved (2x2 means) until neither side is above max_size */
@@ -179,6 +264,14 @@ template<typename T> void shrink(std::vector<T> &px, int &w, int &h, int max_siz
 
 TextureCache::TextureCache() : encoded(0), reused(0), failed(0), encode_seconds(0.0), m_waiting(0)
 {
+}
+
+void TextureCache::enlarge_from_scene(const Scene *scene)
+{
+	IDProperty *group = scene ? scene->id.properties : NULL;
+	IDProperty *p = group ? IDP_GetPropertyFromGroup(group, "bge_remix_sharp_textures") : NULL;
+	const bool on = !(p && p->type == IDP_INT && IDP_Int(p) == 0);
+	g_enlarge_to = on ? 1024 : 0;
 }
 
 std::wstring TextureCache::folder()
@@ -397,6 +490,14 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 	const std::wstring dir = folder();
 	wchar_t hex[16];
 	swprintf(hex, 16, L"%08x", hash);
+	/* P11 (A3): a small image enlarged for Remix (not bakes, not packed
+	 * pages, not one made smaller on purpose, not HDR skies) */
+	const int factor = (!req.baked && !req.atlas && req.max_size <= 0 && req.kind != BRB_TEXTURE_HDR) ?
+	                           enlarge_factor(w, h) :
+	                           1;
+	if (factor > 1) {
+		swprintf(hex, 16, L"%08x_x%d", hash, factor);
+	}
 	if (!(req.baked && req.baked->key)) {
 		/* (P10.3: a scaled image's name as an unscaled one's: its pixels, so
 		 * its hash, differ) */
@@ -424,6 +525,18 @@ TextureCache::State TextureCache::request(const TextureRequest &req, std::wstrin
 		return READY;
 	}
 	make_dirs(dir);
+	if (factor > 1) {
+		if (rgba8) {
+			if (rgba8 != rgba8_small.data()) {
+				rgba8_small.assign(rgba8, rgba8 + (size_t)w * h * 4);
+			}
+			enlarge(rgba8_small, w, h, factor, 0.0f, 255.0f);
+			rgba8 = rgba8_small.data();
+		}
+		else {
+			enlarge(rgbaf, w, h, factor, req.kind == BRB_TEXTURE_COLOR ? 0.0f : -1e30f, 1e30f);
+		}
+	}
 	if (req.atlas && !req.baked && rgba8) {
 		atlas_mips(*req.atlas, req.kind, rgba8, w, h, atlas_levels, levels);
 		rgba8 = atlas_levels.data();

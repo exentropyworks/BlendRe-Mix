@@ -614,6 +614,8 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		BRMX_Quality quality;
 		BRMX_quality_from_scene(scene->GetBlenderScene(), &quality);
 		BRMX_quality_apply(&quality);
+		/* P11 (A3): small images enlarged for Remix (Sharper Small Textures) */
+		brmx::TextureCache::enlarge_from_scene(scene->GetBlenderScene());
 		/* P9.1: the Render tab's curated settings and the tone mapping */
 		BRMX_scene_options_apply(scene->GetBlenderScene());
 		/* P9.7: the debug view chosen in the Remix View (a game started

@@ -1217,6 +1217,7 @@ void apply_scene_settings(const Scene *scene, float exposure)
 	BRMX_Quality q;
 	BRMX_quality_from_scene(scene, &q);
 	BRMX_quality_apply(&q);
+	brmx::TextureCache::enlarge_from_scene(scene);
 }
 
 struct Lock {

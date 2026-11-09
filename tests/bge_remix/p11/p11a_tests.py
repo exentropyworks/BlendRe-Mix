@@ -52,24 +52,24 @@ MOTION_RUNS = (
 # detail options tried one at a time. Round 1 also ran ray reconstruction
 # off, render scale 1, reference mode and the orthographic camera nearer:
 # the fine bars were gone in every one, and in the perspective camera's too.
-# Round 6. Round 4: the same bars from a 1024 pixel image do show: Remix
-# keeps a texture given by file at less than its full detail, a small one
-# more so. Round 5: of 18 candidate names Remix 1.6.1 has these 7; set once
-# Remix ran, none changed anything. Now each in an rtx.conf, read at start.
-CONF_TRIES = (
-    ("conf_reserved0", ["rtx.adaptiveResolutionReservedGPUMemoryGiB = 0"]),
-    ("conf_budget90", ["rtx.texturemanager.budgetPercentageOfAvailableVram = 90"]),
-    ("conf_fixed6000", ["rtx.texturemanager.fixedBudgetEnable = True", "rtx.texturemanager.fixedBudgetMiB = 6000"]),
-    ("conf_nofeedback", ["rtx.texturemanager.samplerFeedbackEnable = False"]),
-    ("conf_mipbias", ["rtx.upscalingMipBias = -2", "rtx.nativeMipBias = -2"]),
-    ("conf_all", ["rtx.adaptiveResolutionReservedGPUMemoryGiB = 0",
-                  "rtx.texturemanager.fixedBudgetEnable = True", "rtx.texturemanager.fixedBudgetMiB = 6000",
-                  "rtx.texturemanager.samplerFeedbackEnable = False", "rtx.lowMemoryGpu = False"]),
-)
+# A3's findings (rounds 1 to 6): Remix 1.6.1 draws a texture given by file
+# with less detail than the image holds, a small one most (the 4 pixel bars
+# from a 256 pixel image lost, from a 1024 pixel image kept); not the
+# denoiser, DLSS, the preset, the camera, nor any of its 7 texture options
+# (set while running or in an rtx.conf). Decided 9 Nov: BGE-Remix enlarges
+# images under 1024 pixels (Sharper Small Textures, on by default). These
+# runs check it: on (the default), off, and a perspective camera.
+CONF_TRIES = ()
 SOFT_RUNS = (
-    ("default", "your settings (Auto)", {}, None, "remix", "opengl", 100),
+    ("default", "your settings (Sharper Small Textures on)", {}, None, "remix", "opengl", 100),
+    ("not_enlarged", "Sharper Small Textures off", {"BGE_REMIX_TEXTURE_ENLARGE": "0"}, None, "remix", "opengl",
+     100),
+    ("persp_default", "a perspective camera (Sharper Small Textures on)", {}, None, "persp_remix", "persp_opengl",
+     None),
 )
-OPTION_NAMES = {}
+# (what round 4's 1024 pixel image gave: 0.51 and 0.75; OpenGL 0.66)
+SHARP_MIN = {"lines_up_2": 0.3, "lines_up_4": 0.5}
+LOST_MAX = 0.1
 SHOTS = 6
 AFTER = 8.0
 GAP = 0.5
@@ -423,6 +423,17 @@ def s_soft(args, out, scenes, P, tests, sheets, report):
         if m:
             table.append("  %-14s %s" % (key, "  ".join("%s %.2f" % (kk, m[kk]["contrast"]) for kk in keys if kk in m)))
         sheet.append((label, r.get("screenshot")))
+    # P11 (A3): Sharper Small Textures brings the bars back; off, they are lost
+    for key in ("default", "persp_default"):
+        m = (d.get(key) or {}).get("measured") or {}
+        for kk, lo in SHARP_MIN.items():
+            v = (m.get(kk) or {}).get("contrast")
+            c["%s: the %s pixel bars are there (contrast %s, at least %.1f)" % (
+                d.get(key, {}).get("label", key), kk.split("_")[-1], v, lo)] = v is not None and v >= lo
+    m = (d.get("not_enlarged") or {}).get("measured") or {}
+    v = (m.get("lines_up_4") or {}).get("contrast")
+    c["Sharper Small Textures off: the 4 pixel bars are lost, as Remix draws them (contrast %s)" % v] = \
+        v is not None and v <= LOST_MAX
     # round 6: the options Remix 1.6.1 has (round 5 asked it), each in an
     # rtx.conf next to the scene, which Remix reads at its start (round 5 set
     # them once Remix ran: no change; P4.6 used an rtx.conf the same way)
@@ -447,7 +458,7 @@ def s_soft(args, out, scenes, P, tests, sheets, report):
             table.append("  %-14s %s   (%s; read: %s)" % (key[:14], "  ".join(
                 "%s %.2f" % (kk, m[kk]["contrast"]) for kk in keys if kk in m), label, d[key]["remix_read_it"]))
         sheet.append((label, r.get("screenshot")))
-    tests["S11.a3 Softness in Remix (A3, numbers only)"] = _test(c, d)
+    tests["S11.a3 Softness in Remix (A3): Sharper Small Textures"] = _test(c, d)
     sheets["p11a_soft"] = p2.contact_sheet(sheet, os.path.join(out, "sheet_p11a_soft.png"))
     report += ["", "A3 softness (contrast of each board region, 0-1; the OpenGL pictures first):"] + table
 

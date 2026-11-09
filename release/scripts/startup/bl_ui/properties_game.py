@@ -545,6 +545,13 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
             name="Volumetrics",
             description="Light in the air (fog, light shafts)",
             default=True)
+        # P11 (A3)
+        bpy.types.Scene.bge_remix_sharp_textures = BoolProperty(
+            name="Sharper Small Textures",
+            description="Enlarge images under 1024 pixels before RTX Remix gets them: Remix draws a texture with "
+                        "less detail than the image holds, small ones most (a 256 pixel image then takes about "
+                        "1 MB of graphics memory instead of 64 KB)",
+            default=True)
         # P5.6: F12 with RTX Remix
         bpy.types.Scene.bge_remix_f12_mode = EnumProperty(
             name="F12",
@@ -565,6 +572,7 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
     def unregister(cls):
         for name in ("bge_remix", "bge_remix_fast", "bge_remix_light_scale", "bge_remix_exposure",
                      "bge_remix_preset", "bge_remix_dlss", "bge_remix_rr", "bge_remix_volumetrics",
+                     "bge_remix_sharp_textures",
                      "bge_remix_f12_mode", "bge_remix_f12_frames", "bge_remix_f12_samples"):
             if hasattr(bpy.types.Scene, name):
                 delattr(bpy.types.Scene, name)
@@ -581,6 +589,7 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
         row = col.row()
         row.prop(scene, "bge_remix_rr")
         row.prop(scene, "bge_remix_volumetrics")
+        col.prop(scene, "bge_remix_sharp_textures")
         col.separator()
         row = col.row()
         row.prop(scene, "bge_remix_f12_mode", expand=True)
