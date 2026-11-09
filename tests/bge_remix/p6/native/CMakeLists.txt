@@ -22,6 +22,7 @@ file(GLOB MOTO_SRC "${BLENDER}/intern/moto/intern/*.cpp")
 set(SRC
 	harness.cpp
 	stubs.cpp
+	${GE}/Physics/PhysX/PxArticulation.cpp  # BGE-Remix P11 (B1)
 	${GE}/Physics/PhysX/PxCharacter.cpp
 	${GE}/Physics/PhysX/PxDeformable.cpp
 	${GE}/Physics/PhysX/PxPhysicsController.cpp
