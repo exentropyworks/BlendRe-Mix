@@ -291,8 +291,11 @@ def t72(m, r):
 def t73(clean, broken, remix, expected):
     c, d = {}, {}
     ws = active_warnings(clean)
+    # (P11 B1: a joint in no articulation is Black, Ayhan's "available, not
+    # set up"; gv_clean's door hinge is an ordinary joint)
     bad_states = [{"kind": e["kind"], "name": e["name"], "owner": e["owner"], "state": e["state"]}
-                  for e in clean.get("elements", []) if e["state"] not in ("WHITE", "GREEN")]
+                  for e in clean.get("elements", []) if e["state"] not in ("WHITE", "GREEN") and
+                  not (e["kind"].startswith("joint:") and e["state"] == "BLACK")]
     c["gv_clean has no warnings"] = bool(clean.get("module")) and not ws
     c["gv_clean: every element White or Green"] = bool(clean.get("elements")) and not bad_states
     d["clean_warnings"] = ws

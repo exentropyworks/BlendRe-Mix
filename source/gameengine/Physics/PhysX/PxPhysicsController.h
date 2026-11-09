@@ -46,9 +46,11 @@ struct PxShapeDesc;
 
 namespace physx {
 class PxRigidActor;
+class PxRigidBody;
 class PxRigidDynamic;
 class PxShape;
 }
+struct PxArticulationGroup;
 
 /* collision classes, as Bullet's CcdConstructionInfo::CollisionFilterGroups */
 enum PxFilterClass {
@@ -101,6 +103,9 @@ struct PxCtrlInfo
 	/* soft body (Blender's bsoft, see PxDeformable) */
 	struct BulletSoftBody *bsoft;
 	int filterGroup, filterMask;
+	/* BGE-Remix P11 (B1): 1 the root of an articulation that moves freely, 2
+	 * one fixed to the world (the object's bge_articulation); 0 none */
+	int articulation;
 };
 
 class PxPhysicsController : public PHY_IPhysicsController
@@ -190,6 +195,10 @@ public:
 	/* for the environment */
 	physx::PxRigidActor *GetActor() { return m_actor; }
 	physx::PxRigidDynamic *GetDynamic();
+	/* P11 (B1): the moving body, a rigid dynamic or an articulation's link */
+	physx::PxRigidBody *GetBody();
+	/* the articulation the object is a link of (NULL: none) */
+	PxArticulationGroup *GetArticulation() const { return m_articulation; }
 	bool IsKinematic() const { return m_kinematic; }
 	bool IsStaticActor() const;
 	bool IsSensor() const { return m_info.sensor; }
@@ -235,6 +244,13 @@ public:
 	void CreateActor();
 	void DestroyActor();
 
+	/* P11 (B1, PxArticulation.cpp): the object becomes this articulation
+	 * link (its shapes and mass move over; its rigid body, out of the scene,
+	 * is released), or a rigid body again at this pose and speed (not yet in
+	 * the scene) */
+	void BecomeLink(physx::PxRigidBody *link, PxArticulationGroup *group);
+	void LeaveLink(const physx::PxTransform &pose, const physx::PxVec3 &lin, const physx::PxVec3 &ang);
+
 private:
 	PxPhysicsController(const PxPhysicsController &other);  /* GetReplica */
 
@@ -261,6 +277,9 @@ private:
 	PxDeformable *m_soft;
 	physx::PxTransform m_lastKinematic;
 	bool m_kinematicMoved;
+	PxArticulationGroup *m_articulation;  /* P11 (B1): a link of it (PxArticulation.cpp) */
+	bool m_articulationWarned;
+	bool m_articulationFailed;  /* its articulation could not join the scene: not tried again */
 };
 
 #endif  /* __PXPHYSICSCONTROLLER_H__ */

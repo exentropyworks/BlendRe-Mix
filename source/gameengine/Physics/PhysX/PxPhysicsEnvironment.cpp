@@ -28,6 +28,7 @@
 
 #include "PxPhysicsAPI.h"
 
+#include "PxArticulation.h"
 #include "PxCharacter.h"
 #include "PxDeformable.h"
 #include "PxMotionState.h"
@@ -220,7 +221,8 @@ PxPhysicsEnvironment::PxPhysicsEnvironment(bool useGpu, PHY_IPhysicsEnvironment 
       m_angularSleep(1.0f),
       m_lastStep(1.0f / 60.0f),
       m_accumulated(0.0),
-      m_ccdMode(0)
+      m_ccdMode(0),
+      m_articulationsDirty(false)
 {
 	for (int i = 0; i < PHY_NUM_RESPONSE; i++) {
 		m_triggerCallbacks[i] = NULL;
@@ -277,6 +279,11 @@ void PxPhysicsEnvironment::InitScene(bool useGpu)
 
 PxPhysicsEnvironment::~PxPhysicsEnvironment()
 {
+	/* P11 (B1): the links back into bodies first (the game objects delete
+	 * their controllers later) */
+	while (!m_articulations.empty()) {
+		DismantleArticulation(m_articulations.back());
+	}
 	for (PxRaycastVehicle *v : m_vehicles) {
 		delete v;
 	}
@@ -330,14 +337,23 @@ void PxPhysicsEnvironment::AddController(PxPhysicsController *ctrl)
 	if (ctrl->IsKinematic()) {
 		m_kinematics.insert(ctrl);
 	}
+	if (ctrl->GetInfo().articulation) {
+		m_articulationsDirty = true;  /* (built at the next step) */
+	}
 	m_stats.actors = (int)m_controllers.size();
 }
 
 bool PxPhysicsEnvironment::RemoveController(PxPhysicsController *ctrl)
 {
-	if (!ctrl || !m_controllers.erase(ctrl)) {
+	if (!ctrl || !m_controllers.count(ctrl)) {
 		return false;
 	}
+	/* P11 (B1): its articulation is taken apart (the rest is built again at
+	 * the next step) */
+	if (ctrl->m_articulation) {
+		DismantleArticulation(ctrl->m_articulation);
+	}
+	m_controllers.erase(ctrl);
 	ctrl->m_inScene = false;
 	m_kinematics.erase(ctrl);
 	ForgetPairs(ctrl);
@@ -528,6 +544,10 @@ bool PxPhysicsEnvironment::ProceedDeltaTime(double curTime, float timeStep, floa
 		return false;
 	}
 	m_lastStep = subStep;
+	/* P11 (B1): articulations of roots and joints added since */
+	if (m_articulationsDirty) {
+		BuildArticulations();
+	}
 	/* as Bullet's stepSimulation(interval, 25, subStep): whole sub-steps, the
 	 * rest of the time kept for the next frame */
 	m_accumulated += interval;
@@ -1045,6 +1065,12 @@ void PxPhysicsEnvironment::RemoveConstraint(Constraint *c)
 	if (!c) {
 		return;
 	}
+	/* P11 (B1): a joint of an articulation: it is taken apart first (its
+	 * joints are ordinary ones again; the rest is built again at the next
+	 * step) */
+	if (c->link && c->link->GetArticulation()) {
+		DismantleArticulation(c->link->GetArticulation());
+	}
 	if (c->joint) {
 		PxRigidActor *a0, *a1;
 		c->joint->getActors(a0, a1);
@@ -1180,12 +1206,21 @@ int PxPhysicsEnvironment::CreateConstraint(PHY_IPhysicsController *ctrl0, PHY_IP
 		return v->GetUserConstraintId();
 	}
 
+	/* P11 (B1): a joint to an articulation's link: the articulation is taken
+	 * apart and built again with it at the next step */
+	for (PxPhysicsController *ctrl : {c0, c1}) {
+		if (ctrl && ctrl->m_articulation) {
+			DismantleArticulation(ctrl->m_articulation);
+		}
+	}
 	PxRigidActor *a0 = c0->GetActor();
 	if (!a0) {
 		return 0;
 	}
-	const bool s0 = !c0->GetDynamic() || c0->IsKinematic();
-	const bool s1 = !c1 || !c1->GetDynamic() || c1->IsKinematic();
+	/* (a body whose dynamics are suspended, a parented one say, keeps its
+	 * joints for when it is let go, as Bullet; P11 (B1): a ragdoll's capsules) */
+	const bool s0 = !c0->GetDynamic() || (c0->IsKinematic() && !c0->IsSuspended());
+	const bool s1 = !c1 || !c1->GetDynamic() || (c1->IsKinematic() && !c1->IsSuspended());
 	if (s0 && s1) {
 		return 0;
 	}
@@ -1244,6 +1279,7 @@ int PxPhysicsEnvironment::CreateConstraint(PHY_IPhysicsController *ctrl0, PHY_IP
 	c->c1 = c1;
 	c->frameA = frameA;
 	c->frameB = frameB;
+	c->collide = !disableCollision;
 	for (int i = 0; i < 3; i++) {
 		c->linScale[i] = type == PHY_GENERIC_6DOF_CONSTRAINT ? std::max(linScale[i], 1e-6f) : 1.0f;
 	}
@@ -1258,6 +1294,7 @@ int PxPhysicsEnvironment::CreateConstraint(PHY_IPhysicsController *ctrl0, PHY_IP
 	}
 	joint->userData = c;
 	m_constraints[c->id] = c;
+	m_articulationsDirty = true;  /* (it may join an articulation's root) */
 	c0->m_constraints.push_back(c->id);
 	if (c1) {
 		c1->m_constraints.push_back(c->id);
@@ -1359,62 +1396,30 @@ static void apply_drives(PxD6Joint *d6, const bool motor[6], const float vel[6],
 	d6->setDriveVelocity(lin, ang, true);
 }
 
-void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float value0, float value1)
+/* the setting into the constraint's stored values (Bullet's params) */
+void PxPhysicsEnvironment::StoreConstraintParam(Constraint *c, int param, float value0, float value1)
 {
-	Constraint *c = GetConstraint(constraintId);
-	if (!c || !c->joint) {
-		return;
-	}
 	switch (c->type) {
-		case PHY_GENERIC_6DOF_CONSTRAINT: {
-			PxD6Joint *d6 = c->joint->is<PxD6Joint>();
-			if (!d6) {
-				return;
-			}
+		case PHY_GENERIC_6DOF_CONSTRAINT:
 			if (param >= 0 && param <= 5) {
 				c->limits[param][0] = value0;
 				c->limits[param][1] = value1;
-				float lim[6][2];
-				memcpy(lim, c->limits, sizeof(lim));
-				for (int i = 0; i < 3; i++) {
-					if (lim[i][0] <= lim[i][1]) {
-						lim[i][0] *= c->linScale[i];
-						lim[i][1] *= c->linScale[i];
-					}
-				}
-				apply_d6(d6, lim, false);
 			}
 			else if (param >= 6 && param <= 11) {
 				const int i = param - 6;
 				c->motor[i] = value1 > 0.0f;
 				c->motorVelocity[i] = value0;
 				c->motorForce[i] = value1;
-				float vel[6];
-				for (int i = 0; i < 6; i++) {
-					vel[i] = i < 3 ? c->motorVelocity[i] / c->linScale[i] : c->motorVelocity[i];
-				}
-				apply_drives(d6, c->motor, vel, c->motorForce, c->spring, c->springStiffness, c->springDamping);
 			}
 			else if (param >= 12 && param <= 17) {
 				const int i = param - 12;
 				c->spring[i] = value0 != 0.0f;
 				c->springStiffness[i] = value0;
 				c->springDamping[i] = value1;
-				if (c->spring[i]) {
-					/* as Bullet's setEquilibriumPoint: the spring rests where it is now */
-					d6->setDrivePosition(d6->getRelativeTransform(), true);
-				}
-				float vel[6];
-				for (int i = 0; i < 6; i++) {
-					vel[i] = i < 3 ? c->motorVelocity[i] / c->linScale[i] : c->motorVelocity[i];
-				}
-				apply_drives(d6, c->motor, vel, c->motorForce, c->spring, c->springStiffness, c->springDamping);
 			}
 			break;
-		}
 		case PHY_CONE_TWIST_CONSTRAINT: {
-			PxD6Joint *d6 = c->joint->is<PxD6Joint>();
-			if (!d6 || param < 3 || param > 5) {
+			if (param < 3 || param > 5) {
 				return;
 			}
 			/* Bullet: 3 twist span, 4 swing span 2 (Z), 5 swing span 1 (Y);
@@ -1428,32 +1433,89 @@ void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float
 				c->limits[slot][0] = -value1;
 				c->limits[slot][1] = value1;
 			}
-			apply_d6(d6, c->limits, true);
 			break;
 		}
 		case PHY_ANGULAR_CONSTRAINT:
-		case PHY_LINEHINGE_CONSTRAINT: {
-			if (param != 3) {
+		case PHY_LINEHINGE_CONSTRAINT:
+			if (param == 3) {
+				c->limits[3][0] = value0;
+				c->limits[3][1] = value1;
+			}
+			break;
+		default:
+			break;
+	}
+}
+
+void PxPhysicsEnvironment::ApplyJointParams(Constraint *c, int param)
+{
+	if (!c || !c->joint) {
+		return;
+	}
+	switch (c->type) {
+		case PHY_GENERIC_6DOF_CONSTRAINT: {
+			PxD6Joint *d6 = c->joint->is<PxD6Joint>();
+			if (!d6) {
 				return;
 			}
-			c->limits[3][0] = value0;
-			c->limits[3][1] = value1;
+			if (param <= 5) {
+				float lim[6][2];
+				memcpy(lim, c->limits, sizeof(lim));
+				for (int i = 0; i < 3; i++) {
+					if (lim[i][0] <= lim[i][1]) {
+						lim[i][0] *= c->linScale[i];
+						lim[i][1] *= c->linScale[i];
+					}
+				}
+				apply_d6(d6, lim, false);
+			}
+			if (param < 0 || (param >= 6 && param <= 17)) {
+				bool resting = false;
+				for (int i = 0; i < 6; i++) {
+					resting |= c->spring[i] && (param < 0 || param == 12 + i);
+				}
+				if (resting) {
+					/* as Bullet's setEquilibriumPoint: the spring rests where it is now */
+					d6->setDrivePosition(d6->getRelativeTransform(), true);
+				}
+				float vel[6];
+				for (int i = 0; i < 6; i++) {
+					vel[i] = i < 3 ? c->motorVelocity[i] / c->linScale[i] : c->motorVelocity[i];
+				}
+				apply_drives(d6, c->motor, vel, c->motorForce, c->spring, c->springStiffness, c->springDamping);
+			}
+			break;
+		}
+		case PHY_CONE_TWIST_CONSTRAINT:
+			if (param >= 0 && (param < 3 || param > 5)) {
+				return;
+			}
+			if (PxD6Joint *d6 = c->joint->is<PxD6Joint>()) {
+				apply_d6(d6, c->limits, true);
+			}
+			break;
+		case PHY_ANGULAR_CONSTRAINT:
+		case PHY_LINEHINGE_CONSTRAINT: {
+			if (param >= 0 && param != 3) {
+				return;
+			}
+			const float lo = c->limits[3][0], hi = c->limits[3][1];
 			if (PxRevoluteJoint *rev = c->joint->is<PxRevoluteJoint>()) {
-				if (value0 > value1) {
+				if (lo > hi) {
 					rev->setRevoluteJointFlag(PxRevoluteJointFlag::eLIMIT_ENABLED, false);
 				}
 				else {
-					rev->setLimit(PxJointAngularLimitPair(value0, value1));
+					rev->setLimit(PxJointAngularLimitPair(lo, hi));
 					rev->setRevoluteJointFlag(PxRevoluteJointFlag::eLIMIT_ENABLED, true);
 				}
 			}
 			else if (PxD6Joint *d6 = c->joint->is<PxD6Joint>()) {
-				if (value0 > value1) {
+				if (lo > hi) {
 					d6->setMotion(PxD6Axis::eTWIST, PxD6Motion::eFREE);
 				}
 				else {
 					d6->setMotion(PxD6Axis::eTWIST, PxD6Motion::eLIMITED);
-					d6->setTwistLimit(PxJointAngularLimitPair(value0, value1));
+					d6->setTwistLimit(PxJointAngularLimitPair(lo, hi));
 				}
 			}
 			break;
@@ -1463,11 +1525,53 @@ void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float
 	}
 }
 
+/* P11 (B1): an articulation's joint back as the PxJoint P6 makes, with the
+ * settings it had */
+void PxPhysicsEnvironment::RestoreJoint(Constraint *c)
+{
+	if (!c || c->joint || !c->c0 || !c->c0->GetActor()) {
+		return;
+	}
+	PxJoint *joint = MakeJoint(c->c0, c->c1, (PHY_ConstraintType)c->type, c->frameA, c->frameB);
+	if (!joint) {
+		return;
+	}
+	joint->setConstraintFlag(PxConstraintFlag::eCOLLISION_ENABLED, c->collide);
+	joint->userData = c;
+	c->joint = joint;
+	ApplyJointParams(c, -1);
+}
+
+void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float value0, float value1)
+{
+	Constraint *c = GetConstraint(constraintId);
+	if (!c || (!c->joint && !c->link)) {
+		return;
+	}
+	StoreConstraintParam(c, param, value0, value1);
+	if (c->joint) {
+		ApplyJointParams(c, param);
+	}
+	else if (!ApplyArticulationJoint(c, param)) {
+		/* P11 (B1): now a joint an articulation has none for: the
+		 * articulation is taken apart (built again at the next step with it
+		 * as an ordinary joint) */
+		if (PxArticulationGroup *g = c->link->GetArticulation()) {
+			DismantleArticulation(g);
+		}
+	}
+}
+
 float PxPhysicsEnvironment::GetConstraintParam(int constraintId, int param)
 {
 	Constraint *c = GetConstraint(constraintId);
-	if (!c || !c->joint || c->type != PHY_GENERIC_6DOF_CONSTRAINT) {
+	if (!c || c->type != PHY_GENERIC_6DOF_CONSTRAINT) {
 		return 0.0f;
+	}
+	if (!c->joint) {
+		/* P11 (B1): an articulation's joint (its position on that axis) */
+		float pos = 0.0f;
+		return (param >= 0 && param <= 5 && ArticulationJointState(constraintId, param, &pos, NULL)) ? pos : 0.0f;
 	}
 	PxD6Joint *d6 = c->joint->is<PxD6Joint>();
 	if (!d6) {

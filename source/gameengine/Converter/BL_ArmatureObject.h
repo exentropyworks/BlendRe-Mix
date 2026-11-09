@@ -112,6 +112,23 @@ public:
 
 	virtual int GetGameObjectType() { return OBJ_ARMATURE; }
 
+	/* BGE-Remix P11 (B1): the ragdoll made by Make Ragdoll (capsules parented
+	 * to the bones, the Blender object's ID property bge_ragdoll_bone naming
+	 * each one's bone). On: the capsules are let go (an articulation, PhysX)
+	 * and the bones follow them; off: the capsules follow the bones again.
+	 * False: no capsules. */
+	bool SetRagdoll(bool on);
+	bool IsRagdoll() const { return m_ragdoll; }
+	/* it has a ragdoll (capsules on its bones, or let go) */
+	bool HasRagdoll();
+	/* the ragdoll's root capsule (its bge_articulation set; NULL: none) */
+	KX_GameObject *RagdollRoot();
+	/* the capsule is one of its ragdoll's */
+	bool OwnsRagdollCapsule(KX_GameObject *ob);
+	/* each frame (KX_Scene): off, how the capsules move with the bones (so
+	 * they are let go at that speed); on, the pose evaluated again */
+	void RagdollTick(double curtime);
+
 #ifdef WITH_PYTHON
 
 	// PYTHON
@@ -140,6 +157,33 @@ protected:
 	float m_obmat[4][4];
 
 	double			m_lastapplyframe;
+
+	/* P11 (B1) */
+	struct RagdollPart {
+		Bone *bone;
+		KX_GameObject *capsule;
+		float local[4][4];  /* the capsule in its bone's frame (at the tail, as bone parenting) */
+	};
+	std::vector<RagdollPart> m_ragdollParts;
+	bool m_ragdoll;
+	double m_ragdollSig;  /* where its capsules were at the last pose */
+	/* the capsules on the bones (found once), and where they were at the
+	 * last two frames */
+	struct RagdollSample {
+		KX_GameObject *capsule;
+		MT_Point3 pos[2];
+		MT_Matrix3x3 ori[2];
+	};
+	std::vector<RagdollSample> m_ragdollKids;
+	bool m_ragdollScanned;
+	double m_ragdollTimes[2];
+	std::vector<KX_GameObject *> RagdollCapsules();
+	/* the capsules it holds pointers to, registered so that UnlinkObject
+	 * hears when one is removed */
+	std::vector<KX_GameObject *> m_ragdollWatched;
+	void RagdollWatch(KX_GameObject *capsule);
+	/* the bones onto the capsules (in ApplyPose, after the pose) */
+	void ApplyRagdoll();
 };
 
 #endif  /* __BL_ARMATUREOBJECT_H__ */

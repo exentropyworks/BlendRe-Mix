@@ -157,6 +157,11 @@ enum {
 	GV_SHAPE_RECT,         /* a world rectangle: p[0..2] centre, p[3] half width, p[4] half depth (planes, panels) */
 	GV_SHAPE_ARC,          /* like LINE, bowed upwards (messages, scene changes) */
 	GV_SHAPE_PANEL,        /* a: element whose owner is a camera: a rectangle facing the camera, p[0] half width, p[1] half height, p[2] distance */
+	/* BGE-Remix P11 (B1): a joint's limits at its pivot: p[0..2] the pivot
+	 * (owner's axes, scaled), p[3..5] the joint frame's Euler angles (its X
+	 * the joint's axis), p[6] low, p[7] high (low > high: free) */
+	GV_SHAPE_LIMIT_ARC,    /* a hinge's range about its X, from where its body lies */
+	GV_SHAPE_LIMIT_CONE,   /* a cone twist's swing about its X: p[7] the half angle */
 };
 
 /* GVShape: p[6] for LINE and ARC: 1 = between the owners' origins, 0 = between the avatars;

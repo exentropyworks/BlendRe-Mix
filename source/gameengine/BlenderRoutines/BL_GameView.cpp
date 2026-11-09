@@ -801,7 +801,7 @@ static PyObject *gv_warnings(PyObject *, PyObject *)
 static PyObject *gv_shapes(PyObject *, PyObject *args)
 {
 	static const char *types[] = {"LINE", "SPHERE", "CONE", "FRUSTUM", "BOX", "CAPSULE", "RING", "ARROW",
-	                              "POINTS", "TRIS", "RECT", "ARC", "PANEL"};
+	                              "POINTS", "TRIS", "RECT", "ARC", "PANEL", "LIMIT_ARC", "LIMIT_CONE"};
 	const char *layer = NULL;
 	if (!PyArg_ParseTuple(args, "|z", &layer)) {
 		return NULL;

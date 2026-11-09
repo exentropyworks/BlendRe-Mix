@@ -44,6 +44,7 @@
 #include "KX_ArmatureSensor.h"
 #include "KX_BlenderMaterial.h"
 #include "KX_CameraActuator.h"
+#include "KX_ArticulationWrapper.h"  /* BGE-Remix P11 (B1) */
 #include "KX_CharacterWrapper.h"
 #include "KX_ConstraintActuator.h"
 #include "KX_ConstraintWrapper.h"
@@ -210,6 +211,7 @@ PyMODINIT_FUNC initGameTypesPythonBinding(void)
 		PyType_Ready_Attr(dict, KX_BlenderMaterial, init_getset);
 		PyType_Ready_Attr(dict, KX_Camera, init_getset);
 		PyType_Ready_Attr(dict, KX_CameraActuator, init_getset);
+		PyType_Ready_Attr(dict, KX_ArticulationWrapper, init_getset);  /* BGE-Remix P11 (B1) */
 		PyType_Ready_Attr(dict, KX_CharacterWrapper, init_getset);
 		PyType_Ready_Attr(dict, KX_ConstraintActuator, init_getset);
 		PyType_Ready_Attr(dict, KX_ConstraintWrapper, init_getset);

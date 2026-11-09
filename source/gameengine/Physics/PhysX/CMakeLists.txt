@@ -59,6 +59,7 @@ set(INC_SYS
 )
 
 set(SRC
+	PxArticulation.cpp
 	PxCharacter.cpp
 	PxDeformable.cpp
 	PxPhysicsController.cpp
@@ -68,6 +69,7 @@ set(SRC
 	PxSystem.cpp
 	PxVehicle.cpp
 
+	PxArticulation.h
 	PxCharacter.h
 	PxDeformable.h
 	PxMotionState.h

@@ -45,6 +45,7 @@ class CcdPhysicsEnvironment;
 class CcdGraphicController;
 struct Scene;
 struct PxCtrlInfo;
+struct PxArticulationGroup;
 
 namespace physx {
 class PxScene;
@@ -158,6 +159,30 @@ public:
 	/* tests: a controller from a construction info, without a Blender object */
 	PxPhysicsController *CreateController(const PxCtrlInfo &info, PHY_IMotionState *motionState, bool addToScene);
 
+	/* BGE-Remix P11 (B1, PxArticulation.cpp): articulations. An object whose
+	 * bge_articulation is set is a root; it and the bodies joined to it (Rigid
+	 * Body Joint constraints) become one articulation at the next step. */
+	void ArticulationsChanged() { m_articulationsDirty = true; }
+	const std::vector<PxArticulationGroup *> &GetArticulations() const { return m_articulations; }
+	/* the articulation back into bodies and ordinary joints (what is left is
+	 * built again at the next step) */
+	void DismantleArticulation(PxArticulationGroup *group);
+	/* the root moves the whole articulation; another link: no effect */
+	void ArticulationTeleport(PxPhysicsController *ctrl, const physx::PxTransform &t);
+	void ArticulationSetVelocity(PxPhysicsController *ctrl, const physx::PxVec3 *lin, const physx::PxVec3 *ang);
+	/* a joint's state for Python and the Remix View: its articulation and
+	 * axis, the position and speed; and its drive's target */
+	bool ArticulationJointState(int constraintId, int axis, float *r_pos, float *r_vel);
+	bool ArticulationSetDrive(int constraintId, int axis, const float *target, const float *velocity,
+	                          float stiffness, float damping, float maxForce);
+	/* (PHY_IPhysicsEnvironment's, for Python: built first if due) */
+	bool GetArticulation(PHY_IPhysicsController *ctrl, PHY_ArticulationInfo *info) override;
+	bool GetArticulationJoint(int constraintId, int axis, float *pos, float *vel) override;
+	bool SetArticulationDrive(int constraintId, int axis, const float *target, const float *velocity,
+	                          float stiffness, float damping, float maxForce) override;
+	const char *GetArticulationNote(int constraintId) override;
+	int GetArticulationJointActivity(int constraintId, int *r_axis, float *r_pos) override;
+
 	/* counters for the tests and the stats overlay */
 	struct Stats {
 		int steps;
@@ -193,6 +218,16 @@ private:
 	void RemoveConstraint(Constraint *c);
 	physx::PxJoint *MakeJoint(PxPhysicsController *c0, PxPhysicsController *c1, PHY_ConstraintType type,
 	                          const physx::PxTransform &frameA, const physx::PxTransform &frameB);
+	/* P11 (B1) */
+	void BuildArticulations();
+	PxArticulationGroup *BuildArticulation(PxPhysicsController *root);
+	/* the constraint's settings onto its articulation joint (param: the one
+	 * changed, -1 all); false: an articulation has no joint for them now */
+	bool ApplyArticulationJoint(Constraint *c, int param = -1);
+	/* the constraint's settings onto its PxJoint (param: as above) */
+	void ApplyJointParams(Constraint *c, int param);
+	void RestoreJoint(Constraint *c);
+	void StoreConstraintParam(Constraint *c, int param, float value0, float value1);
 
 	physx::PxScene *m_scene;
 	bool m_gpu;
@@ -223,6 +258,17 @@ private:
 		float motorVelocity[6], motorForce[6];
 		bool spring[6];
 		float springStiffness[6], springDamping[6];
+		bool collide;  /* the linked objects collide (P11 (B1): kept for RestoreJoint) */
+		/* P11 (B1): the articulation link whose inbound joint this is (the
+		 * PxJoint released meanwhile); NULL: an ordinary joint */
+		PxPhysicsController *link;
+		/* the link is the constraint's first object (c0): the articulation
+		 * measures it against c1, the joint (and Bullet, and P6) c1 against
+		 * it, so every position, limit, speed and target turns over */
+		bool reversed;
+		/* why it is not part of the articulation its body is in (a loop, a
+		 * type an articulation has no joint for), for the Remix View */
+		const char *notArticulated;
 	};
 	std::map<int, Constraint *> m_constraints;
 	int m_nextConstraintId;
@@ -242,6 +288,8 @@ private:
 	double m_accumulated;  /* time not simulated yet (less than a sub-step) */
 	int m_ccdMode;
 	Stats m_stats;
+	std::vector<PxArticulationGroup *> m_articulations;
+	bool m_articulationsDirty;
 
 	friend class PxPhysicsController;
 	friend class PxRaycastVehicle;

@@ -1423,16 +1423,141 @@ void GVBuilder::Physics()
 			}
 		}
 	}
-	/* joints (Rigid Body Joint constraints) */
+	/* BGE-Remix P11 (B1): articulations (PhysX), worked out as PxArticulation.cpp
+	 * builds them: from each root (the object's bge_articulation) through
+	 * its joints, a tree; a joint it cannot take stays an ordinary joint */
+	struct JointRef {
+		Object *ob;
+		bConstraint *con;
+		bRigidBodyJointConstraint *dat;
+	};
+	std::vector<JointRef> joints;
 	for (Object *ob : m_objects) {
 		for (bConstraint *con = (bConstraint *)ob->constraints.first; con; con = con->next) {
-			if (con->type != CONSTRAINT_TYPE_RIGIDBODYJOINT || !con->data) {
+			if (con->type == CONSTRAINT_TYPE_RIGIDBODYJOINT && con->data) {
+				joints.push_back({ob, con, (bRigidBodyJointConstraint *)con->data});
+			}
+		}
+	}
+	auto art_root = [](Object *ob) {
+		return (ob && moving(physics_type(ob)) && physics_type(ob) != OB_BODY_TYPE_SOFT) ?
+		        idprop_int(ob->id.properties, "bge_articulation", 0) : 0;
+	};
+	auto articulable = [](const bRigidBodyJointConstraint *dat) {
+		switch (dat->type) {
+			case CONSTRAINT_RB_BALL:
+			case CONSTRAINT_RB_HINGE:
+			case CONSTRAINT_RB_CONETWIST:
+				return true;
+			case CONSTRAINT_RB_GENERIC6DOF: {
+				/* (an axis without its limit set is free) */
+				int lin = 0, ang = 0;
+				for (int i = 0; i < 6; i++) {
+					const bool turns = !(dat->flag & (1 << i)) || dat->minLimit[i] != dat->maxLimit[i];
+					(i < 3 ? lin : ang) += turns ? 1 : 0;
+				}
+				const bool twist = !(dat->flag & (1 << 3)) || dat->minLimit[3] != dat->maxLimit[3];
+				return (lin == 0 && ang == 0) || (lin == 1 && ang == 0) || (lin == 0 && ang == 1 && twist) ||
+				       (lin == 0 && ang >= 2);
+			}
+			default:
+				return false;
+		}
+	};
+	std::map<bConstraint *, std::string> art_joint;   /* articulated: its root's name */
+	std::map<bConstraint *, const char *> art_left;   /* left ordinary: why */
+	std::map<Object *, Object *> art_of;              /* each link: its root */
+	std::vector<Object *> roots;
+	for (Object *ob : m_objects) {
+		if (art_root(ob) && InGame(ob)) {
+			roots.push_back(ob);
+		}
+	}
+	if (m_physx > 0) {
+		for (Object *root : roots) {
+			if (art_of.count(root)) {
 				continue;
 			}
-			bRigidBodyJointConstraint *dat = (bRigidBodyJointConstraint *)con->data;
+			std::vector<Object *> tree = {root};
+			art_of[root] = root;
+			std::set<bConstraint *> seen;
+			for (size_t at = 0; at < tree.size(); at++) {
+				Object *node = tree[at];
+				for (const JointRef &j : joints) {
+					if ((j.ob != node && j.dat->tar != node) || seen.count(j.con)) {
+						continue;
+					}
+					seen.insert(j.con);
+					Object *other = j.ob == node ? j.dat->tar : j.ob;
+					const char *why = NULL;
+					if (other && std::find(tree.begin(), tree.end(), other) != tree.end()) {
+						why = "it closes a loop (an articulation is a tree)";
+					}
+					else if (other && (art_of.count(other) || art_root(other) ||
+					                   ELEM(physics_type(other), OB_BODY_TYPE_CHARACTER, OB_BODY_TYPE_SOFT,
+					                        OB_BODY_TYPE_SENSOR)))
+					{
+						why = "the object it joins cannot be a link (another articulation, a character, a soft "
+						      "body)";
+					}
+					else if (!other || !moving(physics_type(other))) {
+						why = "joined to the world or to an object that does not move";
+					}
+					else if (!articulable(j.dat)) {
+						why = "no articulation joint of this kind (a 6DOF sliding on two axes, or sliding and "
+						      "turning)";
+					}
+					if (why) {
+						art_left[j.con] = why;
+						continue;
+					}
+					art_joint[j.con] = name_of(root);
+					art_of[other] = root;
+					tree.push_back(other);
+				}
+			}
+		}
+	}
+	for (Object *root : roots) {
+		std::map<std::string, int>::iterator it = body_el.find(name_of(root));
+		if (it == body_el.end()) {
+			continue;
+		}
+		if (m_physx <= 0) {
+			Warn(it->second, "PHY_ART_ENGINE", GV_WARN_NOTE,
+			     "an articulation root: articulations need PhysX (World > Physics); here its joints are ordinary "
+			     "ones");
+			continue;
+		}
+		int links = 0;
+		for (const auto &a : art_of) {
+			links += a.second == root ? 1 : 0;
+		}
+		if (links < 2) {
+			Warn(it->second, "PHY_ART_ALONE", GV_WARN_NOTE,
+			     "an articulation root with nothing joined to it: it stays an ordinary rigid body");
+		}
+		else {
+			BLI_strncpy(elements[it->second].info,
+			            fmt("articulation root (%s), %d links", idprop_int(root->id.properties, "bge_articulation", 0) == 2 ?
+			                "fixed to the world" : "moves freely", links).c_str(),
+			            sizeof(elements[it->second].info));
+		}
+	}
+
+	/* joints (Rigid Body Joint constraints) */
+	for (const JointRef &j : joints) {
+		Object *ob = j.ob;
+		bConstraint *con = j.con;
+		bRigidBodyJointConstraint *dat = j.dat;
+		{
 			const char *jid = joint_id(dat->type);
-			const int el = Add(jid ? fmt("joint:%s", jid).c_str() : "joint:OTHER", con->name, ob,
-			                   dat->tar ? fmt("to %s", name_of(dat->tar)).c_str() : "to the world");
+			const bool articulated = art_joint.count(con) != 0;
+			std::string info = dat->tar ? fmt("to %s", name_of(dat->tar)) : std::string("to the world");
+			if (articulated) {
+				info += fmt(", in %s's articulation", art_joint[con].c_str());
+			}
+			const int el = Add(jid ? fmt("joint:%s", jid).c_str() : "joint:OTHER", con->name, ob, info.c_str());
 			int s = Shape(GV_SHAPE_SPHERE, GV_LAYER_PHYSICS, el);
 			shapes[s].p[0] = 0.08f;
 			shapes[s].p[1] = dat->pivX;
@@ -1449,12 +1574,54 @@ void GVBuilder::Physics()
 				     fmt("joins %s, which has no physics: Blender 2.79 does not make this joint",
 				         physics_type(ob) == OB_BODY_TYPE_NO_COLLISION ? name_of(ob) : name_of(dat->tar)).c_str(), true);
 			}
+			if (dat->tar && !InGame(dat->tar)) {
+				Warn(el, "PHY_JOINT_MISSING", GV_WARN_RED,
+				     fmt("joins %s, which is not in the game when it starts: Blender 2.79 does not make this "
+				         "joint", name_of(dat->tar)).c_str(), true);
+			}
+			/* P11 (B1), in Ayhan's colours: White, in an articulation (ready);
+			 * Red, a joint of an articulation's body it cannot take (an
+			 * ordinary joint); Black, in no articulation (Bullet, or no root) */
+			std::map<bConstraint *, const char *>::iterator left = art_left.find(con);
+			if (left != art_left.end()) {
+				Warn(el, "PHY_ART_LEFT", GV_WARN_RED,
+				     fmt("not part of the articulation: %s; it stays an ordinary joint", left->second).c_str());
+			}
+			elements[el].state = articulated ? GV_STATE_WHITE : GV_STATE_BLACK;
+			/* its limits at the pivot: a hinge's range, a cone twist's cone */
+			if (dat->type == CONSTRAINT_RB_HINGE ||
+			    (dat->type == CONSTRAINT_RB_CONETWIST && (dat->flag & (16 | 32))))
+			{
+				const bool hinge = dat->type == CONSTRAINT_RB_HINGE;
+				s = Shape(hinge ? GV_SHAPE_LIMIT_ARC : GV_SHAPE_LIMIT_CONE, GV_LAYER_PHYSICS, el);
+				shapes[s].p[0] = dat->pivX;
+				shapes[s].p[1] = dat->pivY;
+				shapes[s].p[2] = dat->pivZ;
+				shapes[s].p[3] = dat->axX;
+				shapes[s].p[4] = dat->axY;
+				shapes[s].p[5] = dat->axZ;
+				if (hinge) {
+					/* (the joint's angle is the target's against the owner, as
+					 * Bullet's: the owner's range, from where it lies, is that
+					 * turned over) */
+					const bool limited = (dat->flag & 8) != 0;
+					shapes[s].p[6] = limited ? -dat->maxLimit[3] : 1.0f;
+					shapes[s].p[7] = limited ? -dat->minLimit[3] : -1.0f;
+				}
+				else {
+					shapes[s].p[7] = max_ff((dat->flag & 16) ? dat->maxLimit[4] : 0.0f,
+					                        (dat->flag & 32) ? dat->maxLimit[5] : 0.0f);
+				}
+			}
 			if (dat->tar && moving(physics_type(ob)) && moving(physics_type(dat->tar))) {
+				/* (an articulation's joints hold much more: noted past 1000 to 1) */
 				const float a = max_ff(ob->mass, 1e-6f), b = max_ff(dat->tar->mass, 1e-6f);
-				if (a / b > 10.0f || b / a > 10.0f) {
+				const float most = articulated ? 1000.0f : 10.0f;
+				if (a / b > most || b / a > most) {
 					Warn(el, "PHY_MASS_RATIO", GV_WARN_NOTE,
-					     fmt("masses %.2f and %.2f: a heavy body on a light one makes joints unstable", ob->mass,
-					         dat->tar->mass).c_str());
+					     fmt("masses %.2f and %.2f: a heavy body on a light one makes joints unstable%s", ob->mass,
+					         dat->tar->mass, articulated ? " (even in an articulation)" :
+					         (m_physx > 0 ? " (an articulation holds them: Physics > Articulation)" : "")).c_str());
 				}
 			}
 		}

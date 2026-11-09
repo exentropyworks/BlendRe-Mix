@@ -7,6 +7,9 @@
 The tracks (each its own scene module and test module):
   p11a  Part A: motion trails (A2), softness (A3), sharing the graphics card
         (A4), collisions with substeps (A12), adding from a scaled child (A17)
+  p11b  Part B step 1 (B1): articulations (the heavy chain, the ragdoll, the
+        door, the arm, the rope bridge), the engines compared, the Remix View's
+        joint colours, the crash check
 
 BGE_REMIX_P11_TRACKS (comma separated) runs only those tracks.
 """
@@ -27,7 +30,7 @@ import run_p2 as p2  # noqa: E402  (running Blender, contact sheets)
 import run_p8 as p8  # noqa: E402  (the player, pictures, the fake runtime)
 import run_p9 as r9  # noqa: E402,F401  (P9's helpers: pipe_play, mock_materials, textures_in, ...)
 
-TRACKS = ("p11a",)
+TRACKS = ("p11a", "p11b")
 
 
 def make_scenes(ours, out):

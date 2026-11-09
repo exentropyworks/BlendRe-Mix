@@ -94,6 +94,7 @@
 #include "BL_ModifierDeformer.h"
 #include "BL_ShapeDeformer.h"
 #include "BL_DeformableGameObject.h"
+#include "BL_ArmatureObject.h"  /* BGE-Remix P11 (B1) */
 #include "KX_ObstacleSimulation.h"
 
 #ifdef WITH_BULLET
@@ -1709,6 +1710,10 @@ static void update_anim_thread_func(TaskPool *pool, void *taskdata, int UNUSED(t
 	}
 
 	if (needs_update) {
+		/* BGE-Remix P11 (B1): a ragdoll's bones follow its capsules every frame */
+		if (gameobj->GetGameObjectType() == SCA_IObject::OBJ_ARMATURE) {
+			static_cast<BL_ArmatureObject *>(gameobj)->RagdollTick(curtime);
+		}
 		gameobj->UpdateActionManager(curtime);
 		children = gameobj->GetChildren();
 		parent = gameobj->GetParent();

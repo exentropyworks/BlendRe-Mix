@@ -58,6 +58,10 @@
 #include "DNA_object_force.h"
 #include "DNA_object_types.h"
 #include "DNA_scene_types.h"
+
+extern "C" {
+#include "BKE_idprop.h"  /* BGE-Remix P11 (B1) */
+}
 #include "DNA_world_types.h"
 
 extern "C" {
@@ -424,6 +428,14 @@ void PxPhysicsEnvironment::ConvertObject(KX_GameObject *gameobj, RAS_MeshObject 
 	                (isdyna ? PXF_ALL : (ischar ? PXF_ALL : (PXF_ALL ^ PXF_STATIC)));
 	const MT_Vector3 scaling = gameobj->NodeGetWorldScaling();
 	ci.scaling = px(scaling);
+	/* BGE-Remix P11 (B1): the root of an articulation (the object's ID property
+	 * bge_articulation: 1 moves freely, 2 fixed to the world) */
+	{
+		IDProperty *art = blenderobject->id.properties ?
+		        IDP_GetPropertyFromGroup(blenderobject->id.properties, "bge_articulation") : NULL;
+		ci.articulation = (art && art->type == IDP_INT && isdyna && !issoft && !ischar && !issensor) ?
+		        std::max(0, std::min(IDP_Int(art), 2)) : 0;
+	}
 
 	PxPhysicsController *ctrl = new PxPhysicsController(ci, motionstate, this);
 	shape->Release();

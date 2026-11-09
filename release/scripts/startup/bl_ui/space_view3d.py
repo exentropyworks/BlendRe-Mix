@@ -1318,6 +1318,10 @@ class VIEW3D_MT_object(Menu):
         layout.menu("VIEW3D_MT_object_parent")
         layout.menu("VIEW3D_MT_object_track")
         layout.menu("VIEW3D_MT_object_group")
+        # BGE-Remix P11 (B1): capsules and joints on an armature's bones
+        ob = context.active_object
+        if ob is not None and ob.type == 'ARMATURE' and context.scene.render.engine == 'BLENDER_GAME':
+            layout.operator("object.bge_remix_make_ragdoll", icon='MOD_ARMATURE')
         layout.menu("VIEW3D_MT_object_constraints")
 
         layout.separator()

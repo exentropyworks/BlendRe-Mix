@@ -868,6 +868,77 @@ static void gv_draw_shape(const GVView *gv, const GVShape *s, float alpha)
 			glEnd();
 			break;
 		}
+		case GV_SHAPE_LIMIT_ARC:
+		case GV_SHAPE_LIMIT_CONE: {
+			/* BGE-Remix P11 (B1): a joint's limits at its pivot */
+			const float local[3] = {s->p[0], s->p[1], s->p[2]};
+			const float eul[3] = {s->p[3], s->p[4], s->p[5]};
+			float pw[3], frame[3][3], jx[3], jy[3], jz[3];
+			eul_to_mat3(frame, eul);
+			if (ob) {
+				mul_v3_m4v3(pw, ob->obmat, local);
+				mul_v3_mat3_m4v3(jx, ob->obmat, frame[0]);
+				mul_v3_mat3_m4v3(jy, ob->obmat, frame[1]);
+				mul_v3_mat3_m4v3(jz, ob->obmat, frame[2]);
+			}
+			else {
+				add_v3_v3v3(pw, o, local);
+				copy_v3_v3(jx, frame[0]);
+				copy_v3_v3(jy, frame[1]);
+				copy_v3_v3(jz, frame[2]);
+			}
+			normalize_v3(jx);
+			normalize_v3(jy);
+			normalize_v3(jz);
+			if (s->type == GV_SHAPE_LIMIT_ARC) {
+				/* from where the body lies (its origin seen about the axis) */
+				float d0[3], d90[3], r = 0.35f;
+				sub_v3_v3v3(d0, o, pw);
+				madd_v3_v3fl(d0, jx, -dot_v3v3(d0, jx));
+				if (normalize_v3(d0) < 1e-4f) {
+					copy_v3_v3(d0, jy);
+				}
+				cross_v3_v3v3(d90, jx, d0);
+				const bool unlimited = s->p[6] > s->p[7];
+				const float lo = unlimited ? 0.0f : s->p[6], hi = unlimited ? (float)(2.0 * M_PI) : s->p[7];
+				const int segs = max_ii(8, (int)(48.0f * (hi - lo) / (float)(2.0 * M_PI)));
+				glBegin(GL_LINE_STRIP);
+				if (!unlimited) {
+					glVertex3fv(pw);
+				}
+				for (i = 0; i <= segs; i++) {
+					const float t = lo + (hi - lo) * i / segs;
+					float co[3];
+					copy_v3_v3(co, pw);
+					madd_v3_v3fl(co, d0, cosf(t) * r);
+					madd_v3_v3fl(co, d90, sinf(t) * r);
+					glVertex3fv(co);
+				}
+				if (!unlimited) {
+					glVertex3fv(pw);
+				}
+				glEnd();
+			}
+			else {
+				const float half = min_ff(max_ff(s->p[7], 0.0f), DEG2RADF(89.0f));
+				const float L = 0.3f, len = L * cosf(half), rad = L * sinf(half);
+				float base[3];
+				madd_v3_v3v3fl(base, pw, jx, len);
+				gv_circle(base, jy, jz, rad, 32);
+				glBegin(GL_LINES);
+				for (i = 0; i < 4; i++) {
+					float co[3];
+					const float a = (float)(M_PI_2 * i);
+					copy_v3_v3(co, base);
+					madd_v3_v3fl(co, jy, cosf(a) * rad);
+					madd_v3_v3fl(co, jz, sinf(a) * rad);
+					glVertex3fv(pw);
+					glVertex3fv(co);
+				}
+				glEnd();
+			}
+			break;
+		}
 		default:
 			break;
 	}

@@ -85,6 +85,25 @@ Functions
    :return: A vehicle constraint object.
    :rtype: :class:`~bge.types.KX_VehicleWrapper`
 
+.. function:: getArticulation(gameobj)
+
+   BGE-Remix P11 (PhysX only): the articulation the object is a link of. An
+   object whose Physics tab sets it as an Articulation Root, and the bodies
+   joined to it by Rigid Body Joints, are solved by PhysX as one
+   articulation (built at the first physics step, built again when a body or
+   joint of it is added or removed).
+
+   An armature with a ragdoll (Make Ragdoll) gives its ragdoll's articulation,
+   whether its capsules are let go or still on the bones: its ``ragdoll``
+   attribute switches between the two.
+
+   :arg gameobj: Any link of the articulation (its root or another body), or a
+      ragdoll's armature.
+   :type gameobj: :class:`~bge.types.KX_GameObject`
+
+   :return: The articulation, or None (not PhysX, or the object is in none).
+   :rtype: :class:`~bge.types.KX_ArticulationWrapper`
+
 .. function:: getCharacter(gameobj)
 
    :arg gameobj: The game object with the character physics.

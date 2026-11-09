@@ -198,6 +198,53 @@ class PHYSICS_PT_game_physics(PhysicsButtonsPanel, Panel):
             layout.operator("mesh.navmesh_clear")
 
 
+class PHYSICS_PT_game_articulation(PhysicsButtonsPanel, Panel):
+    """BGE-Remix P11 (B1): articulations and ragdolls (PhysX)"""
+    bl_label = "Articulation"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        scene = context.scene
+        if not (ob and ob.game and scene.render.engine in cls.COMPAT_ENGINES and
+                scene.game_settings.physics_engine == 'PHYSX'):
+            return False
+        return ob.type == 'ARMATURE' or ob.game.physics_type in {'DYNAMIC', 'RIGID_BODY'}
+
+    @classmethod
+    def register(cls):
+        from bpy.props import EnumProperty
+        bpy.types.Object.bge_articulation = EnumProperty(
+            name="Articulation Root",
+            description="The object and the bodies joined to it (Rigid Body Joints) are solved as one "
+                        "articulation, whose joints never drift apart",
+            items=(('NONE', "None", "Not the root of an articulation", 0),
+                   ('FREE', "Moves Freely", "The root of an articulation that moves freely (a ragdoll)", 1),
+                   ('FIXED', "Fixed to the World", "The root of an articulation fixed where it is (a robot "
+                                                   "arm, a hanging chain)", 2)),
+            default='NONE')
+
+    @classmethod
+    def unregister(cls):
+        if hasattr(bpy.types.Object, "bge_articulation"):
+            del bpy.types.Object.bge_articulation
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.active_object
+        if ob.type == 'ARMATURE':
+            layout.operator("object.bge_remix_make_ragdoll", icon='MOD_ARMATURE')
+            made = sum(1 for o in context.scene.objects if o.get("bge_ragdoll_armature") == ob.name)
+            if made:
+                layout.label("%d capsules; a script lets them go (getArticulation(armature).ragdoll = True)" %
+                             made, icon='INFO')
+            return
+        layout.prop(ob, "bge_articulation", text="Root")
+        if "bge_ragdoll_bone" in ob:
+            layout.label("A capsule of a ragdoll (bone %s)" % ob["bge_ragdoll_bone"], icon='INFO')
+
+
 class PHYSICS_PT_game_collision_bounds(PhysicsButtonsPanel, Panel):
     bl_label = "Collision Bounds"
     COMPAT_ENGINES = {'BLENDER_GAME'}
@@ -1286,6 +1333,7 @@ class OBJECT_PT_levels_of_detail(ObjectButtonsPanel, Panel):
 classes = (
     PHYSICS_PT_game_physics,
     PHYSICS_PT_game_collision_bounds,
+    PHYSICS_PT_game_articulation,
     PHYSICS_PT_game_obstacles,
     RENDER_PT_embedded,
     RENDER_PT_game_player,

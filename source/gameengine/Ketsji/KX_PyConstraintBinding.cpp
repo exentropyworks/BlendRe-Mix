@@ -34,12 +34,16 @@
 #include "KX_ConstraintWrapper.h"
 #include "KX_VehicleWrapper.h"
 #include "KX_CharacterWrapper.h"
+#include "KX_ArticulationWrapper.h"  /* BGE-Remix P11 (B1) */
+#include "BL_ArmatureObject.h"
 #include "PHY_IPhysicsController.h"
 #include "PHY_IVehicle.h"
 #include "PHY_DynamicTypes.h"
 #include "MT_Matrix3x3.h"
 
 #include "KX_GameObject.h" // ConvertPythonToGameObject()
+#include "KX_ClientObjectInfo.h"  /* BGE-Remix P11 (B1) */
+#include "KX_Scene.h"
 #include "KX_PythonInit.h"
 
 #include "EXP_PyObjectPlus.h" 
@@ -491,6 +495,41 @@ static PyObject* gPyGetCharacter(PyObject* self,
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P11 (B1): the articulation an object is a link of (PhysX) */
+static PyObject *gPyGetArticulation(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pyob;
+	KX_GameObject *ob;
+	if (!PyArg_ParseTuple(args, "O", &pyob)) {
+		return NULL;
+	}
+	if (!ConvertPythonToGameObject(KX_GetActiveScene()->GetLogicManager(), pyob, &ob, false,
+	                               "bge.constraints.getArticulation(value)"))
+	{
+		return NULL;
+	}
+	/* a ragdoll's armature: its articulation, let go or not */
+	if (ob->GetGameObjectType() == SCA_IObject::OBJ_ARMATURE) {
+		BL_ArmatureObject *arm = static_cast<BL_ArmatureObject *>(ob);
+		KX_GameObject *root = arm->HasRagdoll() ? arm->RagdollRoot() : NULL;
+		if (root) {
+			KX_ArticulationWrapper *wrapper = new KX_ArticulationWrapper(root, arm);
+			return wrapper->NewProxy(true);
+		}
+		Py_RETURN_NONE;
+	}
+	PHY_IPhysicsEnvironment *env = ob->GetScene() ? ob->GetScene()->GetPhysicsEnvironment() : NULL;
+	PHY_ArticulationInfo info;
+	if (env && ob->GetPhysicsController() && env->GetArticulation(ob->GetPhysicsController(), &info)) {
+		KX_GameObject *root = KX_GameObject::GetClientObject((KX_ClientObjectInfo *)info.root->GetNewClientInfo());
+		if (root) {
+			KX_ArticulationWrapper *wrapper = new KX_ArticulationWrapper(root);
+			return wrapper->NewProxy(true);
+		}
+	}
+	Py_RETURN_NONE;
+}
+
 static PyObject *gPyCreateConstraint(PyObject *self,
                                      PyObject *args,
                                      PyObject *kwds)
@@ -653,6 +692,8 @@ static struct PyMethodDef physicsconstraints_methods[] = {
 	{"getVehicleConstraint",(PyCFunction) gPyGetVehicleConstraint,
 	 METH_VARARGS, (const char *)gPyGetVehicleConstraint__doc__},
 
+	{"getArticulation", (PyCFunction)gPyGetArticulation, METH_VARARGS,
+	 "getArticulation(ob): the articulation the object is a link of (PhysX), or an armature's ragdoll; or None"},
 	{"getCharacter",(PyCFunction) gPyGetCharacter,
 	 METH_VARARGS, (const char *)gPyGetCharacter__doc__},
 

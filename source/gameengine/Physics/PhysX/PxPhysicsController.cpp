@@ -132,7 +132,8 @@ PxCtrlInfo::PxCtrlInfo()
       maxJumps(1),
       bsoft(NULL),
       filterGroup(PXF_STATIC),
-      filterMask(PXF_ALL ^ PXF_STATIC)
+      filterMask(PXF_ALL ^ PXF_STATIC),
+      articulation(0)
 {
 }
 
@@ -154,7 +155,10 @@ PxPhysicsController::PxPhysicsController(const PxCtrlInfo &info, PHY_IMotionStat
       m_character(NULL),
       m_soft(NULL),
       m_lastKinematic(PxIdentity),
-      m_kinematicMoved(false)
+      m_kinematicMoved(false),
+      m_articulation(NULL),
+      m_articulationWarned(false),
+      m_articulationFailed(false)
 {
 	if (m_info.shape) {
 		m_info.shape->AddRef();
@@ -180,7 +184,10 @@ PxPhysicsController::PxPhysicsController(const PxPhysicsController &other)
       m_character(NULL),
       m_soft(NULL),
       m_lastKinematic(PxIdentity),
-      m_kinematicMoved(false)
+      m_kinematicMoved(false),
+      m_articulation(NULL),
+      m_articulationWarned(false),
+      m_articulationFailed(false)
 {
 	/* a suspended original: the replica starts as the object was made */
 	if (other.m_suspended) {
@@ -268,6 +275,16 @@ PxRigidDynamic *PxPhysicsController::GetDynamic()
 	return (m_actor && m_actor->getType() == PxActorType::eRIGID_DYNAMIC) ? static_cast<PxRigidDynamic *>(m_actor) : NULL;
 }
 
+PxRigidBody *PxPhysicsController::GetBody()
+{
+	if (m_actor && (m_actor->getType() == PxActorType::eRIGID_DYNAMIC ||
+	                m_actor->getType() == PxActorType::eARTICULATION_LINK))
+	{
+		return static_cast<PxRigidBody *>(m_actor);
+	}
+	return NULL;
+}
+
 void PxPhysicsController::CreateActor()
 {
 	PxSystem *sys = PxSystem::Get();
@@ -318,6 +335,67 @@ void PxPhysicsController::CreateActor()
 		PxSystem::WarnOnce("anisotropic", "anisotropic friction is not available under PhysX (plain friction is used)");
 	}
 	ApplyMass();
+}
+
+void PxPhysicsController::BecomeLink(PxRigidBody *link, PxArticulationGroup *group)
+{
+	PxSystem *sys = PxSystem::Get();
+	if (!sys || !link || !m_info.shape) {
+		return;
+	}
+	if (m_actor) {
+		if (m_actor->getScene()) {
+			m_actor->getScene()->removeActor(*m_actor);
+		}
+		m_actor->release();
+	}
+	m_actor = link;
+	m_actor->userData = this;
+	m_articulation = group;
+	PxShapeFlags flags = PxShapeFlag::eSCENE_QUERY_SHAPE | PxShapeFlag::eVISUALIZATION;
+	flags |= IsTrigger() ? PxShapeFlags(PxShapeFlag::eTRIGGER_SHAPE) : PxShapeFlags(PxShapeFlag::eSIMULATION_SHAPE);
+	m_shapes.clear();
+	m_shapeOwners.clear();
+	m_info.shape->CreateShapes(m_actor, m_info.scaling, sys->Material(m_info.friction, m_info.restitution),
+	                           FilterData(), flags, true, m_shapes, &m_shapeOwners);
+	const float dt = m_env ? m_env->Step() : 1.0f / 60.0f;
+	const float mass = m_info.mass > 0.0f ? m_info.mass : 1.0f;
+	const PxVec3 origin(0.0f);
+	if (!m_shapes.empty()) {
+		PxRigidBodyExt::setMassAndUpdateInertia(*link, mass, &origin, true);
+	}
+	else {
+		link->setMass(mass);
+		link->setMassSpaceInertiaTensor(PxVec3(mass * 0.4f));
+	}
+	link->setMassSpaceInertiaTensor(link->getMassSpaceInertiaTensor() *
+	                                (m_info.rigid ? std::max(m_info.inertiaFactor, 1e-3f) : 1.0f));
+	link->setLinearDamping(px_damping(m_info.linearDamping, dt));
+	link->setAngularDamping(px_damping(m_info.angularDamping, dt));
+	link->setMaxDepenetrationVelocity(10.0f);
+	link->setMaxAngularVelocity(1000.0f);
+}
+
+void PxPhysicsController::LeaveLink(const PxTransform &pose, const PxVec3 &lin, const PxVec3 &ang)
+{
+	PxSystem *sys = PxSystem::Get();
+	m_articulation = NULL;
+	m_actor = NULL;  /* (the articulation releases its links) */
+	m_shapes.clear();
+	m_shapeOwners.clear();
+	if (!sys || !m_info.shape) {
+		return;
+	}
+	PxRigidDynamic *body = sys->Physics()->createRigidDynamic(pose);
+	m_actor = body;
+	m_actor->userData = this;
+	PxShapeFlags flags = PxShapeFlag::eSCENE_QUERY_SHAPE | PxShapeFlag::eVISUALIZATION;
+	flags |= IsTrigger() ? PxShapeFlags(PxShapeFlag::eTRIGGER_SHAPE) : PxShapeFlags(PxShapeFlag::eSIMULATION_SHAPE);
+	m_info.shape->CreateShapes(m_actor, m_info.scaling, sys->Material(m_info.friction, m_info.restitution),
+	                           FilterData(), flags, true, m_shapes, &m_shapeOwners);
+	ApplyMass();
+	body->setLinearVelocity(lin);
+	body->setAngularVelocity(ang);
 }
 
 void PxPhysicsController::DestroyActor()
@@ -410,6 +488,11 @@ void PxPhysicsController::RebuildShapes()
 	if (!sys || !m_actor || m_character || m_soft) {
 		return;
 	}
+	/* P11 (B1): a link's shapes change as a body's (its articulation is built
+	 * again at the next step) */
+	if (m_articulation && m_env) {
+		m_env->DismantleArticulation(m_articulation);
+	}
 	if (m_env) {
 		m_env->ForgetPairs(this);
 	}
@@ -480,6 +563,12 @@ void PxPhysicsController::Teleport(const PxTransform &t)
 	}
 	if (m_character) {
 		m_character->SetPosition(t.p);
+		return;
+	}
+	if (m_articulation) {
+		/* P11 (B1): an articulation's root moves it all; its other links
+		 * follow their joints */
+		m_env->ArticulationTeleport(this, t);
 		return;
 	}
 	if (PxRigidDynamic *body = GetDynamic()) {
@@ -572,7 +661,7 @@ bool PxPhysicsController::SynchronizeMotionStates(float)
 		m_motionState->CalculateWorldTransformations();
 		return true;
 	}
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (body && !m_kinematic) {
 		const PxTransform t = body->getGlobalPose();
 		const PxMat33 m(t.q);
@@ -731,7 +820,7 @@ MT_Scalar PxPhysicsController::GetMass()
 	if (m_soft) {
 		return m_soft->Mass();
 	}
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (body && m_info.dyna && !m_kinematic) {
 		return body->getMass();
 	}
@@ -756,7 +845,7 @@ void PxPhysicsController::ApplyImpulse(const MT_Point3 &attach, const MT_Vector3
 		MakeKinematic();
 		return;
 	}
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (!body || m_kinematic) {
 		return;
 	}
@@ -769,6 +858,13 @@ void PxPhysicsController::ApplyImpulse(const MT_Point3 &attach, const MT_Vector3
 	}
 	else {
 		rel = PxVec3((float)attach.x(), (float)attach.y(), (float)attach.z()) - t.p;
+	}
+	if (m_articulation) {
+		/* P11 (B1): PhysX takes no impulse on an articulation's link: the
+		 * same push as a force over the next step */
+		const float dt = std::max(m_env ? m_env->Step() : 1.0f / 60.0f, 1e-4f);
+		PxRigidBodyExt::addForceAtPos(*body, impulse / dt, t.p + rel, PxForceMode::eFORCE);
+		return;
 	}
 	PxRigidBodyExt::addForceAtPos(*body, impulse, t.p + rel, PxForceMode::eIMPULSE);
 }
@@ -783,7 +879,7 @@ void PxPhysicsController::ApplyTorque(const MT_Vector3 &torquein, bool local)
 		MakeKinematic();
 		return;
 	}
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (!body || m_kinematic) {
 		return;
 	}
@@ -814,7 +910,7 @@ void PxPhysicsController::ApplyForce(const MT_Vector3 &forcein, bool local)
 		MakeKinematic();
 		return;
 	}
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (!body || m_kinematic) {
 		return;
 	}
@@ -836,6 +932,13 @@ void PxPhysicsController::SetAngularVelocity(const MT_Vector3 &ang_vel, bool loc
 	}
 	if (!m_info.dyna) {
 		MakeKinematic();
+		return;
+	}
+	if (m_articulation) {
+		if (local) {
+			v = m_actor->getGlobalPose().q.rotate(v);
+		}
+		m_env->ArticulationSetVelocity(this, NULL, &v);
 		return;
 	}
 	PxRigidDynamic *body = GetDynamic();
@@ -864,6 +967,13 @@ void PxPhysicsController::SetLinearVelocity(const MT_Vector3 &lin_vel, bool loca
 	}
 	if (!m_info.dyna) {
 		MakeKinematic();
+		return;
+	}
+	if (m_articulation) {
+		if (local) {
+			v = m_actor->getGlobalPose().q.rotate(v);
+		}
+		m_env->ArticulationSetVelocity(this, &v, NULL);
 		return;
 	}
 	PxRigidDynamic *body = GetDynamic();
@@ -902,6 +1012,11 @@ void PxPhysicsController::RefreshCollisions()
 
 void PxPhysicsController::SuspendDynamics(bool ghost)
 {
+	/* P11 (B1): a link leaves its articulation first (the rest is built again
+	 * without it; a suspended root builds none) */
+	if (m_articulation && m_env && !m_suspended && !m_info.sensor && m_inScene) {
+		m_env->DismantleArticulation(m_articulation);
+	}
 	PxRigidDynamic *body = GetDynamic();
 	if (!body || m_suspended || m_info.sensor || !m_inScene || m_character) {
 		return;
@@ -942,6 +1057,9 @@ void PxPhysicsController::RestoreDynamics()
 	m_info.scaling = PxVec3(scaling_x, scaling_y, scaling_z);
 	m_kinematic = m_savedKinematic;
 	m_suspended = false;
+	if (m_env && (m_info.articulation || !m_constraints.empty())) {
+		m_env->ArticulationsChanged();  /* P11 (B1): it may join (or root) one again */
+	}
 	body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, m_kinematic);
 	if (reshape) {
 		RebuildShapes();
@@ -960,7 +1078,7 @@ MT_Vector3 PxPhysicsController::GetLinearVelocity()
 	if (m_character) {
 		return mt(m_character->Velocity());
 	}
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (body && !m_kinematic) {
 		return mt(body->getLinearVelocity());
 	}
@@ -969,7 +1087,7 @@ MT_Vector3 PxPhysicsController::GetLinearVelocity()
 
 MT_Vector3 PxPhysicsController::GetAngularVelocity()
 {
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (body && !m_kinematic) {
 		return mt(body->getAngularVelocity());
 	}
@@ -978,7 +1096,7 @@ MT_Vector3 PxPhysicsController::GetAngularVelocity()
 
 MT_Vector3 PxPhysicsController::GetVelocity(const MT_Point3 &pos)
 {
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (body && !m_kinematic) {
 		const PxVec3 rel((float)pos.x(), (float)pos.y(), (float)pos.z());
 		return mt(body->getLinearVelocity() + body->getAngularVelocity().cross(rel));
@@ -988,7 +1106,7 @@ MT_Vector3 PxPhysicsController::GetVelocity(const MT_Point3 &pos)
 
 MT_Vector3 PxPhysicsController::GetLocalInertia()
 {
-	PxRigidDynamic *body = GetDynamic();
+	PxRigidBody *body = GetBody();
 	if (body && !m_kinematic) {
 		return mt(body->getMassSpaceInertiaTensor());
 	}

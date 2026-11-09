@@ -41,6 +41,8 @@
 #include "MEM_guardedalloc.h"
 #endif
 
+#include <vector>  /* BGE-Remix P11 (B1) */
+
 class PHY_IVehicle;
 class PHY_ICharacter;
 class RAS_MeshObject;
@@ -60,6 +62,19 @@ struct bRigidBodyJointConstraint;
 /**
  * pass back information from rayTest
  */
+/* BGE-Remix P11 (B1): an articulation (PhysX: a tree of bodies solved as
+ * one), as the game sees it */
+struct PHY_ArticulationInfo
+{
+	PHY_IPhysicsController *root;
+	bool fixed;                                  /* the root fixed to the world */
+	std::vector<PHY_IPhysicsController *> links; /* the root first, each after its parent */
+	std::vector<int> joints;                     /* each link's joint to its parent (0: the root) */
+	std::vector<int> parents;                    /* each link's parent (an index; -1: the root) */
+	std::vector<int> ordinary;                   /* its bodies' joints left ordinary (a loop, ...) */
+	PHY_ArticulationInfo() : root(NULL), fixed(false) {}
+};
+
 struct PHY_RayCastResult
 {
 	PHY_IPhysicsController* m_controller;
@@ -213,6 +228,25 @@ class PHY_IPhysicsEnvironment
 							int activeLayerBitInfo,
 							bool isCompoundChild,
 							bool hasCompoundChildren) = 0;
+
+		/* BGE-Remix P11 (B1): articulations (PhysX only; the others have none).
+		 * The articulation the body is a link of (false: none). */
+		virtual bool GetArticulation(PHY_IPhysicsController *ctrl, PHY_ArticulationInfo *info) { return false; }
+		/* An articulation joint's position and speed on one axis (0-2 sliding
+		 * X Y Z, 3-5 turning X Y Z; -1 the joint's first moving axis). */
+		virtual bool GetArticulationJoint(int constraintId, int axis, float *pos, float *vel) { return false; }
+		/* Drive an articulation joint's axis to a position (target) and/or a
+		 * speed (velocity); maxForce <= 0: no limit. */
+		virtual bool SetArticulationDrive(int constraintId, int axis, const float *target, const float *velocity,
+		                                  float stiffness, float damping, float maxForce) { return false; }
+		/* Why a joint of an articulation's body is not in the articulation
+		 * (NULL: it is, or it has no articulation). */
+		virtual const char *GetArticulationNote(int constraintId) { return NULL; }
+		/* What an articulation joint does now, for the Remix View: -1 not an
+		 * articulation joint, 0 at rest, 1 moving, 2 at a limit, 3 driven (a
+		 * motor, a spring, a target or speed set); its first moving axis and
+		 * the position there. */
+		virtual int GetArticulationJointActivity(int constraintId, int *r_axis, float *r_pos) { return -1; }
 
 		/* Set the rigid body joints constraints values for converted objects and replicated group instances. */
 		virtual void SetupObjectConstraints(KX_GameObject *obj_src, KX_GameObject *obj_dest,
