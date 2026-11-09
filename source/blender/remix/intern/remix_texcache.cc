@@ -636,12 +636,27 @@ bool gl_cache_load(Image *ima, ImBuf *ibuf, GPUCompressedImage *r)
 		return false;
 	}
 	const int w = ibuf->x, h = ibuf->y;
-	wchar_t hex[16];
-	swprintf(hex, 16, L"%08x", pixel_hash(w, h, (const unsigned char *)ibuf->rect, NULL, 0));
-	const std::wstring path = TextureCache::folder() + L"\\" + safe_name(ima->id.name + 2) + L"_col_" + hex + L".dds";
-	FILE *f = _wfopen(path.c_str(), L"rb");
+	wchar_t hex[24];
+	const unsigned hash = pixel_hash(w, h, (const unsigned char *)ibuf->rect, NULL, 0);
+	swprintf(hex, 24, L"%08x", hash);
+	const std::wstring base = TextureCache::folder() + L"\\" + safe_name(ima->id.name + 2) + L"_col_";
+	FILE *f = _wfopen((base + hex + L".dds").c_str(), L"rb");
+	/* P11 (A3): the file Remix reads may be the image enlarged (Sharper Small
+	 * Textures): its levels from the image's own size down are taken */
+	int factor = 1;
+	if (!f) {
+		factor = enlarge_factor(w, h);
+		if (factor > 1) {
+			swprintf(hex, 24, L"%08x_x%d", hash, factor);
+			f = _wfopen((base + hex + L".dds").c_str(), L"rb");
+		}
+	}
 	if (!f) {
 		return false;
+	}
+	int skip = 0;
+	for (int k = factor; k > 1; k /= 2) {
+		skip++;
 	}
 	std::vector<unsigned char> *bytes = new std::vector<unsigned char>();
 	fseek(f, 0, SEEK_END);
@@ -660,7 +675,7 @@ bool gl_cache_load(Image *ima, ImBuf *ibuf, GPUCompressedImage *r)
 	};
 	/* "DDS ", a DX10 header, BC7_UNORM (98), the image's size */
 	if (bytes->size() <= 148 || memcmp(b, "DDS ", 4) != 0 || memcmp(b + 84, "DX10", 4) != 0 || u32(128) != 98 ||
-	    (int)u32(12) != h || (int)u32(16) != w)
+	    (int)u32(12) != h * factor || (int)u32(16) != w * factor)
 	{
 		delete bytes;
 		return false;
@@ -668,13 +683,17 @@ bool gl_cache_load(Image *ima, ImBuf *ibuf, GPUCompressedImage *r)
 	const int mips = std::max<int>((int)u32(28), 1);
 	size_t at = 148;
 	int levels = 0;
-	for (int lw = w, lh = h; levels < mips && levels < 16; levels++) {
+	int lw = w * factor, lh = h * factor;
+	for (int m = 0; m < mips && levels < 16; m++) {
 		const size_t size = (size_t)((lw + 3) / 4) * (size_t)((lh + 3) / 4) * 16;
 		if (at + size > bytes->size()) {
 			break;
 		}
-		r->data[levels] = b + at;
-		r->size[levels] = (int)size;
+		if (m >= skip) {
+			r->data[levels] = b + at;
+			r->size[levels] = (int)size;
+			levels++;
+		}
 		at += size;
 		lw = std::max(lw / 2, 1);
 		lh = std::max(lh / 2, 1);

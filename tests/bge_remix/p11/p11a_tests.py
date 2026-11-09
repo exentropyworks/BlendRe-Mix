@@ -161,10 +161,49 @@ def t_scaled(args, out, scenes, P, tests):
     tests["T11.a17 Adding from a scaled child (A17)"] = _test(c, d)
 
 
+def t_enlarge(args, out, scenes, P, tests):
+    """T11.a3n: Sharper Small Textures with the fake runtime: the boards'
+    256 pixel images reach Remix as 1024 pixel files with every mip level;
+    off, as they are"""
+    import shutil
+    sys_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "p3")
+    import sys
+    if sys_path not in sys.path:
+        sys.path.insert(0, sys_path)
+    import dds_check
+    S = P.get("soft")
+    c, d = {}, {}
+    if not S:
+        tests["T11.a3n Sharper Small Textures (fake runtime)"] = _test({"the scene was made": False})
+        return
+    for key, enlarge in (("on", "1024"), ("off", "0")):
+        cache = os.path.join(out, "cache_p11a_enlarge_" + key)
+        shutil.rmtree(cache, ignore_errors=True)
+        os.makedirs(cache)
+        log, env = p8.mock_env(args, out, "p11a_enlarge_" + key, cache)
+        env["BGE_REMIX_TEXTURE_ENLARGE"] = enlarge
+        # (the CPU encoder: time for three 1024 pixel images)
+        r = p8.play(args.ours, out, "p11a_enlarge_" + key, _blend(scenes, S["files"]["remix"]), env, frames=60,
+                    seconds=40)
+        files = sorted(f for f in os.listdir(cache) if f.startswith("P11_") and f.endswith(".dds"))
+        heads = {f: dds_check.read_header(os.path.join(cache, f)) for f in files}
+        d[key] = {f: h and {x: h.get(x) for x in ("width", "height", "mips", "dxgi")} for f, h in heads.items()}
+        st = r.get("stats") or {}
+        c["%s: ran, every texture written (%s waiting)" % (key, st.get("textures_waiting"))] = \
+            r["exit"] == 0 and st.get("textures_waiting") == 0 and len(files) == 3
+        want = 1024 if key == "on" else 256
+        for f, h in heads.items():
+            c["%s: %s is %d pixels with every mip level" % (key, f, want)] = bool(h) and h["width"] == want and \
+                h["height"] == want and h["mips"] == dds_check.full_mips(want, want) and \
+                (("_x4.dds" in f) == (key == "on"))
+    tests["T11.a3n Sharper Small Textures (fake runtime)"] = _test(c, d)
+
+
 def normal(args, out, scenes, E, tests, sheets):
     P = E.get("p11a") or {}
     t_substeps(args, out, scenes, P, tests)
     t_scaled(args, out, scenes, P, tests)
+    t_enlarge(args, out, scenes, P, tests)
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ import glob
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -81,8 +82,9 @@ def tex_name(field):
     if not field or field == "-":
         return None
     base = os.path.basename(str(field).replace("\\", "/"))
-    parts = base[:-4].rsplit("_", 2) if base.endswith(".dds") else []
-    return (parts[0], parts[1]) if len(parts) == 3 else None
+    # (P11: "_x2"/"_x4" after the hash: the image enlarged for Remix)
+    m = re.match(r"^(.*)_([a-z]+)_([0-9a-f]{8})(?:_x\d+)?\.dds$", base)
+    return (m.group(1), m.group(2)) if m else None
 
 
 def notes_for(text, name):
