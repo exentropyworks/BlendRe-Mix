@@ -324,7 +324,8 @@ def t_view(args, out, scenes, P, tests):
     c["the planks' hinges: in the articulation (not Red or Black)"] = \
         all(h and h["state"] not in ("RED", "BLACK") and "articulation" in h["info"] for h in hinges)
     left = {}
-    for owner, jname in (("Plank7", "ToRightPost"), ("Plank3", "Loop")):
+    # (round 2: ten planks since round 1: the tie on Plank9, the loop on Plank4)
+    for owner, jname in (("Plank9", "ToRightPost"), ("Plank4", "Loop")):
         e = _find(els, owner, jname, "joint:")
         codes = sorted(w["code"] for w in warns if w["owner"] == owner and w["name"] == jname)
         left[jname] = {"state": e and e["state"], "warnings": codes}
@@ -358,7 +359,20 @@ def t_view(args, out, scenes, P, tests):
             bool(j) and j[0]["state"] == want[f]
     d["door live"] = live
     d["door errors"] = m.get("errors")
-    d["door run"] = {k: m.get(k) for k in ("exit", "seconds", "last_step", "crash", "console tail")}
+    d["door run"] = {k: m.get(k) for k in ("exit", "seconds", "last_step", "crash")}
+    # (round 2: Run stopped in Blender's sound update after the door's game,
+    # in the step that writes the suspended game into the file. The same
+    # door with an ordinary hinge under PhysX and under Bullet: where it
+    # stops tells whether it is articulations, PhysX or neither; numbers
+    # only, not marked)
+    for key in ("physx_plain", "bullet"):
+        name = (D.get("variants") or {}).get(key)
+        if not name:
+            continue
+        v = view_probe(args, out, "p11b_view_" + name[len("p11b_"):], _blend(scenes, name),
+                       {"BGE_REMIX_P11B_PART": "run", "BGE_REMIX_P11B_FRAMES": "40"})
+        d["door run, " + key] = {"Run ran": v["ran"], "last_step": v.get("last_step"),
+                                 "crash": (v.get("crash") or [None, None])[:2]}
     tests[name] = _test(c, d)
 
 

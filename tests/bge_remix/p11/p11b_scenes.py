@@ -467,14 +467,28 @@ DOOR = {"lo": -90.0, "hi": 10.0, "open": 90.0, "shut": -10.0, "speed": 1.0, "pus
 
 
 def make_door(folder, E):
+    """the door; and (round 2, finding where Run stops) the same door with an
+    ordinary hinge, under PhysX and under Bullet"""
+    variants = {}
+    for key, engine, art in (("physx_cpu", 'PHYSX', True), ("physx_plain", 'PHYSX', False),
+                             ("bullet", 'BULLET', False)):
+        variants[key] = door_scene(folder, key, engine, art)
+    E["door"] = dict(DOOR, file=variants["physx_cpu"], joint="Hinge", variants=variants)
+
+
+def door_scene(folder, key, engine, art):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = m6.base("P11bDoor")
-    m6.set_engine(scene, 'PHYSX', 'CPU')
+    m6.set_engine(scene, engine, 'CPU' if engine == 'PHYSX' else None)
     m6.box(scene, "Floor", (10.0, 10.0, 0.2), (0.0, 0.0, -0.1), m6.material("DoFloor", (0.5, 0.5, 0.5)),
            physics='STATIC')
-    post = m6.box(scene, "Post", (0.1, 0.1, 2.2), (0.0, 0.0, 1.3), m6.material("DoPost", (0.3, 0.3, 0.35)),
-                  mass=5.0)
-    set_root(post, 'FIXED')
+    if art:
+        post = m6.box(scene, "Post", (0.1, 0.1, 2.2), (0.0, 0.0, 1.3), m6.material("DoPost", (0.3, 0.3, 0.35)),
+                      mass=5.0)
+        set_root(post, 'FIXED')
+    else:
+        post = m6.box(scene, "Post", (0.1, 0.1, 2.2), (0.0, 0.0, 1.3), m6.material("DoPost", (0.3, 0.3, 0.35)),
+                      physics='STATIC')
     # (the door 0.3 m off the floor: the box, fallen, lies under its sweep)
     door = m6.box(scene, "Door", (1.0, 0.06, 2.0), (0.55, 0.0, 1.3), m6.material("DoDoor", (0.75, 0.55, 0.3)),
                   mass=10.0)
@@ -490,8 +504,9 @@ def make_door(folder, E):
     scene["bge_remix"] = 0
     scene.update()
     remix_view()
-    p2.save(os.path.join(folder, "p11b_door_physx_cpu.blend"))
-    E["door"] = dict(DOOR, file="p11b_door_physx_cpu", joint="Hinge")
+    name = "p11b_door_" + key
+    p2.save(os.path.join(folder, name + ".blend"))
+    return name
 
 
 # ---------------------------------------------------------------------------
