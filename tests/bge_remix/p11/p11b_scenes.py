@@ -470,13 +470,17 @@ def make_door(folder, E):
     """the door; and (round 2, finding where Run stops) the same door with an
     ordinary hinge, under PhysX and under Bullet"""
     variants = {}
-    for key, engine, art in (("physx_cpu", 'PHYSX', True), ("physx_plain", 'PHYSX', False),
-                             ("bullet", 'BULLET', False)):
-        variants[key] = door_scene(folder, key, engine, art)
+    for key, engine, art, logic in (("physx_cpu", 'PHYSX', True, "both"), ("physx_plain", 'PHYSX', False, "both"),
+                                    ("bullet", 'BULLET', False, "both"),
+                                    # (round 3: Bullet stopped too; which part of the scene does it)
+                                    ("bullet_bare", 'BULLET', False, "none"),
+                                    ("bullet_script", 'BULLET', False, "script"),
+                                    ("bullet_probe", 'BULLET', False, "probe")):
+        variants[key] = door_scene(folder, key, engine, art, logic)
     E["door"] = dict(DOOR, file=variants["physx_cpu"], joint="Hinge", variants=variants)
 
 
-def door_scene(folder, key, engine, art):
+def door_scene(folder, key, engine, art, logic="both"):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = m6.base("P11bDoor")
     m6.set_engine(scene, engine, 'CPU' if engine == 'PHYSX' else None)
@@ -499,8 +503,10 @@ def door_scene(folder, key, engine, art):
     c.limit_angle_min_x = math.radians(DOOR["lo"])
     c.limit_angle_max_x = math.radians(DOOR["hi"])
     p2.camera(scene, (2.5, -5.0, 4.0), (0.5, 0.5, 1.0), lens=30.0)
-    m9.logic(scene, "P11bDoor", DOOR_SCRIPT.replace("PUSH", repr(DOOR["push"])).replace("SPEED", repr(DOOR["speed"])))
-    p2.add_probe(scene)
+    if logic in ("both", "script"):
+        m9.logic(scene, "P11bDoor", DOOR_SCRIPT.replace("PUSH", repr(DOOR["push"])).replace("SPEED", repr(DOOR["speed"])))
+    if logic in ("both", "probe"):
+        p2.add_probe(scene)
     scene["bge_remix"] = 0
     scene.update()
     remix_view()

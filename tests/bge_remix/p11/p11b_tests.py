@@ -365,11 +365,13 @@ def t_view(args, out, scenes, P, tests):
     # door with an ordinary hinge under PhysX and under Bullet: where it
     # stops tells whether it is articulations, PhysX or neither; numbers
     # only, not marked)
-    for key in ("physx_plain", "bullet"):
-        name = (D.get("variants") or {}).get(key)
-        if not name:
+    # (round 3: Bullet stopped too: the same Bullet door with no logic, with
+    # only the door's script, with only P2's probe)
+    for key in ("physx_plain", "bullet", "bullet_bare", "bullet_script", "bullet_probe"):
+        vname = (D.get("variants") or {}).get(key)
+        if not vname:
             continue
-        v = view_probe(args, out, "p11b_view_" + name[len("p11b_"):], _blend(scenes, name),
+        v = view_probe(args, out, "p11b_view_" + vname[len("p11b_"):], _blend(scenes, vname),
                        {"BGE_REMIX_P11B_PART": "run", "BGE_REMIX_P11B_FRAMES": "40"})
         d["door run, " + key] = {"Run ran": v["ran"], "last_step": v.get("last_step"),
                                  "crash": (v.get("crash") or [None, None])[:2]}
