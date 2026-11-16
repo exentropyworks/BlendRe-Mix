@@ -537,10 +537,16 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 			if (sceneconverter)
 			{
 				// convert and add scene
+				if (BL_GameViewRunActive()) {
+					BL_GameViewSoundWatch(scene, "Game: converting", 1);
+				}
 				sceneconverter->ConvertScene(
 					startscene,
 				    rasterizer,
 					canvas);
+				if (BL_GameViewRunActive()) {
+					BL_GameViewSoundWatch(scene, "Game: converted", 1);
+				}
 				/* BGE-Remix P7: the Game View's checks, in the console */
 				BL_GameViewReportGame(startscene, blenderdata, static_cast<KX_BlenderSceneConverter *>(sceneconverter));
 				ketsjiengine->AddScene(startscene);
@@ -636,7 +642,13 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 				Py_DECREF(gameLogic_keys_new);
 				gameLogic_keys_new = NULL;
 #endif
+				if (BL_GameViewRunActive()) {
+					BL_GameViewSoundWatch(scene, "Game: stopping the engine", 1);
+				}
 				ketsjiengine->StopEngine();
+				if (BL_GameViewRunActive()) {
+					BL_GameViewSoundWatch(scene, "Game: the engine stopped", 1);
+				}
 				KX_LightObject_RestoreLampTypes();  /* BGE-Remix P8 */
 #ifdef WITH_PYTHON
 				exitGamePythonScripting();
@@ -647,6 +659,9 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 			{
 				delete sceneconverter;
 				sceneconverter = NULL;
+			}
+			if (BL_GameViewRunActive()) {
+				BL_GameViewSoundWatch(scene, "Game: the converter freed", 1);
 			}
 
 #ifdef WITH_PYTHON
@@ -709,6 +724,9 @@ extern "C" void StartKetsjiShell(struct bContext *C, struct ARegion *ar, rcti *c
 
 		// stop all remaining playing sounds
 		AUD_Device_stopAll(BKE_sound_get_device());
+		if (BL_GameViewRunActive()) {
+			BL_GameViewSoundWatch(scene, "Game: all freed", 1);
+		}
 	
 	} while (exitrequested == KX_EXIT_REQUEST_RESTART_GAME || exitrequested == KX_EXIT_REQUEST_START_OTHER_GAME);
 	
