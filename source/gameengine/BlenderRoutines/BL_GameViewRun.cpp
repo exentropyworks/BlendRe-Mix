@@ -1230,7 +1230,23 @@ static PyObject *gvr_buttons(PyObject *, PyObject *args)
 	                     "stop", stop[0], stop[1], stop[2], stop[3]);
 }
 
+/* BGE-Remix P11 (B1) round 5, a diagnostic: the sound watch from Python
+ * (the scene by its as_pointer()) */
+static PyObject *gvr_sound_watch(PyObject *, PyObject *args)
+{
+	const char *where;
+	unsigned long long ptr;
+	int always = 1;
+	if (!PyArg_ParseTuple(args, "sK|i", &where, &ptr, &always)) {
+		return NULL;
+	}
+	BL_GameViewSoundWatch((Scene *)(uintptr_t)ptr, where, always);
+	Py_RETURN_NONE;
+}
+
 static PyMethodDef gvr_methods[] = {
+	{"sound_watch", gvr_sound_watch, METH_VARARGS, "A diagnostic: the scene's sound sequencer (label, "
+	 "scene.as_pointer(), always=True)"},
 	{"live", gvr_live, METH_NOARGS, "Run mode: each element's live data of the last frame played"},
 	{"run_result", gvr_result, METH_NOARGS, "Run mode: how the last run ended"},
 	{"run_snapshot", gvr_snapshot, METH_NOARGS, "Run mode: the suspended game's state (None: none kept)"},

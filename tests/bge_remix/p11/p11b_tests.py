@@ -382,6 +382,15 @@ def t_view(args, out, scenes, P, tests):
         d["door run, " + key] = {"Run ran": v["ran"], "last_step": v.get("last_step"),
                                  "crash": (v.get("crash") or [None, None])[:2],
                                  "sound watch": v.get("sound watch")}
+    # (round 5: P10's probe passes no scene in its context, and its Run
+    # passes: the bare door's Run without the scene in the probe's context)
+    vname = (D.get("variants") or {}).get("bullet_bare")
+    if vname:
+        v = view_probe(args, out, "p11b_view_door_bullet_bare_noscene", _blend(scenes, vname),
+                       {"BGE_REMIX_P11B_PART": "run", "BGE_REMIX_P11B_FRAMES": "40", "BGE_REMIX_P11B_NOSCENE": "1"})
+        d["door run, bullet_bare, no scene in the probe's context"] = {
+            "Run ran": v["ran"], "last_step": v.get("last_step"), "crash": (v.get("crash") or [None, None])[:2],
+            "sound watch": v.get("sound watch")}
     tests[name] = _test(c, d)
 
 
