@@ -173,8 +173,14 @@ class OBJECT_OT_bge_remix_make_destructible(Operator):
                 layers = [bool(x) for x in source["bge_destructible_layers"]]
             else:
                 layers = list(source.layers)
+            # made again: the original back on its layers while it is cut
+            # (Cell Fracture's boolean takes nothing from an object on a
+            # layer the scene does not show: the pieces came out otherwise)
+            source.layers = layers
+            scene.update()
             cells = fracture(scene, source, self.pieces, self.seed, margin=0.0002 * size)
             if not cells:
+                source.layers = [False] * 19 + [True] if "bge_destructible_layers" in source else layers
                 self.report({'ERROR'}, "Cell Fracture made no pieces")
                 return {'CANCELLED'}
             for c in cells:

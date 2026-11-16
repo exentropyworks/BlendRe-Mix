@@ -427,7 +427,10 @@ def make_operator_checks(folder, E):
     after = sorted(o.name for o in scene.objects if o.name.startswith("CubeA."))
     r["again_names_same"] = before == after
     r["again_count"] = len(after)
-    r["again_same_pieces"] = _same(_centres(scene, "CubeA", Vector((0.0, 0.0, 0.0))), a)
+    again = _centres(scene, "CubeA", Vector((0.0, 0.0, 0.0)))
+    r["again_same_pieces"] = _same(again, a)
+    # (round 2: they differed; how far, piece by piece, from the nearest of before)
+    r["again_far"] = [round(min(max(abs(c[i] - d[i]) for i in range(3)) for d in a), 4) for c in again] if a else None
     r["source_kept_on_layer_20"] = bool(bpy.data.objects.get("CubeA")) and \
         bpy.data.objects["CubeA"].layers[19] and not any(bpy.data.objects["CubeA"].layers[:19])
     E["operator"] = r
