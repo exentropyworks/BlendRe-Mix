@@ -84,6 +84,7 @@ extern "C" {
 	#include "DNA_windowmanager_types.h"
 
 	#include "BKE_context.h"
+	#include "BKE_idprop.h"  /* P11 (B2) */
 	#include "BKE_global.h"
 	#include "BKE_main.h"
 
@@ -682,6 +683,24 @@ void update_live(KX_Scene *scene)
 			if (n) {
 				BLI_snprintf(l.text, sizeof(l.text), "%d contact%s", n, n == 1 ? "" : "s");
 				l.fired = 1;
+			}
+			/* BGE-Remix P11 (B2): a destructible's parent piece, in Ayhan's
+			 * colours: White whole or at rest, Green breaking, Yellow at the
+			 * Destruction Budget, Blue damaged by a script */
+			PHY_IPhysicsEnvironment *env = scene->GetPhysicsEnvironment();
+			Object *bo = go->GetBlenderObject();
+			if (env && bo && bo->id.properties && go->GetPhysicsController() &&
+			    IDP_GetPropertyFromGroup(bo->id.properties, "bge_destructible"))
+			{
+				const int act = env->GetDestructionActivity(go->GetPhysicsController());
+				PHY_DestructibleInfo info;
+				if (act >= 0 && env->GetDestructible(go->GetPhysicsController(), &info)) {
+					static const short states[4] = {GV_STATE_WHITE, GV_STATE_GREEN, GV_STATE_YELLOW, GV_STATE_BLUE};
+					l.state = states[act];
+					l.fired = act == 1 || act == 3;
+					BLI_snprintf(l.text, sizeof(l.text), "%d group%s, %d of %d bonds broken", info.groups,
+					             info.groups == 1 ? "" : "s", info.bondsBroken, info.bonds);
+				}
 			}
 		}
 		if (l.fired) {

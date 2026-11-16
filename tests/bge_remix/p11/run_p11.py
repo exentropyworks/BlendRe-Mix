@@ -10,6 +10,9 @@ The tracks (each its own scene module and test module):
   p11b  Part B step 1 (B1): articulations (the heavy chain, the ragdoll, the
         door, the arm, the rope bridge), the engines compared, the Remix View's
         joint colours, the crash check
+  p11c  Part B step 2 (B2): destruction with NVIDIA Blast (the wall hit hard
+        and softly, the pillar blown, the budget, Bullet and stock 2.79b,
+        Make Destructible, the Remix View's colours, the crash check)
 
 BGE_REMIX_P11_TRACKS (comma separated) runs only those tracks.
 """
@@ -30,7 +33,7 @@ import run_p2 as p2  # noqa: E402  (running Blender, contact sheets)
 import run_p8 as p8  # noqa: E402  (the player, pictures, the fake runtime)
 import run_p9 as r9  # noqa: E402,F401  (P9's helpers: pipe_play, mock_materials, textures_in, ...)
 
-TRACKS = ("p11a", "p11b")
+TRACKS = ("p11a", "p11b", "p11c")
 
 
 def make_scenes(ours, out):

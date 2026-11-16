@@ -19,6 +19,7 @@
  */
 
 #include "PxPhysicsController.h"
+#include "PxDestruction.h"  /* P11 (B2) */
 
 #include <algorithm>
 #include <cmath>
@@ -158,7 +159,8 @@ PxPhysicsController::PxPhysicsController(const PxCtrlInfo &info, PHY_IMotionStat
       m_kinematicMoved(false),
       m_articulation(NULL),
       m_articulationWarned(false),
-      m_articulationFailed(false)
+      m_articulationFailed(false),
+      m_shard(NULL)
 {
 	if (m_info.shape) {
 		m_info.shape->AddRef();
@@ -187,7 +189,8 @@ PxPhysicsController::PxPhysicsController(const PxPhysicsController &other)
       m_kinematicMoved(false),
       m_articulation(NULL),
       m_articulationWarned(false),
-      m_articulationFailed(false)
+      m_articulationFailed(false),
+      m_shard(NULL)
 {
 	/* a suspended original: the replica starts as the object was made */
 	if (other.m_suspended) {
@@ -242,12 +245,25 @@ PxFilterData PxPhysicsController::FilterData() const
 		}
 	}
 	f.word2 = (group & 0xffff) | ((mask & 0xffff) << 16);
-	f.word3 = (Registered() ? PXW_REPORT : 0) | (IsTrigger() ? PXW_TRIGGER : 0);
+	f.word3 = (Registered() ? PXW_REPORT : 0) | (IsTrigger() ? PXW_TRIGGER : 0) | (m_shard ? PXW_DESTRUCT : 0);
 	return f;
 }
 
 void PxPhysicsController::UpdateFilter()
 {
+	if (m_shard) {
+		/* P11 (B2): its shapes on its group's body */
+		const PxFilterData f = FilterData();
+		for (PxShape *s : m_shapes) {
+			s->setSimulationFilterData(f);
+			s->setQueryFilterData(f);
+		}
+		PxRigidDynamic *body = m_shard->group ? m_shard->group->body : NULL;
+		if (body && body->getScene()) {
+			body->getScene()->resetFiltering(*body);
+		}
+		return;
+	}
 	if (!m_actor) {
 		return;
 	}
@@ -277,6 +293,11 @@ PxRigidDynamic *PxPhysicsController::GetDynamic()
 
 PxRigidBody *PxPhysicsController::GetBody()
 {
+	if (m_shard) {
+		/* P11 (B2): its group's body (not while anchored: kinematic) */
+		PxRigidDynamic *body = m_shard->group ? m_shard->group->body : NULL;
+		return (body && !(body->getRigidBodyFlags() & PxRigidBodyFlag::eKINEMATIC)) ? body : NULL;
+	}
 	if (m_actor && (m_actor->getType() == PxActorType::eRIGID_DYNAMIC ||
 	                m_actor->getType() == PxActorType::eARTICULATION_LINK))
 	{
@@ -398,8 +419,52 @@ void PxPhysicsController::LeaveLink(const PxTransform &pose, const PxVec3 &lin, 
 	body->setAngularVelocity(ang);
 }
 
+/* P11 (B2) */
+void PxPhysicsController::BecomeShard(PxShard *shard)
+{
+	if (m_actor) {
+		/* (it stays among the environment's controllers: it is synchronized,
+		 * sensed and removed as before) */
+		if (m_actor->getScene()) {
+			m_actor->getScene()->removeActor(*m_actor);
+		}
+		m_actor->release();
+		m_actor = NULL;
+	}
+	m_shapes.clear();
+	m_shapeOwners.clear();
+	m_shard = shard;
+}
+
+void PxPhysicsController::LeaveShard()
+{
+	m_shard = NULL;
+	m_shapes.clear();
+	m_shapeOwners.clear();
+}
+
+PxTransform PxPhysicsController::PiecePose() const
+{
+	if (m_shard && m_shard->group && m_shard->group->body) {
+		return m_shard->group->body->getGlobalPose() * m_shard->local;
+	}
+	if (m_shard) {
+		return MotionStateTransform();
+	}
+	return ActorPose();
+}
+
 void PxPhysicsController::DestroyActor()
 {
+	if (m_shard) {
+		/* P11 (B2): its shapes are on its group's body (the environment's) */
+		if (m_env) {
+			m_env->RemoveController(this);
+		}
+		m_shapes.clear();
+		m_shapeOwners.clear();
+		return;
+	}
 	if (m_env && m_inScene) {
 		m_env->RemoveController(this);
 	}
@@ -484,6 +549,11 @@ void PxPhysicsController::ApplyMass()
 
 void PxPhysicsController::RebuildShapes()
 {
+	if (m_shard) {
+		PxSystem::WarnOnce("shard-shape", "a destructible's piece keeps its shape (scale or mesh changes are not "
+		                   "taken while it is a piece)");
+		return;
+	}
 	PxSystem *sys = PxSystem::Get();
 	if (!sys || !m_actor || m_character || m_soft) {
 		return;
@@ -591,6 +661,9 @@ void PxPhysicsController::Teleport(const PxTransform &t)
 
 PxTransform PxPhysicsController::ActorPose() const
 {
+	if (m_shard) {
+		return PiecePose();
+	}
 	if (m_character) {
 		return m_character->Pose();
 	}
@@ -651,6 +724,19 @@ void PxPhysicsController::SetPhysicsEnvironment(PHY_IPhysicsEnvironment *env)
 
 bool PxPhysicsController::SynchronizeMotionStates(float)
 {
+	if (m_shard) {
+		/* P11 (B2): where its group's body has it */
+		if (m_shard->group && m_shard->group->body && !m_shard->group->removing) {
+			const PxTransform t = PiecePose();
+			const PxMat33 m(t.q);
+			float ori[12] = {m.column0.x, m.column0.y, m.column0.z, 0.0f, m.column1.x, m.column1.y, m.column1.z, 0.0f,
+			                 m.column2.x, m.column2.y, m.column2.z, 0.0f};
+			m_motionState->SetWorldOrientation(ori);
+			m_motionState->SetWorldPosition(t.p.x, t.p.y, t.p.z);
+			m_motionState->CalculateWorldTransformations();
+		}
+		return true;
+	}
 	if (m_soft) {
 		m_soft->SynchronizeMotionState(m_motionState);
 		return true;

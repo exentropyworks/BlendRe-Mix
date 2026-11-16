@@ -89,6 +89,7 @@
 #include "BL_Texture.h"
 
 #include "BKE_main.h"
+#include "BKE_idprop.h"  /* BGE-Remix P11 (B2) */
 #include "BKE_global.h"
 #include "BKE_object.h"
 #include "BL_ModifierDeformer.h"
@@ -2635,6 +2636,43 @@ void BL_ConvertBlenderObjects(struct Main* maggie,
 		}
 		int layerMask = (groupobj.find(blenderobject) == groupobj.end()) ? activeLayerBitInfo : 0;
 		BL_CreatePhysicsObjectNew(gameobj,blenderobject,meshobj,kxscene,layerMask,converter,processCompoundChildren);
+	}
+
+	/* BGE-Remix P11 (B2): a destructible's pieces (Make Destructible) are
+	 * its parent piece's compound children: one body that stays whole under
+	 * Bullet. An engine that breaks them (PhysX with Blast) has made each
+	 * piece a body of its own: they leave the parent where they are */
+	if (kxscene->GetPhysicsEnvironment()->HandlesDestruction()) {
+		std::vector<KX_GameObject *> loose;
+		for (i = 0; i < sumolist->GetCount(); i++) {
+			KX_GameObject *gameobj = (KX_GameObject *)sumolist->GetValue(i);
+			struct Object *blenderobject = gameobj->GetBlenderObject();
+			IDProperty *of = (blenderobject && blenderobject->id.properties) ?
+			        IDP_GetPropertyFromGroup(blenderobject->id.properties, "bge_destructible_of") : NULL;
+			if (of && of->type == IDP_STRING && gameobj->GetParent() && gameobj->GetPhysicsController()) {
+				loose.push_back(gameobj);
+			}
+		}
+		for (KX_GameObject *gameobj : loose) {
+			gameobj->RemoveParent(kxscene);
+		}
+		/* the scene's Destruction Budget (World > Physics) */
+		int max_pieces = 500;
+		float lifetime = 0.0f;
+		if (blenderscene->id.properties) {
+			IDProperty *p = IDP_GetPropertyFromGroup(blenderscene->id.properties, "bge_destruction_max_pieces");
+			if (p && p->type == IDP_INT) {
+				max_pieces = IDP_Int(p);
+			}
+			p = IDP_GetPropertyFromGroup(blenderscene->id.properties, "bge_destruction_lifetime");
+			if (p && p->type == IDP_FLOAT) {
+				lifetime = IDP_Float(p);
+			}
+			else if (p && p->type == IDP_DOUBLE) {
+				lifetime = (float)IDP_Double(p);
+			}
+		}
+		kxscene->GetPhysicsEnvironment()->SetDestructionBudget(max_pieces, lifetime);
 	}
 
 	// create physics joints

@@ -104,6 +104,35 @@ Functions
    :return: The articulation, or None (not PhysX, or the object is in none).
    :rtype: :class:`~bge.types.KX_ArticulationWrapper`
 
+.. function:: getDestructible(gameobj)
+
+   BGE-Remix P11: the destructible the object is a piece of. Make Destructible
+   (the Object menu, or the Physics tab's Destruction panel) cuts a mesh into
+   pieces; under PhysX the game breaks them apart with NVIDIA Blast. Under
+   Bullet a destructible plays as one whole object, and this gives None.
+
+   :arg gameobj: Any piece of the destructible.
+   :type gameobj: :class:`~bge.types.KX_GameObject`
+
+   :return: The destructible, or None (not PhysX, or the object is no piece).
+   :rtype: :class:`~bge.types.KX_DestructibleWrapper`
+
+.. function:: explode(point, radius=1.0, damage=1.0)
+
+   BGE-Remix P11 (PhysX only): breaks every destructible within the radius:
+   a bond at the point takes the damage, less towards the radius (1 breaks
+   it). What breaks loose is thrown out from the point (1 m/s for each unit
+   of damage there, less further out).
+
+   :arg point: Where (world coordinates).
+   :type point: 3D vector
+   :arg radius: How far it reaches (m).
+   :type radius: float
+   :arg damage: The damage at the point (1 breaks a bond).
+   :type damage: float
+   :return: How many destructibles it hit.
+   :rtype: int
+
 .. function:: getCharacter(gameobj)
 
    :arg gameobj: The game object with the character physics.

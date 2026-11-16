@@ -971,6 +971,144 @@ static void test_articulation()
 	}
 }
 
+/* P11 (B2): destruction (NVIDIA Blast) */
+static std::vector<PxPhysicsController *> boxes(World &w, const char *key, int nx, int nz, float size, float x0,
+                                                 float z0, bool anchored, float strength = 100.0f)
+{
+	std::vector<PxPhysicsController *> out;
+	const float h = size * 0.5f;
+	for (int k = 0; k < nz; k++) {
+		for (int i = 0; i < nx; i++) {
+			PxPhysicsController *c = add(w, shape_box(h, h, h), RIGID, x0 + size * (i + 0.5f), 0, z0 + size * (k + 0.5f),
+			                             2.0f);
+			w.env->AddDestructionPiece(c, key, out.empty(), strength, anchored);
+			out.push_back(c);
+		}
+	}
+	return out;
+}
+
+static float moved(const std::vector<PxPhysicsController *> &p, const std::vector<MT_Vector3> &was)
+{
+	float most = 0.0f;
+	for (size_t i = 0; i < p.size(); i++) {
+		most = std::max(most, (float)(pos(p[i]) - was[i]).length());
+	}
+	return most;
+}
+
+static void test_destruction()
+{
+	printf("\ndestruction (P11 B2)\n");
+#ifndef WITH_BLAST
+	printf("  (built without NVIDIA Blast: skipped)\n");
+	return;
+#else
+	{
+		/* an anchored wall of 6 x 3 blocks: its bonds, and it stands */
+		World w;
+		ground(w);
+		std::vector<PxPhysicsController *> p = boxes(w, "Wall", 6, 3, 0.4f, -1.2f, 0.0f, true);
+		std::vector<MT_Vector3> was;
+		for (PxPhysicsController *c : p) {
+			was.push_back(pos(c));
+		}
+		w.step(60);
+		PHY_DestructibleInfo info;
+		const bool got = w.env->GetDestructible(p[0], &info);
+		CHECK(got && info.bonds == 33, "wall: 27 bonds between blocks and 6 to the world (%d)", info.bonds);
+		CHECK(got && info.groups == 1, "wall: whole after a second (%d groups)", info.groups);
+		CHECK(moved(p, was) < 1e-3f, "wall: it stands still (moved %.4f m)", moved(p, was));
+		/* an explosion in front of the middle (radius 0.8 m, damage 4) */
+		const int hit = w.env->Explode(MT_Vector3(0.0f, -0.3f, 0.6f), 0.8f, 4.0f);
+		w.step(90);
+		w.env->GetDestructible(p[0], &info);
+		CHECK(hit == 1 && info.groups > 1, "wall: the explosion broke it (%d groups, %d bonds broken)", info.groups,
+		      info.bondsBroken);
+		const float corner = (float)(pos(p[0]) - was[0]).length();
+		CHECK(corner < 1e-3f, "wall: its far corner stays held (moved %.4f m)", corner);
+		int loose = 0, thrown = 0;
+		for (size_t i = 0; i < info.groupOf.size(); i++) {
+			loose += info.groupOf[i] > 0 ? 1 : 0;
+		}
+		for (size_t i = 0; i < p.size(); i++) {
+			thrown += (pos(p[i]) - was[i]).length() > 0.1 ? 1 : 0;
+		}
+		CHECK(loose >= 2 && loose <= 8, "wall: the pieces round it broke loose (%d), not the whole wall", loose);
+		CHECK(thrown >= 2, "wall: and were thrown out (%d moved)", thrown);
+	}
+	{
+		/* a pillar of six blocks: blown in the middle, its top falls */
+		World w;
+		ground(w);
+		std::vector<PxPhysicsController *> p = boxes(w, "Pillar", 1, 6, 0.4f, -0.2f, 0.0f, true);
+		w.step(10);
+		const float top = (float)pos(p[5]).z();
+		w.env->Explode(MT_Vector3(0.0f, -0.3f, 1.4f), 0.6f, 4.0f);  /* (its fourth block, from the front) */
+		w.step(90);
+		CHECK(top - pos(p[5]).z() > 0.3f, "pillar: the top fell when its middle went (%.2f m)", top - pos(p[5]).z());
+		CHECK(fabs(pos(p[0]).z() - 0.2) < 1e-3, "pillar: its foot stays (z %.3f)", pos(p[0]).z());
+	}
+	for (int fast = 0; fast < 2; fast++) {
+		/* a 20 kg ball thrown at a wall: 10 m/s breaks it, 3 m/s does not */
+		World w;
+		ground(w);
+		std::vector<PxPhysicsController *> p = boxes(w, "Hit", 6, 3, 0.4f, -1.2f, 0.0f, true, 40.0f);
+		w.step(2);
+		PxPhysicsController *ball = add(w, shape_sphere(0.15f), RIGID, 0.0f, -1.0f, 0.6f, 20.0f);
+		ball->SetLinearVelocity(MT_Vector3(0.0f, fast ? 10.0f : 3.0f, 0.0f), false);
+		w.step(60);
+		PHY_DestructibleInfo info;
+		w.env->GetDestructible(p[0], &info);
+		if (fast) {
+			CHECK(info.groups > 1, "impact at 10 m/s: the wall broke (%d groups)", info.groups);
+		}
+		else {
+			CHECK(info.groups == 1, "impact at 3 m/s: the wall stays whole (%d groups)", info.groups);
+		}
+	}
+	{
+		/* the budget: a crate of 27 blocks blown apart, at most 4 loose pieces */
+		World w;
+		ground(w);
+		w.env->SetDestructionBudget(4, 0.0f);
+		std::vector<PxPhysicsController *> p;
+		const float s = 0.3f;
+		for (int k = 0; k < 3; k++) {
+			std::vector<PxPhysicsController *> row = boxes(w, "Crate", 3, 1, s, -0.45f, s * k, false);
+			(void)row;
+		}
+		w.step(5);
+		w.env->Explode(MT_Vector3(0.0f, 0.0f, 0.45f), 2.0f, 10.0f);
+		w.step(2);
+		std::vector<PHY_IPhysicsController *> gone;
+		w.env->TakeDestructionRemovals(gone);
+		PxPhysicsController *any = NULL;
+		for (PxPhysicsController *c : w.ctrls) {
+			if (c->GetShard() && std::find(gone.begin(), gone.end(), c) == gone.end()) {
+				any = c;
+			}
+		}
+		PHY_DestructibleInfo info;
+		const bool got = any && w.env->GetDestructible(any, &info);
+		CHECK(got && (int)gone.size() >= 1, "budget: pieces removed (%d of %d)", (int)gone.size(), got ? (int)info.pieces.size() : 0);
+		/* the game ends their objects */
+		for (PHY_IPhysicsController *c : gone) {
+			w.ctrls.erase(std::remove(w.ctrls.begin(), w.ctrls.end(), c), w.ctrls.end());
+			delete c;
+		}
+		w.step(2);
+		int loose = 0;
+		if (any && w.env->GetDestructible(any, &info)) {
+			for (int g : info.groupOf) {
+				loose += g > 0 ? 1 : 0;
+			}
+		}
+		CHECK(loose <= 4, "budget: at most 4 broken-off pieces left (%d)", loose);
+	}
+#endif
+}
+
 int main(int argc, char **argv)
 {
 	const char *only = argc > 1 ? argv[1] : NULL;
@@ -999,6 +1137,7 @@ int main(int argc, char **argv)
 	    {"fh", test_fh},
 	    {"sleep", test_sleep},
 	    {"articulation", test_articulation},
+	    {"destruction", test_destruction},
 	};
 	for (const T &t : tests) {
 		if (only && strcmp(only, t.name)) {

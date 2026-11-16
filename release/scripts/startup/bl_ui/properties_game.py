@@ -245,6 +245,67 @@ class PHYSICS_PT_game_articulation(PhysicsButtonsPanel, Panel):
             layout.label("A capsule of a ragdoll (bone %s)" % ob["bge_ragdoll_bone"], icon='INFO')
 
 
+class PHYSICS_PT_game_destruction(PhysicsButtonsPanel, Panel):
+    """BGE-Remix P11 (B2): destructibles (Make Destructible; broken by NVIDIA Blast under PhysX)"""
+    bl_label = "Destruction"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return (ob is not None and ob.type == 'MESH' and context.scene.render.engine in cls.COMPAT_ENGINES)
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, FloatProperty, IntProperty
+        bpy.types.Object.bge_destructible_strength = FloatProperty(
+            name="Strength",
+            description="The impulse (N s) a hit needs to break the destructible where it lands; less only "
+                        "damages it",
+            default=100.0, min=0.01, soft_max=10000.0)
+        bpy.types.Object.bge_destructible_anchored = BoolProperty(
+            name="Anchored Base",
+            description="Its bottom pieces are held by the ground (a wall, a building): what is still joined to "
+                        "them stays, the rest falls",
+            default=False)
+        bpy.types.Scene.bge_destruction_max_pieces = IntProperty(
+            name="Max Pieces",
+            description="The most broken-off pieces in the scene; over it, the oldest are removed (0: no limit)",
+            default=500, min=0, soft_max=5000)
+        bpy.types.Scene.bge_destruction_lifetime = FloatProperty(
+            name="Debris Lifetime",
+            description="Broken-off pieces are removed after this many seconds (0: kept until the budget needs "
+                        "room)",
+            default=0.0, min=0.0, soft_max=600.0, subtype='TIME', unit='TIME')
+
+    @classmethod
+    def unregister(cls):
+        for t, name in ((bpy.types.Object, "bge_destructible_strength"), (bpy.types.Object, "bge_destructible_anchored"),
+                        (bpy.types.Scene, "bge_destruction_max_pieces"), (bpy.types.Scene, "bge_destruction_lifetime")):
+            if hasattr(t, name):
+                delattr(t, name)
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.active_object
+        root = None
+        if ob.get("bge_destructible"):
+            root = ob
+        elif ob.get("bge_destructible_of"):
+            root = context.scene.objects.get(ob["bge_destructible_of"])
+        layout.operator("object.bge_remix_make_destructible",
+                        text="Make Destructible Again" if root else "Make Destructible", icon='MOD_EXPLODE')
+        if root is None:
+            return
+        pieces = sum(1 for o in context.scene.objects if o.get("bge_destructible_of") == root.name)
+        layout.label("%d pieces; the parent piece: %s" % (pieces, root.name), icon='INFO')
+        col = layout.column()
+        col.prop(root, "bge_destructible_strength")
+        col.prop(root, "bge_destructible_anchored")
+        if context.scene.game_settings.physics_engine != 'PHYSX':
+            layout.label("Breaking needs PhysX (World > Physics); here it plays as one whole object", icon='ERROR')
+
+
 class PHYSICS_PT_game_collision_bounds(PhysicsButtonsPanel, Panel):
     bl_label = "Collision Bounds"
     COMPAT_ENGINES = {'BLENDER_GAME'}
@@ -868,6 +929,14 @@ class SCENE_PT_game_physics(SceneButtonsPanel, Panel):
             from .space_view3d_gameview_logic import draw_scene_logic_options
             draw_scene_logic_options(layout, context.scene)
 
+            # BGE-Remix P11 (B2): the Destruction Budget
+            if gs.physics_engine == 'PHYSX' and hasattr(context.scene, "bge_destruction_max_pieces"):
+                col = layout.column()
+                col.label(text="Destruction Budget:")
+                row = col.row(align=True)
+                row.prop(context.scene, "bge_destruction_max_pieces")
+                row.prop(context.scene, "bge_destruction_lifetime")
+
             col = layout.column()
             col.label(text="Physics Deactivation:")
             sub = col.row(align=True)
@@ -1334,6 +1403,7 @@ classes = (
     PHYSICS_PT_game_physics,
     PHYSICS_PT_game_collision_bounds,
     PHYSICS_PT_game_articulation,
+    PHYSICS_PT_game_destruction,
     PHYSICS_PT_game_obstacles,
     RENDER_PT_embedded,
     RENDER_PT_game_player,

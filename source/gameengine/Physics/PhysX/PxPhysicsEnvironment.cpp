@@ -123,6 +123,11 @@ static PxFilterFlags filter_shader(PxFilterObjectAttributes a0, PxFilterData f0,
 		pairFlags |= PxPairFlag::eNOTIFY_TOUCH_FOUND | PxPairFlag::eNOTIFY_TOUCH_PERSISTS |
 		             PxPairFlag::eNOTIFY_TOUCH_LOST | PxPairFlag::eNOTIFY_CONTACT_POINTS;
 	}
+	/* P11 (B2): a destructible's piece: the impulses of its contacts */
+	if ((f0.word3 | f1.word3) & PXW_DESTRUCT) {
+		pairFlags |= PxPairFlag::eNOTIFY_TOUCH_FOUND | PxPairFlag::eNOTIFY_TOUCH_PERSISTS |
+		             PxPairFlag::eNOTIFY_CONTACT_POINTS;
+	}
 	return PxFilterFlag::eDEFAULT;
 }
 
@@ -139,15 +144,43 @@ public:
 		if (header.flags & (PxContactPairHeaderFlag::eREMOVED_ACTOR_0 | PxContactPairHeaderFlag::eREMOVED_ACTOR_1)) {
 			return;
 		}
-		PxPhysicsController *a = (PxPhysicsController *)header.actors[0]->userData;
-		PxPhysicsController *b = (PxPhysicsController *)header.actors[1]->userData;
-		if (!a || !b) {
+		PxPhysicsController *actorA = (PxPhysicsController *)header.actors[0]->userData;
+		PxPhysicsController *actorB = (PxPhysicsController *)header.actors[1]->userData;
+		if (!actorA || !actorB) {
 			return;
 		}
 		for (PxU32 i = 0; i < nbPairs; i++) {
 			const PxContactPair &cp = pairs[i];
 			if (cp.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 | PxContactPairFlag::eREMOVED_SHAPE_1)) {
 				continue;
+			}
+			/* P11 (B2): the pieces of a destructible's group are its shapes' */
+			PxPhysicsController *a = m_env->ShapeOwner(cp.shapes[0], actorA);
+			PxPhysicsController *b = m_env->ShapeOwner(cp.shapes[1], actorB);
+			if (a->GetShard() || b->GetShard()) {
+				if (cp.events & (PxPairFlag::eNOTIFY_TOUCH_FOUND | PxPairFlag::eNOTIFY_TOUCH_PERSISTS)) {
+					PxContactPairPoint pts[16];
+					const PxU32 np = cp.contactCount ? cp.extractContacts(pts, 16) : 0;
+					float j = 0.0f;
+					PxVec3 at(0.0f);
+					for (PxU32 k = 0; k < np; k++) {
+						j += pts[k].impulse.magnitude();
+						at += pts[k].position;
+					}
+					if (np && j > 0.0f) {
+						at *= 1.0f / (float)np;
+						if (a->GetShard()) {
+							m_env->DestructionImpact(a, at, j);
+						}
+						if (b->GetShard()) {
+							m_env->DestructionImpact(b, at, j);
+						}
+					}
+				}
+				/* (sensors only where one listens) */
+				if (!a->Registered() && !b->Registered() && !a->IsSensor() && !b->IsSensor()) {
+					continue;
+				}
 			}
 			m_env->m_stats.contactReports++;
 			if (cp.events & PxPairFlag::eNOTIFY_TOUCH_LOST) {
@@ -182,6 +215,8 @@ public:
 			if (!a || !b) {
 				continue;
 			}
+			a = m_env->ShapeOwner(tp.triggerShape, a);  /* P11 (B2) */
+			b = m_env->ShapeOwner(tp.otherShape, b);
 			m_env->m_stats.triggerReports++;
 			if (tp.status == PxPairFlag::eNOTIFY_TOUCH_LOST) {
 				m_env->ContactLost(a, b);
@@ -222,7 +257,13 @@ PxPhysicsEnvironment::PxPhysicsEnvironment(bool useGpu, PHY_IPhysicsEnvironment 
       m_lastStep(1.0f / 60.0f),
       m_accumulated(0.0),
       m_ccdMode(0),
-      m_articulationsDirty(false)
+      m_articulationsDirty(false),
+      m_destructionDirty(false),
+      m_maxPieces(500),
+      m_debrisLifetime(0.0f),
+      m_destructionFrame(0),
+      m_destructionTime(0.0),
+      m_groupSerial(0)
 {
 	for (int i = 0; i < PHY_NUM_RESPONSE; i++) {
 		m_triggerCallbacks[i] = NULL;
@@ -283,6 +324,10 @@ PxPhysicsEnvironment::~PxPhysicsEnvironment()
 	 * their controllers later) */
 	while (!m_articulations.empty()) {
 		DismantleArticulation(m_articulations.back());
+	}
+	/* P11 (B2): the destructibles' groups (their pieces are left without a body) */
+	while (!m_destructibles.empty()) {
+		DismantleDestructible(m_destructibles.back());
 	}
 	for (PxRaycastVehicle *v : m_vehicles) {
 		delete v;
@@ -352,6 +397,10 @@ bool PxPhysicsEnvironment::RemoveController(PxPhysicsController *ctrl)
 	 * the next step) */
 	if (ctrl->m_articulation) {
 		DismantleArticulation(ctrl->m_articulation);
+	}
+	/* P11 (B2): a destructible's piece leaves its group */
+	if (ctrl->m_shard) {
+		DestructionRemovePiece(ctrl);
 	}
 	m_controllers.erase(ctrl);
 	ctrl->m_inScene = false;
@@ -548,6 +597,10 @@ bool PxPhysicsEnvironment::ProceedDeltaTime(double curTime, float timeStep, floa
 	if (m_articulationsDirty) {
 		BuildArticulations();
 	}
+	/* P11 (B2): destructibles' pieces converted since */
+	if (m_destructionDirty) {
+		BuildDestructibles();
+	}
 	/* as Bullet's stepSimulation(interval, 25, subStep): whole sub-steps, the
 	 * rest of the time kept for the next frame */
 	m_accumulated += interval;
@@ -567,6 +620,10 @@ bool PxPhysicsEnvironment::ProceedDeltaTime(double curTime, float timeStep, floa
 	}
 	if (steps > 0) {
 		ProcessFhSprings(steps * subStep);
+	}
+	/* P11 (B2): impacts, explosions and stress break bonds; Blast splits */
+	if (!m_destructibles.empty()) {
+		DestructionStep(steps * subStep);
 	}
 	for (PxPhysicsController *c : m_controllers) {
 		c->SynchronizeMotionStates(timeStep);
@@ -630,6 +687,7 @@ void PxPhysicsEnvironment::ProcessFhSprings(float interval)
 		if (!controller) {
 			continue;
 		}
+		controller = ShapeOwner(hit.block.shape, controller);  /* P11 (B2) */
 		const PxCtrlInfo &hp = controller->GetInfo();
 		if (hp.fhDistance < 1e-6f) {
 			continue;
@@ -874,15 +932,16 @@ namespace {
 class RayFilter : public PxQueryFilterCallback
 {
 public:
-	RayFilter(PHY_IRayCastFilterCallback &cb) : m_cb(cb) {}
+	RayFilter(PHY_IRayCastFilterCallback &cb, const PxPhysicsEnvironment *env) : m_cb(cb), m_env(env) {}
 
-	PxQueryHitType::Enum preFilter(const PxFilterData &, const PxShape *, const PxRigidActor *actor,
+	PxQueryHitType::Enum preFilter(const PxFilterData &, const PxShape *shape, const PxRigidActor *actor,
 	                               PxHitFlags &) override
 	{
 		PxPhysicsController *ctrl = (PxPhysicsController *)actor->userData;
 		if (!ctrl) {
 			return PxQueryHitType::eNONE;
 		}
+		ctrl = m_env->ShapeOwner(shape, ctrl);  /* P11 (B2) */
 		/* as Bullet: never sensors (near, radar, Sensor objects) */
 		if (ctrl->GetInfo().filterGroup & PXF_SENSOR) {
 			return PxQueryHitType::eNONE;
@@ -900,6 +959,7 @@ public:
 
 private:
 	PHY_IRayCastFilterCallback &m_cb;
+	const PxPhysicsEnvironment *m_env;
 };
 
 }  /* namespace */
@@ -917,7 +977,7 @@ PHY_IPhysicsController *PxPhysicsEnvironment::RayTest(PHY_IRayCastFilterCallback
 		return NULL;
 	}
 	dir /= len;
-	RayFilter filter(filterCallback);
+	RayFilter filter(filterCallback, this);
 	PxRaycastBuffer buf;
 	PxQueryFilterData fd(PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::ePREFILTER);
 	const PxHitFlags flags = PxHitFlag::ePOSITION | PxHitFlag::eNORMAL | PxHitFlag::eFACE_INDEX | PxHitFlag::eUV |
@@ -927,6 +987,9 @@ PHY_IPhysicsController *PxPhysicsEnvironment::RayTest(PHY_IRayCastFilterCallback
 	}
 	const PxRaycastHit &hit = buf.block;
 	PxPhysicsController *controller = (PxPhysicsController *)hit.actor->userData;
+	if (controller) {
+		controller = ShapeOwner(hit.shape, controller);  /* P11 (B2) */
+	}
 
 	PHY_RayCastResult result;
 	memset(&result, 0, sizeof(result));

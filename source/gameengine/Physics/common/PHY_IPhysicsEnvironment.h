@@ -75,6 +75,20 @@ struct PHY_ArticulationInfo
 	PHY_ArticulationInfo() : root(NULL), fixed(false) {}
 };
 
+/* BGE-Remix P11 (B2): a destructible (NVIDIA Blast, PhysX), as the game
+ * sees it: its pieces (game objects' controllers), the groups they are in now */
+struct PHY_DestructibleInfo
+{
+	PHY_IPhysicsController *root;                /* the piece Make Destructible made the parent */
+	std::vector<PHY_IPhysicsController *> pieces; /* every piece still in the game */
+	std::vector<int> groupOf;                    /* each piece's group (0: the one still held, if any) */
+	int groups;                                  /* how many groups the pieces are in */
+	int bonds, bondsBroken;
+	bool anchored;
+	float strength;
+	PHY_DestructibleInfo() : root(NULL), groups(0), bonds(0), bondsBroken(0), anchored(false), strength(0.0f) {}
+};
+
 struct PHY_RayCastResult
 {
 	PHY_IPhysicsController* m_controller;
@@ -247,6 +261,28 @@ class PHY_IPhysicsEnvironment
 		 * motor, a spring, a target or speed set); its first moving axis and
 		 * the position there. */
 		virtual int GetArticulationJointActivity(int constraintId, int *r_axis, float *r_pos) { return -1; }
+
+		/* BGE-Remix P11 (B2): destruction (PhysX with NVIDIA Blast; the others
+		 * keep a destructible whole). Whether this engine breaks them. */
+		virtual bool HandlesDestruction() { return false; }
+		/* The destructible a piece belongs to (false: none, or not broken by this engine). */
+		virtual bool GetDestructible(PHY_IPhysicsController *piece, PHY_DestructibleInfo *info) { return false; }
+		/* Damage around a point (world): 1 breaks a bond at the point, less
+		 * at the radius; false: not a destructible's piece. */
+		virtual bool DamageDestructible(PHY_IPhysicsController *piece, const MT_Vector3 &point, float radius,
+		                                float amount) { return false; }
+		virtual void SetDestructibleStrength(PHY_IPhysicsController *piece, float strength) {}
+		/* Every destructible within the radius: how many were hit. */
+		virtual int Explode(const MT_Vector3 &point, float radius, float amount) { return 0; }
+		/* The scene's budget: the most broken-off pieces (0: no limit), and
+		 * how long they stay (seconds; 0: until the budget needs room). */
+		virtual void SetDestructionBudget(int maxPieces, float lifetime) {}
+		/* The pieces the budget removes (the game ends their objects). */
+		virtual void TakeDestructionRemovals(std::vector<PHY_IPhysicsController *> &r_pieces) {}
+		/* What a destructible does now, for the Remix View: -1 none, 0 whole
+		 * or at rest, 1 breaking, 2 the budget has taken pieces of it, 3
+		 * damaged by a script just now. */
+		virtual int GetDestructionActivity(PHY_IPhysicsController *piece) { return -1; }
 
 		/* Set the rigid body joints constraints values for converted objects and replicated group instances. */
 		virtual void SetupObjectConstraints(KX_GameObject *obj_src, KX_GameObject *obj_dest,

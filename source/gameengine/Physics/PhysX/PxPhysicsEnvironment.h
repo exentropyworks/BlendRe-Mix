@@ -46,6 +46,11 @@ class CcdGraphicController;
 struct Scene;
 struct PxCtrlInfo;
 struct PxArticulationGroup;
+struct PxDestructible;
+struct PxDestructionGroup;
+namespace physx {
+class PxShape;
+}
 
 namespace physx {
 class PxScene;
@@ -183,6 +188,24 @@ public:
 	const char *GetArticulationNote(int constraintId) override;
 	int GetArticulationJointActivity(int constraintId, int *r_axis, float *r_pos) override;
 
+	/* BGE-Remix P11 (B2, PxDestruction.cpp): destructibles (NVIDIA Blast).
+	 * A piece (at conversion): its destructible's key (the parent piece's
+	 * name) and, from the parent piece, its settings; built at the next step. */
+	void AddDestructionPiece(PxPhysicsController *ctrl, const std::string &key, bool isRoot, float strength,
+	                         bool anchored);
+	/* a contact on a piece (during the simulation): its impulse, where */
+	void DestructionImpact(PxPhysicsController *piece, const physx::PxVec3 &point, float impulse);
+	/* the controller a shape belongs to (a piece's, on its group's body) */
+	PxPhysicsController *ShapeOwner(const physx::PxShape *shape, PxPhysicsController *actorOwner) const;
+	bool HandlesDestruction() override;
+	bool GetDestructible(PHY_IPhysicsController *piece, PHY_DestructibleInfo *info) override;
+	bool DamageDestructible(PHY_IPhysicsController *piece, const MT_Vector3 &point, float radius, float amount) override;
+	void SetDestructibleStrength(PHY_IPhysicsController *piece, float strength) override;
+	int Explode(const MT_Vector3 &point, float radius, float amount) override;
+	void SetDestructionBudget(int maxPieces, float lifetime) override;
+	void TakeDestructionRemovals(std::vector<PHY_IPhysicsController *> &r_pieces) override;
+	int GetDestructionActivity(PHY_IPhysicsController *piece) override;
+
 	/* counters for the tests and the stats overlay */
 	struct Stats {
 		int steps;
@@ -219,6 +242,25 @@ private:
 	physx::PxJoint *MakeJoint(PxPhysicsController *c0, PxPhysicsController *c1, PHY_ConstraintType type,
 	                          const physx::PxTransform &frameA, const physx::PxTransform &frameB);
 	/* P11 (B1) */
+	/* P11 (B2, PxDestruction.cpp) */
+	struct DestructionImpactRec {
+		PxPhysicsController *piece;
+		physx::PxVec3 point;
+		float impulse;
+	};
+	void BuildDestructibles();
+	bool BuildDestructible(PxDestructible *d);
+	void DestructionStep(float dt);
+	void DestructionRemovePiece(PxPhysicsController *ctrl);
+	void DismantleDestructible(PxDestructible *d);
+	PxDestructionGroup *MakeDestructionGroup(PxDestructible *d, const std::vector<int> &pieces, void *actor,
+	                                          const physx::PxTransform &restToWorld, const physx::PxVec3 &lin,
+	                                          const physx::PxVec3 &ang, const physx::PxVec3 &comWas, bool original);
+	void ReleaseDestructionGroup(PxDestructionGroup *g);
+	bool DamageGroups(PxDestructible *d, const physx::PxVec3 &point, float radius, float amount);
+	void SplitDestructible(PxDestructible *d, void *actor);
+	void DestructionBudget();
+	PxDestructible *DestructibleOf(PHY_IPhysicsController *piece) const;
 	void BuildArticulations();
 	PxArticulationGroup *BuildArticulation(PxPhysicsController *root);
 	/* the constraint's settings onto its articulation joint (param: the one
@@ -290,6 +332,17 @@ private:
 	Stats m_stats;
 	std::vector<PxArticulationGroup *> m_articulations;
 	bool m_articulationsDirty;
+	/* P11 (B2) */
+	std::vector<PxDestructible *> m_destructibles;
+	bool m_destructionDirty;
+	std::map<const physx::PxShape *, PxPhysicsController *> m_shardShapes;
+	std::vector<DestructionImpactRec> m_impacts;
+	std::vector<PHY_IPhysicsController *> m_destructionRemovals;
+	int m_maxPieces;
+	float m_debrisLifetime;
+	int m_destructionFrame;
+	double m_destructionTime;
+	int m_groupSerial;
 
 	friend class PxPhysicsController;
 	friend class PxRaycastVehicle;

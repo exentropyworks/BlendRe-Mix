@@ -3,6 +3,7 @@
 Each track makes its own scenes in its own module, each with make(folder, E):
   p11a_scenes  Part A: physics and motion in Remix's picture (A2-A5)
   p11b_scenes  Part B step 1 (B1): articulations, ragdolls
+  p11c_scenes  Part B step 2 (B2): destruction (NVIDIA Blast)
 
 What each track expects is written into E under its own keys; a track whose
 scenes failed is named in E["failed"]. All of it goes to p11_expected.json.
@@ -20,7 +21,7 @@ sys.path.insert(0, HERE)  # the tracks' scene modules
 for phase in ("p9", "p6", "p3", "p2"):
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), phase))
 
-TRACKS = ("p11a", "p11b")
+TRACKS = ("p11a", "p11b", "p11c")
 
 
 def main():

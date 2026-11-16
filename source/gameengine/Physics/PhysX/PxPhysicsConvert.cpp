@@ -212,7 +212,21 @@ void PxPhysicsEnvironment::ConvertObject(KX_GameObject *gameobj, RAS_MeshObject 
 {
 	Object *blenderobject = gameobj->GetBlenderObject();
 
-	const bool isdyna = (blenderobject->gameflag & OB_DYNAMIC) != 0;
+	/* BGE-Remix P11 (B2): a destructible's piece (Make Destructible: the ID
+	 * property bge_destructible_of, its parent piece's name; the parent piece
+	 * has bge_destructible). Under Bullet the pieces are one compound body;
+	 * here each is a body of its own (they are joined again in groups at the
+	 * first step, PxDestruction.cpp), moved by physics */
+	IDProperty *piece_of = blenderobject->id.properties ?
+	        IDP_GetPropertyFromGroup(blenderobject->id.properties, "bge_destructible_of") : NULL;
+	const bool ispiece = piece_of && piece_of->type == IDP_STRING && IDP_String(piece_of)[0] &&
+	                     !(blenderobject->gameflag & (OB_SENSOR | OB_CHARACTER | OB_SOFT_BODY));
+	if (ispiece) {
+		isCompoundChild = false;
+		hasCompoundChildren = false;
+	}
+
+	const bool isdyna = (blenderobject->gameflag & OB_DYNAMIC) != 0 || ispiece;
 	const bool issensor = (blenderobject->gameflag & OB_SENSOR) != 0;
 	const bool ischar = (blenderobject->gameflag & OB_CHARACTER) != 0;
 	bool issoft = (blenderobject->gameflag & OB_SOFT_BODY) != 0;
@@ -235,7 +249,7 @@ void PxPhysicsEnvironment::ConvertObject(KX_GameObject *gameobj, RAS_MeshObject 
 	ci.sensor = issensor;
 	ci.character = ischar;
 	ci.soft = issoft;
-	ci.rigid = isdyna && isrigid;
+	ci.rigid = isdyna && (isrigid || ispiece);
 	ci.noResponse = (blenderobject->gameflag & (OB_GHOST | OB_SENSOR | OB_CHARACTER)) != 0;
 	ci.linearFactor = PxVec3((blenderobject->gameflag2 & OB_LOCK_RIGID_BODY_X_AXIS) ? 0.0f : 1.0f,
 	                         (blenderobject->gameflag2 & OB_LOCK_RIGID_BODY_Y_AXIS) ? 0.0f : 1.0f,
@@ -439,6 +453,27 @@ void PxPhysicsEnvironment::ConvertObject(KX_GameObject *gameobj, RAS_MeshObject 
 
 	PxPhysicsController *ctrl = new PxPhysicsController(ci, motionstate, this);
 	shape->Release();
+	if (ispiece && (blenderobject->lay & activeLayerBitInfo) != 0) {
+		/* P11 (B2): the parent piece's settings (pieces in the scene as the
+		 * game starts; not inactive layers' objects, which only replicas use) */
+		IDProperty *props = blenderobject->id.properties;
+		IDProperty *root = IDP_GetPropertyFromGroup(props, "bge_destructible");
+		const bool isroot = root && root->type == IDP_INT && IDP_Int(root) != 0;
+		float strength = 100.0f;
+		bool anchored = false;
+		if (isroot) {
+			IDProperty *p = IDP_GetPropertyFromGroup(props, "bge_destructible_strength");
+			if (p && p->type == IDP_FLOAT) {
+				strength = IDP_Float(p);
+			}
+			else if (p && p->type == IDP_DOUBLE) {
+				strength = (float)IDP_Double(p);
+			}
+			p = IDP_GetPropertyFromGroup(props, "bge_destructible_anchored");
+			anchored = p && p->type == IDP_INT && IDP_Int(p) != 0;
+		}
+		AddDestructionPiece(ctrl, IDP_String(piece_of), isroot, std::max(strength, 1e-3f), anchored);
+	}
 	if (ctrl->GetDeformable() && ctrl->GetShapeDesc()) {
 		map_soft_vertices(ctrl->GetShapeDesc()->m_mesh);
 	}
@@ -453,7 +488,7 @@ void PxPhysicsEnvironment::ConvertObject(KX_GameObject *gameobj, RAS_MeshObject 
 	if (!issensor && (blenderobject->lay & activeLayerBitInfo) != 0) {
 		AddController(ctrl);
 	}
-	if (parent) {
+	if (parent && !ispiece) {
 		ctrl->SuspendDynamics(false);
 	}
 	ctrl->SetParentCtrl(parent ? dynamic_cast<PxPhysicsController *>(parent->GetPhysicsController()) : NULL);

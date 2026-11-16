@@ -34,7 +34,9 @@
 #include "KX_ConstraintWrapper.h"
 #include "KX_VehicleWrapper.h"
 #include "KX_CharacterWrapper.h"
-#include "KX_ArticulationWrapper.h"  /* BGE-Remix P11 (B1) */
+#include "KX_ArticulationWrapper.h"
+#include "KX_DestructibleWrapper.h"  /* BGE-Remix P11 (B2) */
+#include "KX_PyMath.h"  /* BGE-Remix P11 (B1) */
 #include "BL_ArmatureObject.h"
 #include "PHY_IPhysicsController.h"
 #include "PHY_IVehicle.h"
@@ -530,6 +532,53 @@ static PyObject *gPyGetArticulation(PyObject *self, PyObject *args, PyObject *kw
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P11 (B2): destructibles (Make Destructible; NVIDIA Blast under PhysX) */
+static PyObject *gPyGetDestructible(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pyob;
+	KX_GameObject *ob;
+	if (!PyArg_ParseTuple(args, "O", &pyob)) {
+		return NULL;
+	}
+	if (!ConvertPythonToGameObject(KX_GetActiveScene()->GetLogicManager(), pyob, &ob, false,
+	                               "bge.constraints.getDestructible(value)"))
+	{
+		return NULL;
+	}
+	PHY_IPhysicsEnvironment *env = ob->GetScene() ? ob->GetScene()->GetPhysicsEnvironment() : NULL;
+	PHY_DestructibleInfo info;
+	if (!env || !ob->GetPhysicsController() || !env->GetDestructible(ob->GetPhysicsController(), &info)) {
+		Py_RETURN_NONE;
+	}
+	std::vector<KX_GameObject *> pieces;
+	for (PHY_IPhysicsController *c : info.pieces) {
+		KX_GameObject *p = KX_GameObject::GetClientObject((KX_ClientObjectInfo *)c->GetNewClientInfo());
+		if (p) {
+			pieces.push_back(p);
+		}
+	}
+	KX_DestructibleWrapper *wrapper = new KX_DestructibleWrapper(pieces);
+	return wrapper->NewProxy(true);
+}
+
+static PyObject *gPyExplode(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pypoint;
+	float radius = 1.0f, amount = 1.0f;
+	static const char *kwlist[] = {"point", "radius", "damage", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|ff:explode", const_cast<char **>(kwlist), &pypoint, &radius,
+	                                 &amount))
+	{
+		return NULL;
+	}
+	MT_Vector3 point;
+	if (!PyVecTo(pypoint, point)) {
+		return NULL;
+	}
+	PHY_IPhysicsEnvironment *env = KX_GetActiveScene() ? KX_GetActiveScene()->GetPhysicsEnvironment() : NULL;
+	return PyLong_FromLong(env ? env->Explode(point, radius, amount) : 0);
+}
+
 static PyObject *gPyCreateConstraint(PyObject *self,
                                      PyObject *args,
                                      PyObject *kwds)
@@ -692,6 +741,10 @@ static struct PyMethodDef physicsconstraints_methods[] = {
 	{"getVehicleConstraint",(PyCFunction) gPyGetVehicleConstraint,
 	 METH_VARARGS, (const char *)gPyGetVehicleConstraint__doc__},
 
+	{"getDestructible", (PyCFunction)gPyGetDestructible, METH_VARARGS,
+	 "getDestructible(ob): the destructible the object is a piece of (Make Destructible), or None"},
+	{"explode", (PyCFunction)gPyExplode, METH_VARARGS | METH_KEYWORDS,
+	 "explode(point, radius=1.0, damage=1.0): breaks every destructible within the radius (PhysX); how many"},
 	{"getArticulation", (PyCFunction)gPyGetArticulation, METH_VARARGS,
 	 "getArticulation(ob): the articulation the object is a link of (PhysX), or an armature's ragdoll; or None"},
 	{"getCharacter",(PyCFunction) gPyGetCharacter,

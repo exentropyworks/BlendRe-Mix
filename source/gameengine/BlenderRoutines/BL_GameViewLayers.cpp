@@ -1593,6 +1593,50 @@ void GVBuilder::Physics()
 		}
 	}
 
+	/* BGE-Remix P11 (B2): destructibles (Make Destructible): the parent piece
+	 * (bge_destructible) and its pieces (bge_destructible_of, its name) */
+	{
+		std::map<std::string, int> piece_count;
+		for (Object *ob : m_objects) {
+			IDProperty *of = ob->id.properties ? IDP_GetPropertyFromGroup(ob->id.properties, "bge_destructible_of") :
+			                                     NULL;
+			if (of && of->type == IDP_STRING && InGame(ob)) {
+				piece_count[IDP_String(of)]++;
+			}
+		}
+		int total = 0, first = -1;
+		for (Object *ob : m_objects) {
+			if (!idprop_int(ob->id.properties, "bge_destructible", 0) || !InGame(ob)) {
+				continue;
+			}
+			std::map<std::string, int>::iterator it = body_el.find(name_of(ob));
+			if (it == body_el.end()) {
+				continue;
+			}
+			const int n = piece_count[name_of(ob)];
+			total += n;
+			const bool anchored = idprop_int(ob->id.properties, "bge_destructible_anchored", 0) != 0;
+			const float strength = idprop_float(ob->id.properties, "bge_destructible_strength", 100.0f);
+			BLI_strncpy(elements[it->second].info,
+			            fmt("destructible, %d pieces%s, strength %.0f N s", n, anchored ? ", anchored base" : "",
+			                strength).c_str(), sizeof(elements[it->second].info));
+			elements[it->second].state = GV_STATE_WHITE;
+			if (m_physx <= 0) {
+				Warn(it->second, "PHY_DESTRUCT_ENGINE", GV_WARN_NOTE,
+				     "a destructible: breaking needs PhysX (World > Physics); here it plays as one whole object");
+			}
+			if (first < 0) {
+				first = it->second;
+			}
+		}
+		const int most = idprop_int(m_scene->id.properties, "bge_destruction_max_pieces", 500);
+		if (m_physx > 0 && most > 0 && total > most && first >= 0) {
+			Warn(first, "PHY_DESTRUCT_BUDGET", GV_WARN_NOTE,
+			     fmt("the scene's destructibles have %d pieces, more than its Destruction Budget (%d, World > "
+			         "Physics): once they break, the oldest loose pieces are removed", total, most).c_str());
+		}
+	}
+
 	/* joints (Rigid Body Joint constraints) */
 	for (const JointRef &j : joints) {
 		Object *ob = j.ob;
