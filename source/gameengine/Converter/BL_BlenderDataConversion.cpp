@@ -89,7 +89,9 @@
 #include "BL_Texture.h"
 
 #include "BKE_main.h"
+extern "C" {
 #include "BKE_idprop.h"  /* BGE-Remix P11 (B2) */
+}
 #include "BKE_global.h"
 #include "BKE_object.h"
 #include "BL_ModifierDeformer.h"
