@@ -118,6 +118,10 @@ if(BLAST_SOURCE_DIR AND EXISTS "${BLAST_SOURCE_DIR}/include/lowlevel/NvBlast.h")
 	if(WIN32)
 		list(APPEND INC_SYS ${_bl}/source/shared/NsFoundation/include/platform/windows
 		                    ${CMAKE_CURRENT_SOURCE_DIR}/blast_shim)  # (typeinfo.h, gone from VS 2022)
+		# (the stress solver uses std::floor and std::copysignf without <cmath>)
+		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
+		                            ${_bl}/source/shared/stress_solver/stress.cpp
+		                            PROPERTIES COMPILE_FLAGS "/FIcmath /FIlimits")
 	else()
 		list(APPEND INC_SYS ${_bl}/source/shared/NsFoundation/include/platform/unix)
 		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp

@@ -67,6 +67,8 @@ if(BLAST_SOURCE_DIR AND EXISTS "${BLAST_SOURCE_DIR}/include/lowlevel/NvBlast.h")
 	if(WIN32)
 		target_include_directories(p6_physx_checks PRIVATE ${_bl}/source/shared/NsFoundation/include/platform/windows
 		                           ${GE}/Physics/PhysX/blast_shim)  # (typeinfo.h, gone from VS 2022)
+		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
+		                            ${_bl}/source/shared/stress_solver/stress.cpp PROPERTIES COMPILE_FLAGS "/FIcmath /FIlimits")
 	else()
 		target_include_directories(p6_physx_checks PRIVATE ${_bl}/source/shared/NsFoundation/include/platform/unix)
 		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
