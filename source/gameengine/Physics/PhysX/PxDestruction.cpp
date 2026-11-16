@@ -1098,6 +1098,7 @@ bool PxPhysicsEnvironment::DamageDestructible(PHY_IPhysicsController *piece, con
 	}
 	d->lastScript = m_destructionFrame;
 	DamageGroups(d, PxVec3((float)point[0], (float)point[1], (float)point[2]), radius, amount);
+	DestructionBudget();  /* (at once: the script sees the scene within its budget) */
 	return true;
 }
 
@@ -1147,6 +1148,9 @@ int PxPhysicsEnvironment::Explode(const MT_Vector3 &point, float radius, float a
 				g->body->setLinearVelocity(g->body->getLinearVelocity() + out * (amount * (1.0f - dist / reach) / dist));
 			}
 		}
+	}
+	if (hit) {
+		DestructionBudget();  /* (at once: the script sees the scene within its budget) */
 	}
 	return hit;
 }

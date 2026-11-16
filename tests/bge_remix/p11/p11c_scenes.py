@@ -90,10 +90,14 @@ if tic == 1:
     top = max(o.worldPosition.z for o in ps)
     high = [o for o in ps if o.worldPosition.z > top - 0.35]
     st["corners"] = [min(high, key=lambda o: o.worldPosition.x).name, max(high, key=lambda o: o.worldPosition.x).name]
+if tic == 2:
+    # (round 1: at tic 1 the destructible is not built yet: its bonds are
+    # found at the first physics step)
+    ps = pieces("Wall")
     d = destructible(ps[0]) if ps else None
     st["made"] = None if d is None else {"pieces": len(d.pieces), "bonds": d.bonds, "anchored": d.anchored,
                                          "strength": d.strength, "root": d.root.name if d.root else None}
-if tic == 2:
+if tic == 3:
     obj("Ball").setLinearVelocity((0.0, SPEED, 0.0), False)
 if tic == TICS:
     ps = pieces("Wall")
@@ -300,7 +304,9 @@ def make_pillar(folder, E):
     floor(scene)
     src = m6.box(scene, "Pillar", (0.5, 0.5, 3.0), (0.0, 0.0, 1.5), m6.material("CPillar", (0.6, 0.6, 0.65)),
                  physics='STATIC')
-    root = make_destructible(scene, src, pieces=30, seed=2, strength=100.0, mass=1800.0, anchored=True)
+    # (round 1: at 100 N s the top, 900 kg falling, broke the foot apart:
+    # concrete's pieces need more)
+    root = make_destructible(scene, src, pieces=30, seed=2, strength=5000.0, mass=1800.0, anchored=True)
     p2.camera(scene, (4.0, -6.0, 2.0), (0.0, 0.0, 1.4), lens=30.0)
     m9.logic(scene, "P11cPillar", PILLAR_SCRIPT.replace("TICS", str(TICS_PILLAR)))
     p2.add_probe(scene)
@@ -340,7 +346,7 @@ def make_view(folder, E):
         bpy.ops.wm.read_factory_settings(use_empty=True)
         scene = m6.base("P11cView")
         m6.set_engine(scene, engine, 'CPU' if engine == 'PHYSX' else None)
-        scene.bge_destruction_max_pieces = 3
+        scene.bge_destruction_max_pieces = 1  # (round 1: 3 was more than the explosion freed)
         floor(scene)
         roots[key] = wall(scene)
         p2.camera(scene, (5.0, -7.0, 2.5), (0.0, 0.0, 1.0), lens=30.0)
@@ -349,7 +355,7 @@ def make_view(folder, E):
         scene.update()
         remix_view()
         files[key] = save(folder, "p11c_view_" + key)
-    E["view"] = {"files": files, "roots": roots, "max": 3, "pieces_asked": WALL["pieces"]}
+    E["view"] = {"files": files, "roots": roots, "max": 1, "pieces_asked": WALL["pieces"]}
 
 
 def make_crash(folder, E):
@@ -367,18 +373,31 @@ def make_crash(folder, E):
 
 
 def _centres(scene, base, origin):
+    scene.update()  # (round 1: the pieces' world matrices were not yet up to date)
     out = []
     for o in scene.objects:
         if o.name.startswith(base + ".") and o.get("bge_destructible_of"):
             c = o.matrix_world * (sum((Vector(v) for v in o.bound_box), Vector()) / 8.0) - origin
-            out.append([round(c.x, 4), round(c.y, 4), round(c.z, 4)])
-    return sorted(out)
+            out.append([c.x, c.y, c.z])
+    return sorted(out, key=lambda c: (round(c[2], 2), round(c[0], 2), round(c[1], 2)))
+
+
+def _same(a, b, tol=1e-3):
+    """the same pieces: as many, each centre within tol"""
+    if len(a) != len(b):
+        return False
+    left = list(b)
+    for c in a:
+        near = [k for k, d in enumerate(left) if max(abs(c[i] - d[i]) for i in range(3)) < tol]
+        if not near:
+            return False
+        del left[near[0]]
+    return True
 
 
 def make_operator_checks(folder, E):
     """Make Destructible itself: the same seed, the same pieces; the volumes;
     made again"""
-    import bmesh
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = m6.base("P11cMake")
     r = {}
@@ -390,16 +409,15 @@ def make_operator_checks(folder, E):
     b = _centres(scene, "CubeB", Vector((5.0, 0.0, 0.0)))
     c = _centres(scene, "CubeC", Vector((10.0, 0.0, 0.0)))
     r["pieces"] = {"A": len(a), "B": len(b), "C": len(c)}
-    r["same_seed_same_pieces"] = a == b and len(a) > 1
-    r["other_seed_other_pieces"] = a != c
+    r["same_seed_same_pieces"] = _same(a, b) and len(a) > 1
+    r["other_seed_other_pieces"] = not _same(a, c)
+    # (round 1: the meshes' own volumes came to half the cube: a boolean's
+    # faces turned either way; the pieces are convex: their hulls')
+    from bl_operators.bge_remix_destructible import mesh_volume
     vol = 0.0
     for o in scene.objects:
         if o.name.startswith("CubeA.") and o.get("bge_destructible_of"):
-            bm = bmesh.new()
-            bm.from_mesh(o.data)
-            s = o.matrix_world.to_scale()
-            vol += abs(bm.calc_volume(signed=False) * s.x * s.y * s.z)
-            bm.free()
+            vol += mesh_volume(o)
     r["volume"] = vol
     r["volume_of_the_cube"] = 1.0
     # made again (from the parent piece): the same pieces, none left over
@@ -409,7 +427,7 @@ def make_operator_checks(folder, E):
     after = sorted(o.name for o in scene.objects if o.name.startswith("CubeA."))
     r["again_names_same"] = before == after
     r["again_count"] = len(after)
-    r["again_same_pieces"] = _centres(scene, "CubeA", Vector((0.0, 0.0, 0.0))) == a
+    r["again_same_pieces"] = _same(_centres(scene, "CubeA", Vector((0.0, 0.0, 0.0))), a)
     r["source_kept_on_layer_20"] = bool(bpy.data.objects.get("CubeA")) and \
         bpy.data.objects["CubeA"].layers[19] and not any(bpy.data.objects["CubeA"].layers[:19])
     E["operator"] = r

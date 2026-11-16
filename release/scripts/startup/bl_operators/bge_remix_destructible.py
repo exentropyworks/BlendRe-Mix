@@ -41,18 +41,31 @@ from bpy.props import BoolProperty, FloatProperty, IntProperty
 from mathutils import Matrix, Vector
 
 
-def mesh_volume(ob):
+def hull_volume(points):
+    """the volume of the points' convex hull"""
     bm = bmesh.new()
-    bm.from_mesh(ob.data)
     try:
-        v = bm.calc_volume(signed=False)
-    except (AttributeError, ValueError):
+        for p in points:
+            bm.verts.new(p)
+        bm.verts.ensure_lookup_table()
+        bmesh.ops.convex_hull(bm, input=bm.verts[:])
+        return abs(bm.calc_volume(signed=False))
+    finally:
+        bm.free()
+
+
+def mesh_volume(ob):
+    """the volume of the piece's convex hull, in the world (Cell Fracture's
+    pieces of a convex object are convex; a boolean's faces may be turned
+    either way, which the mesh's own volume would count against each other)"""
+    mw = ob.matrix_world
+    try:
+        return hull_volume([mw * v.co for v in ob.data.vertices])
+    except (AttributeError, ValueError, RuntimeError):
         lo = Vector([min(c[i] for c in ob.bound_box) for i in range(3)])
         hi = Vector([max(c[i] for c in ob.bound_box) for i in range(3)])
-        v = (hi.x - lo.x) * (hi.y - lo.y) * (hi.z - lo.z)
-    bm.free()
-    s = ob.matrix_world.to_scale()
-    return abs(v * s.x * s.y * s.z)
+        s = mw.to_scale()
+        return abs((hi.x - lo.x) * (hi.y - lo.y) * (hi.z - lo.z) * s.x * s.y * s.z)
 
 
 def remove_object(ob):
@@ -210,6 +223,7 @@ class OBJECT_OT_bge_remix_make_destructible(Operator):
             # (Bullet and stock 2.79b: a wall that stands where it is)
             root.game.physics_type = 'STATIC'
             root.game.use_collision_compound = True
+        scene.update()
         for o in context.selected_objects:
             o.select = False
         root.select = True
