@@ -46,18 +46,9 @@ def region():
 
 def override():
     win = window()
-    o = {"window": win, "screen": win.screen, "area": main_area(), "region": region()}
-    # (round 5: P10's probe passes no scene, and its Run passes: with it or
-    # without it, BGE_REMIX_P11B_NOSCENE=1)
-    if os.environ.get("BGE_REMIX_P11B_NOSCENE") != "1":
-        o["scene"] = bpy.context.scene
-    return o
-
-
-def watch(where):
-    """round 5, a diagnostic: the engine's sound watch"""
-    if gv is not None and hasattr(gv, "sound_watch"):
-        gv.sound_watch(where, bpy.context.scene.as_pointer(), 1)
+    # (no scene, as P10's probe: Stop's No puts the file back, which replaces
+    # the scene; round 5: with it Stop updated the freed one)
+    return {"window": win, "screen": win.screen, "area": main_area(), "region": region()}
 
 
 def physics():
@@ -93,12 +84,9 @@ def live_joints():
 
 def make_run(frames):
     def s_run():
-        watch("probe: before Run mode")
         bpy.ops.gameview.mode(override(), mode='RUN')
-        watch("probe: in Run mode")
         ret = run_op(bpy.ops.gameview.run, scope='SCENE', suspend_after=frames,
                      shot=os.path.join(DIR, "run_%d.png" % frames))
-        watch("probe: after Run")
         r = {"ret": ret, "frames": frames, "live": live_joints()}
         r["stop"] = run_op(bpy.ops.gameview.run_stop, keep='NO')
         return r

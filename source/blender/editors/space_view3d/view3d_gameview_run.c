@@ -154,14 +154,12 @@ static int gameview_play_exec(bContext *C, wmOperator *op)
 	}
 	CTX_wm_region_set(C, ar);
 	rv3d = ar->regiondata;
-	BL_GameViewSoundWatch(startscene, "Play: start", 1);
 
 	/* the model the live data is made for, up to date */
 	view3d_operator_needs_opengl(C);
 	if (!BL_GameViewModel() || BL_GameViewIsDirty()) {
 		view3d_gameview_build(C, ar);
 	}
-	BL_GameViewSoundWatch(startscene, "Play: the model built", 1);
 
 	/* redraw to hide any menus and pop-ups: Blender's own loop waits until
 	 * the game ends. BGE-Remix P10.9 fix: a Python context override (a script
@@ -216,9 +214,7 @@ static int gameview_play_exec(bContext *C, wmOperator *op)
 	BLI_listbase_clear(&prevwin->queue);
 
 	BL_GameViewRunBegin(C, ar, &opts);
-	BL_GameViewSoundWatch(startscene, "Play: the game starts", 1);
 	StartKetsjiShell(C, ar, &cam_frame, 1);
-	BL_GameViewSoundWatch(startscene, "Play: the game ended", 1);
 	outcome = BL_GameViewRunFinish();
 
 	MEM_SAFE_FREE(keep);
@@ -242,7 +238,6 @@ static int gameview_play_exec(bContext *C, wmOperator *op)
 
 	BKE_scene_set_background(CTX_data_main(C), startscene);
 	BLI_callback_exec(bmain, &startscene->id, BLI_CB_EVT_GAME_POST);
-	BL_GameViewSoundWatch(startscene, "Play: done", 1);
 
 	if (outcome == GV_RUN_OUT_ERROR) {
 		BKE_report(op->reports, RPT_ERROR, "The game could not start");
@@ -296,9 +291,7 @@ static int gameview_file_state_exec(bContext *C, wmOperator *op)
 	bool ok;
 
 	if (action == 0) {
-		BL_GameViewSoundWatch(CTX_data_scene(C), "File state: keep", 1);
 		BL_GameViewRunFileSave(bmain);
-		BL_GameViewSoundWatch(CTX_data_scene(C), "File state: kept", 1);
 		if (!BL_GameViewRunFile()) {
 			BKE_report(op->reports, RPT_ERROR, "The file could not be kept");
 			return OPERATOR_CANCELLED;

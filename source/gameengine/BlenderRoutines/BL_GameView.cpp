@@ -562,16 +562,13 @@ static bool dry_convert(bContext *C, ARegion *ar, GVConverted &conv)
 	setupGamePython(ketsjiengine, kxscene, blenderdata, pyGlobalDict, &gameLogic, &gameLogic_keys, 0, NULL);
 #endif
 
-	BL_GameViewSoundWatch(startscene, "Model: converting", 1);
 	sceneconverter->ConvertScene(kxscene, rasterizer, canvas);
-	BL_GameViewSoundWatch(startscene, "Model: converted", 1);
 	BL_GameViewCollect(kxscene, conv);
 	for (Material *ma : sceneconverter->GetGLSLFailures()) {
 		conv.glsl_fallback.insert(ma->id.name + 2);
 	}
 
 	sceneconverter->RemoveScene(kxscene);
-	BL_GameViewSoundWatch(startscene, "Model: the converted scene freed", 1);
 #ifdef WITH_PYTHON
 	PyObject *keys_new = PyDict_Keys(PyModule_GetDict(gameLogic));
 	for (Py_ssize_t i = 0; i < PyList_GET_SIZE(keys_new); i++) {
@@ -604,7 +601,6 @@ static bool dry_convert(bContext *C, ARegion *ar, GVConverted &conv)
 	PyGILState_Release(gilstate);
 #endif
 	GPU_state_scope_end(&gl_scope);
-	BL_GameViewSoundWatch(startscene, "Model: the converter freed", 1);
 	conv.convert_ms = (PIL_check_seconds_timer() - t0) * 1000.0;
 	return true;
 }
@@ -624,7 +620,6 @@ extern "C" int BL_GameViewBuild(struct bContext *C, struct ARegion *ar)
 	}
 	GVBuilder b(bmain, scene, conv);
 	b.Build();
-	BL_GameViewSoundWatch(scene, "Model: the layers built", 1);
 	const double ms = (PIL_check_seconds_timer() - t0) * 1000.0;
 	publish(b, scene->id.name + 2, conv.converted, ms, conv.convert_ms);
 	return 1;
@@ -646,10 +641,8 @@ void BL_GameViewReportGame(KX_Scene *kxscene, Main *maggie, KX_BlenderSceneConve
 			conv.glsl_fallback.insert(ma->id.name + 2);
 		}
 	}
-	BL_GameViewSoundWatch(scene, "Game: the checks", 1);
 	GVBuilder b(maggie, scene, conv);
 	b.Build();
-	BL_GameViewSoundWatch(scene, "Game: the checks done", 1);
 	int shown = 0, known = 0;
 	for (const GVWarning &w : b.warnings) {
 		if (w.known) {

@@ -294,10 +294,6 @@ def view_probe(args, out, tag, blend, env):
     r = p2.read_json(res) or {}
     r.update({"exit": code, "seconds": round(secs, 1), "folder": folder})
     r["ran"] = code == 0 and bool(r.get("finished"))
-    # (round 4: the engine's sound watch, a diagnostic: where the scene's
-    # sound sequencer changes)
-    r["sound watch"] = [l.split("sound watch:", 1)[1].strip() for l in (text or "").splitlines()
-                        if "BGE-Remix sound watch:" in l][:80]
     rep = crashinfo.crash_report(dbg_log, os.path.join(args.ours, "blender.map"))
     if rep.get("crashed") or not r["ran"]:
         r["crash"] = crashinfo.report_lines(rep) or None
@@ -363,34 +359,7 @@ def t_view(args, out, scenes, P, tests):
             bool(j) and j[0]["state"] == want[f]
     d["door live"] = live
     d["door errors"] = m.get("errors")
-    d["door run"] = {k: m.get(k) for k in ("exit", "seconds", "last_step", "crash", "sound watch")}
-    # (round 2: Run stopped in Blender's sound update after the door's game,
-    # in the step that writes the suspended game into the file. The same
-    # door with an ordinary hinge under PhysX and under Bullet: where it
-    # stops tells whether it is articulations, PhysX or neither; numbers
-    # only, not marked)
-    # (round 3: Bullet stopped too: the same Bullet door with no logic, with
-    # only the door's script, with only P2's probe)
-    # (round 4: all of them stopped, the bare one too: the bare door without
-    # its hinge; and the engine prints its sound watch, in each log)
-    for key in ("physx_plain", "bullet", "bullet_bare", "bullet_script", "bullet_probe", "bullet_nojoint"):
-        vname = (D.get("variants") or {}).get(key)
-        if not vname:
-            continue
-        v = view_probe(args, out, "p11b_view_" + vname[len("p11b_"):], _blend(scenes, vname),
-                       {"BGE_REMIX_P11B_PART": "run", "BGE_REMIX_P11B_FRAMES": "40"})
-        d["door run, " + key] = {"Run ran": v["ran"], "last_step": v.get("last_step"),
-                                 "crash": (v.get("crash") or [None, None])[:2],
-                                 "sound watch": v.get("sound watch")}
-    # (round 5: P10's probe passes no scene in its context, and its Run
-    # passes: the bare door's Run without the scene in the probe's context)
-    vname = (D.get("variants") or {}).get("bullet_bare")
-    if vname:
-        v = view_probe(args, out, "p11b_view_door_bullet_bare_noscene", _blend(scenes, vname),
-                       {"BGE_REMIX_P11B_PART": "run", "BGE_REMIX_P11B_FRAMES": "40", "BGE_REMIX_P11B_NOSCENE": "1"})
-        d["door run, bullet_bare, no scene in the probe's context"] = {
-            "Run ran": v["ran"], "last_step": v.get("last_step"), "crash": (v.get("crash") or [None, None])[:2],
-            "sound watch": v.get("sound watch")}
+    d["door run"] = {k: m.get(k) for k in ("exit", "seconds", "last_step", "crash")}
     tests[name] = _test(c, d)
 
 

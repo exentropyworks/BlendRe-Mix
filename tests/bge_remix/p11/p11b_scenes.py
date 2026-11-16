@@ -467,22 +467,13 @@ DOOR = {"lo": -90.0, "hi": 10.0, "open": 90.0, "shut": -10.0, "speed": 1.0, "pus
 
 
 def make_door(folder, E):
-    """the door; and (round 2, finding where Run stops) the same door with an
-    ordinary hinge, under PhysX and under Bullet"""
-    variants = {}
-    for key, engine, art, logic in (("physx_cpu", 'PHYSX', True, "both"), ("physx_plain", 'PHYSX', False, "both"),
-                                    ("bullet", 'BULLET', False, "both"),
-                                    # (round 3: Bullet stopped too; which part of the scene does it)
-                                    ("bullet_bare", 'BULLET', False, "none"),
-                                    ("bullet_script", 'BULLET', False, "script"),
-                                    ("bullet_probe", 'BULLET', False, "probe"),
-                                    # (round 4: every one stopped: the bare Bullet door without its hinge)
-                                    ("bullet_nojoint", 'BULLET', False, "none")):
-        variants[key] = door_scene(folder, key, engine, art, logic, hinge=key != "bullet_nojoint")
-    E["door"] = dict(DOOR, file=variants["physx_cpu"], joint="Hinge", variants=variants)
+    """the door (rounds 2-5 also made variants to find where Run stopped:
+    the test probe's context, not the scenes)"""
+    name = door_scene(folder, "physx_cpu", 'PHYSX', True, "both")
+    E["door"] = dict(DOOR, file=name, joint="Hinge")
 
 
-def door_scene(folder, key, engine, art, logic="both", hinge=True):
+def door_scene(folder, key, engine, art, logic="both"):
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = m6.base("P11bDoor")
     m6.set_engine(scene, engine, 'CPU' if engine == 'PHYSX' else None)
@@ -499,12 +490,11 @@ def door_scene(folder, key, engine, art, logic="both", hinge=True):
     door = m6.box(scene, "Door", (1.0, 0.06, 2.0), (0.55, 0.0, 1.3), m6.material("DoDoor", (0.75, 0.55, 0.3)),
                   mass=10.0)
     m6.box(scene, "Pusher", 0.25, (0.85, -0.8, 1.0), m6.material("DoBox", (0.9, 0.2, 0.2)), mass=5.0)
-    if hinge:
-        c = joint(door, post, 'HINGE', (-0.5, 0.0, 0.0), (0.0, math.radians(-90.0), 0.0))
-        c.name = "Hinge"
-        c.use_angular_limit_x = True
-        c.limit_angle_min_x = math.radians(DOOR["lo"])
-        c.limit_angle_max_x = math.radians(DOOR["hi"])
+    c = joint(door, post, 'HINGE', (-0.5, 0.0, 0.0), (0.0, math.radians(-90.0), 0.0))
+    c.name = "Hinge"
+    c.use_angular_limit_x = True
+    c.limit_angle_min_x = math.radians(DOOR["lo"])
+    c.limit_angle_max_x = math.radians(DOOR["hi"])
     p2.camera(scene, (2.5, -5.0, 4.0), (0.5, 0.5, 1.0), lens=30.0)
     if logic in ("both", "script"):
         m9.logic(scene, "P11bDoor", DOOR_SCRIPT.replace("PUSH", repr(DOOR["push"])).replace("SPEED", repr(DOOR["speed"])))

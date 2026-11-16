@@ -27,7 +27,6 @@
  * in any way while the game is suspended (undo, deleting, another file).
  */
 
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -751,49 +750,6 @@ static void forget_started(Run &r)
 	r.started.clear();
 }
 
-#ifdef _WIN32
-extern "C" char __ImageBase;  /* (the linker's: where blender.exe is loaded) */
-#endif
-
-/* BGE-Remix P11 (B1) round 4, a diagnostic: scene->sound_scene is a
- * boost::shared_ptr<AUD_IFactory> (audaspace's C API): its object (an
- * AUD_SequencerFactory), the object's vtable (as an address in blender.exe,
- * for its map), its use count; printed where it changes */
-extern "C" void BL_GameViewSoundWatch(struct Scene *scene, const char *where, int always)
-{
-	static uintptr_t last[5];
-	static bool have = false;
-	uintptr_t now[5] = {0, 0, 0, 0, 0};
-	now[0] = (uintptr_t)scene;
-	if (scene && scene->sound_scene) {
-		void **sp = (void **)scene->sound_scene;
-		now[1] = (uintptr_t)sp;
-		now[2] = (uintptr_t)sp[0];
-		if (sp[0]) {
-			now[3] = (uintptr_t)(*(void **)sp[0]);
-		}
-		if (sp[1]) {
-			now[4] = (uintptr_t)((const int *)sp[1])[2];  /* sp_counted_base: vptr, use_count_, weak_count_ */
-		}
-	}
-	const bool changed = !have || memcmp(now, last, sizeof(now)) != 0;
-	if (!changed && !always) {
-		return;
-	}
-	uintptr_t base = 0;
-#ifdef _WIN32
-	base = (uintptr_t)&__ImageBase;
-#endif
-	const uintptr_t vt = now[3];
-	printf("BGE-Remix sound watch: %-34s scene %p sound_scene %p sequencer %p vtable %p (blender.exe+0x%llx) "
-	       "uses %d%s\n", where, (void *)now[0], (void *)now[1], (void *)now[2], (void *)vt,
-	       (unsigned long long)((vt && base && vt > base) ? vt - base : 0), (int)now[4],
-	       (have && changed) ? "  CHANGED" : "");
-	fflush(stdout);
-	memcpy(last, now, sizeof(now));
-	have = true;
-}
-
 extern "C" void BL_GameViewRunBegin(bContext *C, ARegion *ar, const GVRunOptions *opts)
 {
 	Run &r = run();
@@ -953,7 +909,6 @@ extern "C" MemFile *BL_GameViewRunFile(void)
 void BL_GameViewRunConverted(KX_Scene *scene, KX_KetsjiEngine *engine)
 {
 	Run &r = run();
-	BL_GameViewSoundWatch(r.blender_scene, "Run converted", 1);
 	r.engine = engine;
 	if (scene->GetBlenderScene() != r.blender_scene) {
 		return;  /* another file (Game actuator): played as it is */
@@ -1057,20 +1012,13 @@ void BL_GameViewRunPreSwap(void *engine_v)
 	if (!scene) {
 		return;
 	}
-	char where[64];
-	BLI_snprintf(where, sizeof(where), "frame %d, before the live data", r.frames);
-	BL_GameViewSoundWatch(r.blender_scene, where, r.frames == 1);
 	update_live(scene);
-	BLI_snprintf(where, sizeof(where), "frame %d, after the live data", r.frames);
-	BL_GameViewSoundWatch(r.blender_scene, where, r.frames == 1);
 	KX_Camera *cam = scene->GetActiveCamera();
 	if (r.overlay && cam && r.C && r.ar) {
 		float view[4][4], proj[4][4];
 		cam->GetWorldToCamera().getValue(&view[0][0]);
 		cam->GetProjectionMatrix().getValue(&proj[0][0]);
 		r.overlay(r.C, r.ar, r.frame, view, proj);
-		BLI_snprintf(where, sizeof(where), "frame %d, after the overlay", r.frames);
-		BL_GameViewSoundWatch(r.blender_scene, where, r.frames == 1);
 	}
 #ifdef WITH_REMIX
 	/* the first frame RTX Remix drew for the game (when the 3D view had
@@ -1093,7 +1041,6 @@ void BL_GameViewRunPreSwap(void *engine_v)
 void BL_GameViewRunStopping(KX_KetsjiEngine *engine)
 {
 	Run &r = run();
-	BL_GameViewSoundWatch(r.blender_scene, "Run stopping", 1);
 	if (r.remix_time > 0.0) {
 		r.remix_played = PIL_check_seconds_timer() - r.remix_time;
 	}
@@ -1112,7 +1059,6 @@ void BL_GameViewRunStopping(KX_KetsjiEngine *engine)
 	}
 	release_started(r);
 	r.engine = NULL;
-	BL_GameViewSoundWatch(r.blender_scene, "Run stopped (snapshot taken)", 1);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1230,23 +1176,7 @@ static PyObject *gvr_buttons(PyObject *, PyObject *args)
 	                     "stop", stop[0], stop[1], stop[2], stop[3]);
 }
 
-/* BGE-Remix P11 (B1) round 5, a diagnostic: the sound watch from Python
- * (the scene by its as_pointer()) */
-static PyObject *gvr_sound_watch(PyObject *, PyObject *args)
-{
-	const char *where;
-	unsigned long long ptr;
-	int always = 1;
-	if (!PyArg_ParseTuple(args, "sK|i", &where, &ptr, &always)) {
-		return NULL;
-	}
-	BL_GameViewSoundWatch((Scene *)(uintptr_t)ptr, where, always);
-	Py_RETURN_NONE;
-}
-
 static PyMethodDef gvr_methods[] = {
-	{"sound_watch", gvr_sound_watch, METH_VARARGS, "A diagnostic: the scene's sound sequencer (label, "
-	 "scene.as_pointer(), always=True)"},
 	{"live", gvr_live, METH_NOARGS, "Run mode: each element's live data of the last frame played"},
 	{"run_result", gvr_result, METH_NOARGS, "Run mode: how the last run ended"},
 	{"run_snapshot", gvr_snapshot, METH_NOARGS, "Run mode: the suspended game's state (None: none kept)"},

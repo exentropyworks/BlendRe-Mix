@@ -975,29 +975,15 @@ PROP_TYPES = {"BOOL": {'BOOL'}, "INT": {'INT'}, "FLOAT": {'FLOAT', 'TIMER'}, "TI
               "STRING": {'STRING'}}
 
 
-def sound_watch(scene, where, always=True):
-    """BGE-Remix P11 (B1) round 5, a diagnostic: the scene's sound sequencer
-    (printed where it changes)"""
-    try:
-        import _bge_gameview
-        _bge_gameview.sound_watch(where, scene.as_pointer(), 1 if always else 0)
-    except (ImportError, AttributeError, ReferenceError):
-        pass
-
-
 def pose(scene, snap):
     """write the suspended game's places and property values into the file"""
     live = {o["name"]: o for o in snap["objects"] if not o["replica"]}
     obs = [ob for ob in scene.objects if ob.name in live]
-    sound_watch(scene, "pose: start")
     for depth in sorted(set(_depth(ob) for ob in obs)):
         for ob in obs:
             if _depth(ob) == depth:
                 ob.matrix_world = _matrix(live[ob.name]["matrix"])
-                sound_watch(scene, "pose: placed " + ob.name, False)
-        sound_watch(scene, "pose: before the update (depth %d)" % depth)
         scene.update()
-        sound_watch(scene, "pose: after the update (depth %d)" % depth)
     for ob in obs:
         for name, kind, value in live[ob.name]["props"]:
             p = ob.game.properties.get(name)

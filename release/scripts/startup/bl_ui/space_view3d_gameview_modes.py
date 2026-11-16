@@ -269,9 +269,7 @@ def _play(op, context, resume, suspend_after, shot, seconds=0.0, from_remix=Fals
     except RuntimeError as ex:
         ret = {'CANCELLED'}
         op.report({'ERROR'}, str(ex))
-    rvt.sound_watch(context.scene, "Run: back in Python")
     res = gv.run_result()
-    rvt.sound_watch(context.scene, "Run: the result read")
     S["last"] = res
     if 'FINISHED' not in ret or res["outcome"] == 'ERROR':
         # it did not start: as before
@@ -301,12 +299,9 @@ def _play(op, context, resume, suspend_after, shot, seconds=0.0, from_remix=Fals
 
 def _suspended(context, o):
     scene = context.scene
-    rvt.sound_watch(scene, "Suspended: start")
     snap = gv.run_snapshot()
-    rvt.sound_watch(scene, "Suspended: the snapshot read")
     if not S["file"]:
         S["file"] = rvt.read_all(scene)
-    rvt.sound_watch(scene, "Suspended: the file's values read")
     S["other_scene"] = bool(snap is None or snap["other_scene"])
     if snap is not None and not snap["other_scene"]:
         rvt.pose(scene, snap)

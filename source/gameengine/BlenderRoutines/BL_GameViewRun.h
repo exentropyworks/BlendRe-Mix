@@ -101,12 +101,6 @@ void BL_GameViewRunFileSave(struct Main *bmain);
 struct MemFile *BL_GameViewRunFile(void);
 void BL_GameViewRunFileFree(void);
 
-/* BGE-Remix P11 (B1) round 4, a diagnostic: the scene's sound sequencer
- * (scene->sound_scene) printed where it changes (always: every call), to
- * find what spoils it before Run's suspend writes the game into the file */
-struct Scene;
-void BL_GameViewSoundWatch(struct Scene *scene, const char *where, int always);
-
 /* Python: Run mode's functions, added to _bge_gameview */
 struct _object;
 void BL_GameViewRun_addPython(struct _object *module);
