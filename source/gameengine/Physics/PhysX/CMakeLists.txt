@@ -116,7 +116,8 @@ if(BLAST_SOURCE_DIR AND EXISTS "${BLAST_SOURCE_DIR}/include/lowlevel/NvBlast.h")
 		${_bl}/source/shared/utils
 	)
 	if(WIN32)
-		list(APPEND INC_SYS ${_bl}/source/shared/NsFoundation/include/platform/windows)
+		list(APPEND INC_SYS ${_bl}/source/shared/NsFoundation/include/platform/windows
+		                    ${CMAKE_CURRENT_SOURCE_DIR}/blast_shim)  # (typeinfo.h, gone from VS 2022)
 	else()
 		list(APPEND INC_SYS ${_bl}/source/shared/NsFoundation/include/platform/unix)
 		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp

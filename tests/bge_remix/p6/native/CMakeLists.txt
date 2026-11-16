@@ -65,7 +65,8 @@ if(BLAST_SOURCE_DIR AND EXISTS "${BLAST_SOURCE_DIR}/include/lowlevel/NvBlast.h")
 		${_bl}/source/sdk/common ${_bl}/source/sdk/globals ${_bl}/source/sdk/lowlevel ${_bl}/source/shared/NsFoundation/include
 		${_bl}/source/shared/stress_solver ${_bl}/source/shared/utils)
 	if(WIN32)
-		target_include_directories(p6_physx_checks PRIVATE ${_bl}/source/shared/NsFoundation/include/platform/windows)
+		target_include_directories(p6_physx_checks PRIVATE ${_bl}/source/shared/NsFoundation/include/platform/windows
+		                           ${GE}/Physics/PhysX/blast_shim)  # (typeinfo.h, gone from VS 2022)
 	else()
 		target_include_directories(p6_physx_checks PRIVATE ${_bl}/source/shared/NsFoundation/include/platform/unix)
 		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
