@@ -152,6 +152,29 @@ void volume_world(PxFluidVolume *v, const PxVec3 &up)
 	(void)up;
 }
 
+/* the actor's shapes and their bounds in its frame */
+void shape_signature(PxRigidActor *actor, std::vector<const PxShape *> &r_shapes, std::vector<PxBounds3> &r_bounds)
+{
+	r_shapes.clear();
+	r_bounds.clear();
+	const PxU32 n = actor->getNbShapes();
+	std::vector<PxShape *> shapes(n);
+	if (n) {
+		actor->getShapes(shapes.data(), n);
+	}
+	for (PxShape *s : shapes) {
+		r_shapes.push_back(s);
+		PxBounds3 b;
+		PxGeometryQuery::computeGeomBounds(b, s->getGeometry(), s->getLocalPose(), 0.0f, 1.0f);
+		r_bounds.push_back(b);
+	}
+}
+
+bool same_bounds(const PxBounds3 &a, const PxBounds3 &b)
+{
+	return (a.minimum - b.minimum).abs().maxElement() < 1e-5f && (a.maximum - b.maximum).abs().maxElement() < 1e-5f;
+}
+
 /* the plane of the volume's surface (the one facing up most) */
 const PxPlane *volume_top(const PxFluidVolume *v, const PxVec3 &up, const PxVec3 &near)
 {
@@ -260,6 +283,7 @@ bool PxPhysicsEnvironment::BuildFluidVolume(PxFluidVolume *v)
 		return false;  /* (not in the scene yet) */
 	}
 	v->parts.clear();
+	shape_signature(actor, v->shapes, v->shapeBounds);
 	const PxU32 n = actor->getNbShapes();
 	std::vector<PxShape *> shapes(n);
 	if (n) {
@@ -455,6 +479,19 @@ void PxPhysicsEnvironment::FluidStep(float dt)
 	/* the volumes, where they are now */
 	std::vector<PxFluidVolume *> live;
 	for (PxFluidVolume *v : m_fluids) {
+		/* (review R3) its shape changed (rescaled, a new mesh): read again */
+		if (v->built && v->ctrl->GetActor()) {
+			std::vector<const PxShape *> shapes;
+			std::vector<PxBounds3> bounds;
+			shape_signature(v->ctrl->GetActor(), shapes, bounds);
+			bool same = shapes == v->shapes && bounds.size() == v->shapeBounds.size();
+			for (size_t i = 0; same && i < bounds.size(); i++) {
+				same = same_bounds(bounds[i], v->shapeBounds[i]);
+			}
+			if (!same) {
+				v->built = v->failed = false;
+			}
+		}
 		if (!v->built) {
 			BuildFluidVolume(v);
 		}
@@ -587,8 +624,16 @@ void PxPhysicsEnvironment::FluidStep(float dt)
 			const float k = drag / fb.volume;
 			const float fall = 1.0f - std::exp(-k * dt);
 			const PxVec3 cur = current * (1.0f / sub);
-			body->addForce(-(vel - cur) * fall, PxForceMode::eVELOCITY_CHANGE);
-			body->addTorque(-body->getAngularVelocity() * fall, PxForceMode::eVELOCITY_CHANGE);
+			if (body->getConcreteType() == PxConcreteType::eARTICULATION_LINK) {
+				/* (review R2) PhysX takes no velocity change on an
+				 * articulation's link: the same as an acceleration over the step */
+				body->addForce(-(vel - cur) * (fall / dt), PxForceMode::eACCELERATION);
+				body->addTorque(-body->getAngularVelocity() * (fall / dt), PxForceMode::eACCELERATION);
+			}
+			else {
+				body->addForce(-(vel - cur) * fall, PxForceMode::eVELOCITY_CHANGE);
+				body->addTorque(-body->getAngularVelocity() * fall, PxForceMode::eVELOCITY_CHANGE);
+			}
 			fb.state = body->getMass() <= best->density * fb.volume ? 1 : 2;
 		}
 		else {

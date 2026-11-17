@@ -442,6 +442,11 @@ def make_operator_checks(folder, E):
             glow = {"wired": bool(sock and sock.is_linked and sock.links[0].from_socket.name == "Emissive"),
                     "intensity": node.inputs["Emissive Intensity"].default_value}
     r["hot_glow"] = glow
+    # (review R1) the Physics tab's Type: Own made lava there, and back
+    b.bge_fluid_type = 'LAVA'
+    r["panel_lava"] = [round(b.bge_fluid_density, 3), round(b.bge_fluid_drag, 3)]
+    b.bge_fluid_type = 'WATER'
+    r["panel_water"] = [round(b.bge_fluid_density, 3), round(b.bge_fluid_drag, 3)]
     # made again: Plain made lava; its material kept (it has one now)
     make_volume(scene, a, fluid_type='LAVA', density=3100.0, drag=24.0)
     r["again"] = _settings(a)

@@ -16,7 +16,8 @@ normal(args, out, scenes, E, tests, sheets)   no RTX card needed
   T11.d5  the plank: stood on end, it turns and lies flat
   T11.d6  Make Fluid Volume: its settings, a static Ghost with Convex Hull
           bounds, the Water preset (a flipbook, a UV map made) on a mesh
-          without a material, a material of its own kept, made again
+          without a material, a material of its own kept, the Physics tab's
+          Type setting density and drag, made again
   T11.d7  the Lava preset: made by Make Fluid Volume, its glow wired, a
           flipbook; in the fake runtime its material a sprite sheet with
           an emissive picture
@@ -234,6 +235,9 @@ def t_make(args, out, scenes, P, tests):
              R.get("plain_uv_before") == 0 and a.get("uv") == 1,
          "its own material kept (%s), its current (%s)" % (b.get("materials"), b.get("current")):
              b.get("materials") == ["DOwn"] and b.get("current") == [0.5, 0.0, 0.0],
+         "the Physics tab's Type sets density and drag: lava %s, water %s" % (
+             R.get("panel_lava"), R.get("panel_water")):
+             R.get("panel_lava") == [3100.0, 24.0] and R.get("panel_water") == [1000.0, 3.0],
          "made again as lava: its settings changed, its material kept (%s)" % again.get("materials"):
              again.get("type") == 1 and abs((again.get("density") or 0) - 3100.0) < 1e-3 and
              abs((again.get("drag") or 0) - 24.0) < 1e-3 and again.get("materials") == a.get("materials")}

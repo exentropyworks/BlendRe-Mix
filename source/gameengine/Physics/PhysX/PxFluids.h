@@ -65,6 +65,10 @@ struct PxFluidVolume
 	physx::PxVec3 current;               /* m/s, along the volume's own axes */
 	bool splashes;
 	std::vector<PxFluidPart> parts;
+	/* what the parts were read from: each shape and its bounds in the
+	 * actor's frame (read again when they change: a rescaled volume) */
+	std::vector<const physx::PxShape *> shapes;
+	std::vector<physx::PxBounds3> shapeBounds;
 	bool built, failed;
 	/* this step */
 	physx::PxTransform pose;

@@ -121,6 +121,8 @@ class OBJECT_OT_bge_remix_make_fluid_volume(Operator):
     def execute(self, context):
         ob = context.active_object
         ob["bge_fluid"] = 1
+        # (the type first: the Physics tab's Type sets its density and drag;
+        # the operator's own then)
         set_prop(ob, "bge_fluid_type", self.fluid_type if hasattr(bpy.types.Object, "bge_fluid_type") else
                  (1 if self.fluid_type == 'LAVA' else 0))
         set_prop(ob, "bge_fluid_density", float(self.density))

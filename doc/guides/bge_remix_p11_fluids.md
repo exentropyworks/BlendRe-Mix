@@ -25,13 +25,18 @@ The volume's shape is the mesh's convex hull, and its surface is the top of
 it. A box makes a pool or a lake; a long box with a current makes a river.
 
 The object becomes a static Ghost with Convex Hull bounds. Things pass
-through it, so a Collision sensor on the volume sees what goes in.
+through it, so a Collision sensor on the volume sees what goes in. Rays
+(rayCast, the Ray and Mouse Over sensors) stop at its surface, as at any
+Ghost, under Bullet and PhysX alike: give a ray X-Ray or a property to look
+for when it should go through the water.
 
 If the mesh has no material, it gets the Water or the Lava preset, made a
 flipbook so it moves in Remix. A mesh without a UV map gets one projected
 from above (a UV unit a metre). A material you have set is kept.
 
-Make Fluid Volume on a volume again changes its settings.
+Make Fluid Volume on a volume again changes its settings. In the Physics
+tab, changing the Type sets that type's density and drag. A volume moved,
+turned or scaled while the game runs takes its new place and size.
 
 ## Floating and sinking
 
@@ -52,7 +57,9 @@ not leap far out again.
 
 Moving rigid and dynamic bodies are pushed, and a destructible's broken-off
 pieces float like anything else. Characters are not pushed (swimming is the
-game's own logic), nor static objects, soft bodies or cloth.
+game's own logic), nor static objects, soft bodies or cloth. A compound
+object's child shapes each count their own volume: where they overlap, the
+overlap counts twice and the object floats a little higher.
 
 **Lava** works the same way with its own numbers: it holds things higher,
 pushes them up harder and stops them sooner. It does nothing else to them;

@@ -319,10 +319,16 @@ class PHYSICS_PT_game_fluid(PhysicsButtonsPanel, Panel):
     @classmethod
     def register(cls):
         from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty
+
+        def type_changed(ob, context):
+            # (review R1) the type's density and drag, as Make Fluid Volume sets them
+            from bl_operators.bge_remix_fluid import DENSITY, DRAG
+            ob.bge_fluid_density = DENSITY[ob.bge_fluid_type]
+            ob.bge_fluid_drag = DRAG[ob.bge_fluid_type]
         bpy.types.Object.bge_fluid_type = EnumProperty(
             name="Type",
-            description="Water or lava",
-            items=(('WATER', "Water", "", 0), ('LAVA', "Lava", "", 1)), default='WATER')
+            description="Water or lava (sets its density and drag)",
+            items=(('WATER', "Water", "", 0), ('LAVA', "Lava", "", 1)), default='WATER', update=type_changed)
         bpy.types.Object.bge_fluid_density = FloatProperty(
             name="Density",
             description="How much the fluid weighs (kg/m\u00b3): lighter things than the fluid they push aside float",

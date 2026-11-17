@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -683,6 +684,9 @@ static void test_character()
 static void test_vehicle()
 {
 	printf("vehicle: an 800 kg car on 4 raycast wheels, rear-wheel drive, then brakes\n");
+	/* (the wheels' motion states are the caller's, as KX_VehicleWrapper's:
+	 * freed after the world, which uses them to the end) */
+	std::vector<std::unique_ptr<PxDefaultMotionState> > owned;
 	World w;
 	ground(w, 0.8f);
 	PxPhysicsController *car = add(w, shape_box(1.0f, 2.0f, 0.4f), RIGID, 0, 0, 1.2f, 800.0f);
@@ -698,6 +702,7 @@ static void test_vehicle()
 	const float pts[4][2] = {{-wx, wy}, {wx, wy}, {-wx, -wy}, {wx, -wy}};
 	for (int i = 0; i < 4; i++) {
 		PxDefaultMotionState *ms = new PxDefaultMotionState();
+		owned.emplace_back(ms);
 		wheels.push_back(ms);
 		v->AddWheel(ms, MT_Vector3(pts[i][0], pts[i][1], wz), MT_Vector3(0, 0, -1), MT_Vector3(-1, 0, 0), 0.4f,
 		            0.4f, i < 2);
@@ -1134,6 +1139,41 @@ static void test_fluids()
 		      up_speed[1], up_speed[0]);
 		CHECK(kept[1] < kept[0], "lava/water: thrown in, it stops sooner in lava (%.2f against %.2f m/s)", kept[1],
 		      kept[0]);
+	}
+	{
+		/* (review R2) a two-link articulation in the river drifts as the same
+		 * two bodies joined by an ordinary hinge do */
+		float drift[2];
+		for (int art = 0; art < 2; art++) {
+			World w;
+			ground(w);
+			fluid(w, 0, 0, 0.5f, 10, 2, 0.5f, 0, physx::PxVec3(1.0f, 0.0f, 0.0f));
+			PxPhysicsController *a = add(w, shape_box(0.5f, 0.3f, 0.1f), RIGID, -6.0f, 0, 1.0f, 30.0f, 0.5f, 0,
+			                             [art](PxCtrlInfo &ci) { ci.articulation = art ? 1 : 0; });
+			PxPhysicsController *b = add(w, shape_box(0.5f, 0.3f, 0.1f), RIGID, -5.0f, 0, 1.0f, 30.0f);
+			joint_e(w, b, a, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(-0.5f, 0, 0), MT_Vector3(0, 0, 0));
+			w.step(30);
+			const MT_Vector3 was = pos(a);
+			CHECK((a->GetArticulation() != NULL) == (art == 1), "links: %s", art ? "an articulation" : "a hinge");
+			w.step(300);
+			drift[art] = (float)(pos(a) - was).x();
+		}
+		CHECK(drift[1] > 3.0f && fabs(drift[1] - drift[0]) < 0.1f,
+		      "links: the articulation drifts %.2f m in 5 s, as the hinged bodies (%.2f m)", drift[1], drift[0]);
+	}
+	{
+		/* (review R3) the pool made half as deep while the game runs: the box
+		 * floats on the new surface (1.5 m) */
+		World w;
+		ground(w);
+		PxPhysicsController *pool = fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *box = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, 0, 0, 2.5f, 300.0f);
+		w.step(60);
+		/* (as the game: the object's new scale through its motion state) */
+		static_cast<PxDefaultMotionState *>(pool->GetMotionState())->SetWorldScaling(1.0f, 1.0f, 0.5f);
+		w.step(60 * 8);
+		const double depth = 1.5 - (pos(box).z() - 0.5);
+		CHECK(fabs(depth - 0.3) < 0.02, "rescaled: the box floats 0.3 m under the new surface (%.3f m)", depth);
 	}
 	{
 		/* a plank (2 x 0.4 x 0.2 m, 30 kg) stood on end in the pool: it turns
