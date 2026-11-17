@@ -40,6 +40,7 @@
 #include "KX_IpoConvert.h"
 
 #include <map>
+#include <vector>
 #include <set>
 #include <unordered_set>
 
@@ -85,6 +86,9 @@ class KX_BlenderSceneConverter : public KX_ISceneConverter
 
 	CTR_Map<CHashedPtr,KX_GameObject*>	m_map_blender_to_gameobject;		/* cleared after conversion */
 	CTR_Map<CHashedPtr,RAS_MeshObject*>	m_map_mesh_to_gamemesh;				/* cleared after conversion */
+	/* BGE-Remix P12: each mesh's game meshes by their materials (cleared with
+	 * m_map_mesh_to_gamemesh) */
+	std::map<struct Mesh *, std::vector<std::pair<std::vector<struct Material *>, RAS_MeshObject *> > > m_mesh_variants;
 	CTR_Map<CHashedPtr,SCA_IActuator*>	m_map_blender_to_gameactuator;		/* cleared after conversion */
 	CTR_Map<CHashedPtr,SCA_IController*>m_map_blender_to_gamecontroller;	/* cleared after conversion */
 	
@@ -142,6 +146,12 @@ public:
 	 * kept with its scene's meshes */
 	RAS_MeshObject *ConvertRuntimeMesh(KX_Scene *kx_scene, struct Mesh *me, struct Object *ob);
 	RAS_MeshObject *FindGameMesh(struct Mesh *for_blendermesh/*, unsigned int onlayer*/);
+	/* BGE-Remix P12: a mesh's game mesh made with these materials (an
+	 * object's own material slots, link Object, give a mesh shared by
+	 * several objects other materials: one game mesh for each set) */
+	RAS_MeshObject *FindGameMesh(struct Mesh *for_blendermesh, const std::vector<struct Material *> &materials);
+	void RegisterGameMeshMaterials(RAS_MeshObject *gamemesh, struct Mesh *for_blendermesh,
+	                               const std::vector<struct Material *> &materials);
 
 	void RegisterPolyMaterial(RAS_IPolyMaterial *polymat);
 	void CachePolyMaterial(KX_Scene *scene, Material *mat, RAS_IPolyMaterial *polymat);

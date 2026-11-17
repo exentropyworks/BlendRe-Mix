@@ -1138,9 +1138,22 @@ RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, 
 	RAS_MeshObject *meshobj;
 	int lightlayer = blenderobj ? blenderobj->lay:(1<<20)-1; // all layers if no object.
 
+	/* BGE-Remix P12: the materials this object gives the mesh: its own slots
+	 * (link Object) or the mesh's. A mesh shared by objects with other
+	 * materials is converted once for each set of them (stock 2.79 reused
+	 * the first object's: every object showed its materials, P12's
+	 * imported RTX Remix captures) */
+	std::vector<Material *> obmats;
+	if (blenderobj) {
+		const int n = max_ii(mesh->totcol, blenderobj->totcol);
+		for (int i = 0; i < n; i++) {
+			obmats.push_back(give_current_material(blenderobj, i + 1));
+		}
+	}
+
 	// Without checking names, we get some reuse we don't want that can cause
 	// problems with material LoDs.
-	if (blenderobj && ((meshobj = converter->FindGameMesh(mesh/*, ob->lay*/)) != NULL)) {
+	if (blenderobj && ((meshobj = converter->FindGameMesh(mesh, obmats)) != NULL)) {
 		const char *bge_name = meshobj->GetName().ReadPtr();
 		const char *blender_name = ((ID *)blenderobj->data)->name + 2;
 		if (STREQ(bge_name, blender_name)) {
@@ -1351,6 +1364,9 @@ RAS_MeshObject* BL_ConvertMesh(Mesh* mesh, Object* blenderobj, KX_Scene* scene, 
 	dm->release(dm);
 
 	converter->RegisterGameMesh(meshobj, mesh);
+	if (blenderobj) {
+		converter->RegisterGameMeshMaterials(meshobj, mesh, obmats);
+	}
 	return meshobj;
 }
 

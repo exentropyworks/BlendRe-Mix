@@ -6,9 +6,8 @@ floor, four walls and a ceiling, a box drawn twice (the second turned 30
 degrees), a sphere, a Brick wall (its brick texture, the BC1 one the
 capture has) and a glass pane (RTX Remix's translucent material), lit by a
 point lamp and a spot; parts of the same shape share one mesh, as in the
-capture (one for each shape and material: the game converts a mesh once,
-with its first object's materials). All materials are RTX Remix materials
-with the capture's values.
+capture, each with its own material on the object. All materials are RTX
+Remix materials with the capture's values.
 This is the room the imported one is set beside in the RTX run (S12.a1).
 """
 
@@ -125,20 +124,18 @@ def make_room(folder):
     scene.name = "P12Room"
     scene.game_settings.fps = 60
     p2.world(scene, (0.05, 0.05, 0.06))
-    shapes = {cw.CUBE: ("P12Cube", cw.cube_mesh()), cw.SPHERE: ("P12Sphere", cw.sphere_mesh())}
+    meshes = {cw.CUBE: shape_mesh("P12Cube", cw.cube_mesh()), cw.SPHERE: shape_mesh("P12Sphere", cw.sphere_mesh())}
     mats = {key: remix_material(key, folder) for key in cw.MATERIALS}
-    meshes = {}
     for name, mh, size, loc, rot, mkey in cw.PARTS:
-        # one mesh for each shape and material (the game converts a mesh
-        # once, with its first object's materials)
-        me = meshes.get((mh, mkey))
-        if me is None:
-            me = shape_mesh("%s%s" % (shapes[mh][0], mkey), shapes[mh][1])
-            me.materials.append(mats[mkey])
-            meshes[(mh, mkey)] = me
-        ob = bpy.data.objects.new(name, me)
+        ob = bpy.data.objects.new(name, meshes[mh])
         scene.objects.link(ob)
         ob.matrix_world = matrix(cw.mat_trs(loc, rot, size))
+        # the material on the object (the game converts a shared mesh once
+        # for each set of materials, P12)
+        if not meshes[mh].materials:
+            meshes[mh].materials.append(None)
+        ob.material_slots[0].link = 'OBJECT'
+        ob.material_slots[0].material = mats[mkey]
     for spec in cw.LAMPS:
         lamp(scene, spec)
     cd = bpy.data.cameras.new("Camera")

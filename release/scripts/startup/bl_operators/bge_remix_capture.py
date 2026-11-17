@@ -24,9 +24,7 @@ An RTX Remix capture (the stage file of a capture folder) comes in as a new
 scene, read with the bridge's OpenUSD (bge_remix_usd.dll):
 
 - each Remix mesh one Blender mesh, each place it was drawn an object
-  sharing it (linked copies); a mesh drawn with several materials one
-  Blender mesh for each (the game converts a mesh once, with its first
-  object's materials), all with the mesh's hash;
+  sharing it (linked copies), its material on the object;
 - each material an RTX Remix material (P9's node), Remix's AperturePBR
   values on the node's inputs and its textures as Texture nodes; the
   inputs the node has no place for are kept with the material
@@ -353,31 +351,23 @@ def import_capture(context, path, report):
                                   "z_up": int(bool(data["z_up"])), "game_name": data["game_name"],
                                   "exe_name": data["exe_name"]}
     images = {}
-    base = [build_mesh(m, K) for m in data["meshes"]]
+    meshes = [build_mesh(m, K) for m in data["meshes"]]
     materials = [build_material(mt, report, images) for mt in data["materials"]]
-    # one Blender mesh for each mesh and material drawn together: the game
-    # (as stock 2.79's) converts a mesh once, with the first object's
-    # materials, so places of one mesh with other materials get a copy of
-    # it (each with the capture's mesh hash); places alike share theirs
-    meshes = {}
     for inst in data["instances"]:
-        key = (inst["mesh"], inst["material"])
-        me = meshes.get(key)
-        if me is None:
-            src = base[inst["mesh"]]
-            me = src
-            if any(k[0] == inst["mesh"] for k in meshes):
-                me = src.copy()
-                while len(me.materials):
-                    me.materials.pop(0, update_data=True)
-            if inst["material"] >= 0:
-                me.materials.append(materials[inst["material"]])
-            meshes[key] = me
+        me = meshes[inst["mesh"]]
         ob = bpy.data.objects.new(inst["name"], me)
         scene.objects.link(ob)
         ob.matrix_world = K * usd_matrix(inst["matrix"]) * Kinv
         ob[HASH] = inst["hash"]
         ob["bge_remix_capture_mesh"] = data["meshes"][inst["mesh"]]["hash"]
+        # the material on the object: places of one mesh may have others
+        # (the game converts a shared mesh once for each set, P12)
+        if inst["material"] >= 0:
+            if not me.materials:
+                me.materials.append(None)
+            slot = ob.material_slots[0]
+            slot.link = 'OBJECT'
+            slot.material = materials[inst["material"]]
         if inst["sky"]:
             ob.hide = ob.hide_render = True
             report.append("instance %s: part of the sky: it comes in hidden" % inst["name"])
@@ -414,8 +404,7 @@ def import_capture(context, path, report):
         from mathutils import Matrix
         ob.matrix_world = Matrix.Translation(loc) * rot.to_matrix().to_4x4()
         scene.camera = ob
-    scene["bge_remix_capture_counts"] = {"meshes": len(meshes), "capture_meshes": len(base),
-                                         "objects": len(data["instances"]),
+    scene["bge_remix_capture_counts"] = {"meshes": len(meshes), "objects": len(data["instances"]),
                                          "materials": len(materials), "lamps": lamps, "camera": int(bool(cam))}
     scene.update()
     return scene

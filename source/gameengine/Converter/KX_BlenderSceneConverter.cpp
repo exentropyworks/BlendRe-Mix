@@ -326,6 +326,7 @@ void KX_BlenderSceneConverter::ConvertScene(KX_Scene *destinationscene, RAS_IRas
 	//This cache mecanism is buggy so I leave it disable and the memory leak
 	//that would result from this is fixed in RemoveScene()
 	m_map_mesh_to_gamemesh.clear();
+	m_mesh_variants.clear();
 }
 
 // This function removes all entities stored in the converter for that scene
@@ -532,6 +533,30 @@ RAS_MeshObject *KX_BlenderSceneConverter::FindGameMesh(Mesh *for_blendermesh)
 	} 
 	else {
 		return NULL;
+	}
+}
+
+RAS_MeshObject *KX_BlenderSceneConverter::FindGameMesh(Mesh *for_blendermesh,
+                                                       const std::vector<Material *> &materials)
+{
+	std::map<Mesh *, std::vector<std::pair<std::vector<Material *>, RAS_MeshObject *> > >::iterator it =
+	        m_mesh_variants.find(for_blendermesh);
+	if (it == m_mesh_variants.end()) {
+		return NULL;
+	}
+	for (size_t i = 0; i < it->second.size(); i++) {
+		if (it->second[i].first == materials) {
+			return it->second[i].second;
+		}
+	}
+	return NULL;
+}
+
+void KX_BlenderSceneConverter::RegisterGameMeshMaterials(RAS_MeshObject *gamemesh, Mesh *for_blendermesh,
+                                                         const std::vector<Material *> &materials)
+{
+	if (for_blendermesh && gamemesh) {
+		m_mesh_variants[for_blendermesh].push_back(std::make_pair(materials, gamemesh));
 	}
 }
 
@@ -1157,6 +1182,7 @@ bool KX_BlenderSceneConverter::FreeBlendFile(Main *maggie)
 						STR_HashedString mn = meshobj->GetName();
 						mapStringToMeshes.remove(mn);
 						m_map_mesh_to_gamemesh.remove(CHashedPtr(meshobj->GetMesh()));
+						m_mesh_variants.erase(meshobj->GetMesh());
 						i--;
 					}
 				}
@@ -1555,5 +1581,6 @@ RAS_MeshObject *KX_BlenderSceneConverter::ConvertMeshSpecial(KX_Scene *kx_scene,
 	RAS_MeshObject *meshobj = BL_ConvertMesh((Mesh *)me, NULL, kx_scene, this, false);
 	kx_scene->GetLogicManager()->RegisterMeshName(meshobj->GetName(),meshobj);
 	m_map_mesh_to_gamemesh.clear(); /* This is at runtime so no need to keep this, BL_ConvertMesh adds */
+	m_mesh_variants.clear();
 	return meshobj;
 }
