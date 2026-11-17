@@ -72,11 +72,13 @@ bool decode(const wchar_t *dds, const wchar_t *png, std::string &r_error)
 		}
 		img = rgba.GetImage(0, 0, 0);
 	}
-	const HRESULT co = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+	/* WIC needs COM on this thread; it stays on (P12 round 2: DirectXTex
+	 * keeps its WIC factory once made, and a CoUninitialize after the first
+	 * PNG released it under it, so the second one crashed). Already on in
+	 * another mode (Blender's window thread) is as good. */
+	CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 	hr = DirectX::SaveToWICFile(*img, DirectX::WIC_FLAGS_NONE, DirectX::GetWICCodec(DirectX::WIC_CODEC_PNG),
 	                            png);
-	if (co == S_OK || co == S_FALSE)
-		CoUninitialize();
 	if (FAILED(hr)) {
 		r_error = "the PNG could not be written (" + hr_text(hr) + ")";
 		return false;
