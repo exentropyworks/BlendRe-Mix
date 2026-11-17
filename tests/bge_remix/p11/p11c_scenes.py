@@ -81,9 +81,26 @@ def write(st):
 '''
 
 WALL_SCRIPT = COMMON + '''
+import time
 st = g.setdefault("p11c", {"tic": 0})
-st["tic"] += 1
-tic = st["tic"]
+# (the RTX run: the wall waits, the ball held, until RTX Remix draws; it
+# takes about half a minute to start)
+WAIT = env.get("BGE_REMIX_P11C_WAIT_REMIX") == "1"
+if WAIT and not st.get("go"):
+    st.setdefault("waited", time.time())
+    if not st.get("held"):
+        obj("Ball").suspendDynamics()
+        st["held"] = True
+    drawing = bge.render.isRemixDrawing() if hasattr(bge.render, "isRemixDrawing") else False
+    if drawing or time.time() - st["waited"] > 150.0:
+        st["go"] = True
+        st["remix_drawing"] = drawing
+        obj("Ball").restoreDynamics()
+tic = 0
+if st.get("go") or not WAIT:
+    st["tic"] += 1
+    tic = st["tic"]
+    st.setdefault("times", []).append(time.time())
 if tic == 1:
     ps = pieces("Wall")
     st["rest"] = {o.name: list(o.worldPosition) for o in ps}
@@ -114,7 +131,14 @@ if tic == TICS:
     st["corner_moved"] = [moved.get(n) for n in st["corners"]]
     st["ball"] = list(obj("Ball").worldPosition)
     st["ball_speed_y"] = obj("Ball").getLinearVelocity()[1]
+    t = st["times"]
+    dt = sorted(b - a for a, b in zip(t, t[1:]))
+    st["frame_ms_median"] = 1000.0 * dt[len(dt) // 2] if dt else None
+    st["frame_ms_p95"] = 1000.0 * dt[int(len(dt) * 0.95)] if dt else None
+    del st["times"]
     write(st)
+    if WAIT:
+        bge.logic.endGame()
 '''
 
 PILLAR_SCRIPT = COMMON + '''

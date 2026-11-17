@@ -245,15 +245,19 @@ def rtx(args, out, scenes, E, tests, sheets, report):
         tests[name] = _test({"the scenes were made": False})
         return
     tag = "p11c_wall_rtx"
-    env = {"RTX_ENABLE_ASYNC_COMPILATION": "0", "BGE_REMIX_P11_OUT": os.path.join(out, tag + "_p11.json")}
-    r = p8.play(args.ours, out, tag, _blend(scenes, S["files"]["physx_cpu_10_rtx"]), env, frames=S["tics"] + 5,
+    res = os.path.join(out, tag + "_p11.json")
+    if os.path.isfile(res):
+        os.remove(res)
+    # (round 1: the 95 frames were over before Remix drew its first: the
+    # wall now waits for Remix and ends the game itself)
+    env = {"RTX_ENABLE_ASYNC_COMPILATION": "0", "BGE_REMIX_P11_OUT": res, "BGE_REMIX_P11C_WAIT_REMIX": "1"}
+    r = p8.play(args.ours, out, tag, _blend(scenes, S["files"]["physx_cpu_10_rtx"]), env, frames=100000,
                 gl_debug=False, extra=FIXED)
-    probe = r.get("probe") or {}
-    got = p2.read_json(os.path.join(out, tag + "_p11.json")) or {}
-    c = {"ran with Remix drawing": bool(r["ran"]) and bool(probe.get("remix_drawing"))}
-    d = {"frame_ms_median": _r(probe.get("frame_ms_median"), 2), "frame_ms_p95": _r(probe.get("frame_ms_p95"), 2),
-         "physics_ms_mean": _r(probe.get("physics_ms_mean"), 2), "broken off": got.get("broken_off"),
-         "groups": got.get("groups")}
+    got = p2.read_json(res) or {}
+    c = {"ran with Remix drawing": bool(got) and bool(got.get("remix_drawing")),
+         "it broke in Remix (%s pieces broken off)" % got.get("broken_off"): (got.get("broken_off") or 0) >= 1}
+    d = {"frame_ms_median": _r(got.get("frame_ms_median"), 2), "frame_ms_p95": _r(got.get("frame_ms_p95"), 2),
+         "broken off": got.get("broken_off"), "groups": got.get("groups"), "exit": r.get("exit")}
     tests[name] = _test(c, d)
-    report += ["", "B2 the wall breaking in Remix: frame %s ms (p95 %s), physics %s ms, %s pieces broken off" %
-               (d["frame_ms_median"], d["frame_ms_p95"], d["physics_ms_mean"], d["broken off"])]
+    report += ["", "B2 the wall breaking in Remix: frame %s ms (p95 %s), %s pieces broken off" %
+               (d["frame_ms_median"], d["frame_ms_p95"], d["broken off"])]
