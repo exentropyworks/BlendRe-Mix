@@ -37,6 +37,15 @@ cmake --build "$work/tbb_build" --config Release --target install -- /m /v:minim
 if ($LASTEXITCODE -ne 0) { throw "oneTBB build failed" }
 
 # OpenUSD
+# OpenUSD 25.11's own CMake installs usd_m's .pdb on Windows, which a static
+# library does not have (CMake refuses: "TARGET_PDB_FILE is allowed only for
+# targets with linker created artifacts"): only for a shared usd_m
+$public = "$Usd/cmake/macros/Public.cmake"
+$text = Get-Content $public -Raw
+$pdb = '(?s)if\(WIN32\)(\s*install\(\s*FILES \$<TARGET_PDB_FILE:usd_m>)'
+if ($text -notmatch $pdb) { throw "usd_m's pdb install was not found in $public" }
+$text = [regex]::Replace($text, $pdb, 'if(WIN32 AND BUILD_SHARED_LIBS)$1')
+Set-Content $public $text -NoNewline
 cmake -S $Usd -B "$work/usd_build" -G "Visual Studio 17 2022" -A x64 `
 	-DCMAKE_INSTALL_PREFIX="$usdInstall" `
 	-DCMAKE_PREFIX_PATH="$tbbInstall" -DTBB_ROOT="$tbbInstall" `
