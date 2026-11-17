@@ -406,7 +406,18 @@ def _centres(scene, base, origin):
     return sorted(out, key=lambda c: (round(c[2], 2), round(c[0], 2), round(c[1], 2)))
 
 
-def _same(a, b, tol=1e-3):
+# (B3 sign-off: Cell Fracture's cuts of the same seed differ by up to 1.4 mm
+# from run to run, a piece's centre moved by a sliver; other seeds' pieces
+# are centimetres apart)
+SAME_TOL = 5e-3
+
+
+def _far(a, b):
+    """how far each piece of a is from the nearest of b"""
+    return [round(min(max(abs(c[i] - d[i]) for i in range(3)) for d in b), 4) for c in a] if b else None
+
+
+def _same(a, b, tol=SAME_TOL):
     """the same pieces: as many, each centre within tol"""
     if len(a) != len(b):
         return False
@@ -434,6 +445,8 @@ def make_operator_checks(folder, E):
     c = _centres(scene, "CubeC", Vector((10.0, 0.0, 0.0)))
     r["pieces"] = {"A": len(a), "B": len(b), "C": len(c)}
     r["same_seed_same_pieces"] = _same(a, b) and len(a) > 1
+    r["same_seed_far"] = _far(b, a)
+    r["other_seed_far"] = _far(c, a)
     r["other_seed_other_pieces"] = not _same(a, c)
     # (round 1: the meshes' own volumes came to half the cube: a boolean's
     # faces turned either way; the pieces are convex: their hulls')
@@ -454,7 +467,7 @@ def make_operator_checks(folder, E):
     again = _centres(scene, "CubeA", Vector((0.0, 0.0, 0.0)))
     r["again_same_pieces"] = _same(again, a)
     # (round 2: they differed; how far, piece by piece, from the nearest of before)
-    r["again_far"] = [round(min(max(abs(c[i] - d[i]) for i in range(3)) for d in a), 4) for c in again] if a else None
+    r["again_far"] = _far(again, a)
     r["source_kept_on_layer_20"] = bool(bpy.data.objects.get("CubeA")) and \
         bpy.data.objects["CubeA"].layers[19] and not any(bpy.data.objects["CubeA"].layers[:19])
     E["operator"] = r
