@@ -37,6 +37,8 @@
 #include <stdint.h>
 #include <wchar.h>
 
+#include "usd/bge_remix_usd.h"  /* P12: the capture reader's types */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -59,8 +61,10 @@ extern "C" {
  *     texture coordinates no longer flipped).
  * 11: P8.30 (particle systems' newer fields; instanced draws).
  * 12: P10.4 (a material's sprite sheet; textures with their own mipmaps).
- * 13: P12 (the bridge's OpenUSD: brb_usd_*). */
-#define BRB_ABI_VERSION 13
+ * 13: P12 (the bridge's OpenUSD: brb_usd_*).
+ * 14: P12 round 2 (RTX Remix captures read: brb_usd_capture_api,
+ *     brb_usd_plugin_dir; brb_dds_to_png). */
+#define BRB_ABI_VERSION 14
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -543,6 +547,22 @@ BRB_API int brb_usd_started(void);
  * max_bytes) goes to r_report when not NULL. Returns the number of failed
  * checks: 0 is a pass. Needs no Remix runtime. */
 BRB_API int brb_usd_selftest(const wchar_t *folder, char *r_report, int max_bytes);
+
+/* ------------------------------------------------------------------------- */
+/* Interface version 14: RTX Remix captures (P12 round 2) */
+
+/* The capture reader of bge_remix_usd.dll (usd/bge_remix_usd.h), loading the
+ * DLL first; NULL, with the reason in r_error, when it cannot. Its open()
+ * takes brb_usd_plugin_dir() as its plugin folder. */
+BRB_API const bru_capture_api *brb_usd_capture_api(char *r_error, int max_bytes);
+
+/* OpenUSD's plugin descriptions: the usd folder beside the bridge (UTF-8) */
+BRB_API const char *brb_usd_plugin_dir(void);
+
+/* A DDS texture (any format DirectXTex reads: block-compressed or not; its
+ * first mip level) written as a PNG, rows as in the file. Returns 1, or 0
+ * with the reason in r_error. */
+BRB_API int brb_dds_to_png(const wchar_t *dds, const wchar_t *png, char *r_error, int max_bytes);
 
 #ifdef __cplusplus
 }

@@ -28,6 +28,7 @@
 
 #include <Python.h>
 #include <stdint.h>
+#include <string.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
@@ -632,6 +633,327 @@ static PyObject *brmx_settings(PyObject *UNUSED_self)
 	return list;
 }
 
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P12: OpenUSD, RTX Remix captures */
+
+PyDoc_STRVAR(brmx_usd_selftest_doc,
+".. function:: usd_selftest(folder)\n"
+"\n"
+"   BGE-Remix P12: load and check the bridge's OpenUSD (bge_remix_usd.dll):\n"
+"   a stage written into the folder and read back.\n"
+"\n"
+"   :return: (failed checks, report, OpenUSD version)\n");
+static PyObject *brmx_usd_selftest(PyObject *UNUSED_self, PyObject *args)
+{
+	PyObject *dir_obj;
+	wchar_t *dir;
+	static char report[32768];
+	int failed;
+
+	if (!PyArg_ParseTuple(args, "U:usd_selftest", &dir_obj)) {
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		return Py_BuildValue("(iss)", 1, BRMX_bridge_error(), "");
+	}
+	dir = PyUnicode_AsWideCharString(dir_obj, NULL);
+	if (dir == NULL) {
+		return NULL;
+	}
+	report[0] = '\0';
+	failed = B->usd_selftest(dir, report, (int)sizeof(report));
+	PyMem_Free(dir);
+	return Py_BuildValue("(iss)", failed, report, B->usd_version());
+}
+
+static PyObject *hex_hash(uint64_t h)
+{
+	char buf[32];
+	_snprintf(buf, sizeof(buf), "%016llX", (unsigned long long)h);
+	return PyUnicode_FromString(buf);
+}
+
+static PyObject *bytes_or_none(const void *data, size_t size)
+{
+	if (data == NULL) {
+		Py_RETURN_NONE;
+	}
+	return PyBytes_FromStringAndSize((const char *)data, (Py_ssize_t)size);
+}
+
+static PyObject *matrix_tuple(const double m[16])
+{
+	PyObject *t = PyTuple_New(16);
+	int i;
+	for (i = 0; i < 16; i++) {
+		PyTuple_SET_ITEM(t, i, PyFloat_FromDouble(m[i]));
+	}
+	return t;
+}
+
+/* d[key] = value, the value's reference taken */
+static void dict_set(PyObject *d, const char *key, PyObject *value)
+{
+	if (value) {
+		PyDict_SetItemString(d, key, value);
+		Py_DECREF(value);
+	}
+}
+
+static PyObject *input_value(const bru_input *in)
+{
+	switch (in->kind) {
+		case BRU_VALUE_FLOAT: return PyFloat_FromDouble(in->v[0]);
+		case BRU_VALUE_INT: return PyLong_FromLongLong((long long)in->v[0]);
+		case BRU_VALUE_BOOL: return PyBool_FromLong(in->v[0] != 0.0);
+		case BRU_VALUE_VEC2: return Py_BuildValue("(dd)", in->v[0], in->v[1]);
+		case BRU_VALUE_VEC3: return Py_BuildValue("(ddd)", in->v[0], in->v[1], in->v[2]);
+		case BRU_VALUE_VEC4: return Py_BuildValue("(dddd)", in->v[0], in->v[1], in->v[2], in->v[3]);
+		case BRU_VALUE_ASSET:
+			return Py_BuildValue("{s:s,s:s,s:O}", "asset", in->text, "path", in->path,
+			                     "exists", in->exists ? Py_True : Py_False);
+		case BRU_VALUE_TOKEN: return PyUnicode_FromString(in->text);
+	}
+	Py_RETURN_NONE;
+}
+
+static const char *light_kind(int kind)
+{
+	switch (kind) {
+		case BRU_LIGHT_SPHERE: return "SPHERE";
+		case BRU_LIGHT_DISTANT: return "DISTANT";
+		case BRU_LIGHT_RECT: return "RECT";
+		case BRU_LIGHT_DISK: return "DISK";
+		case BRU_LIGHT_CYLINDER: return "CYLINDER";
+	}
+	return "UNKNOWN";
+}
+
+PyDoc_STRVAR(brmx_capture_read_doc,
+".. function:: capture_read(path)\n"
+"\n"
+"   BGE-Remix P12: read an RTX Remix capture (its .usd or .usda stage) with\n"
+"   the bridge's OpenUSD, everything as the capture has it (its units and up\n"
+"   axis; USD's matrices, row vectors, as 16 numbers).\n"
+"\n"
+"   :return: dict with meters_per_unit, z_up, game_name, exe_name, report\n"
+"      (a list of lines), meshes (hash, name, points, face_sizes, corners,\n"
+"      normals, uvs, colors: bytes of float32/int32 or None; double_sided),\n"
+"      instances (hash, name, mesh, material: indices, -1 none; sky, matrix),\n"
+"      materials (hash, name, mdl, sub_identifier, inputs: name to value; an\n"
+"      asset is a dict with asset, path, exists), lights (hash, name, kind,\n"
+"      color, intensity, exposure, radius, angle, width, height, length,\n"
+"      shaped, cone_angle, cone_softness, focus, matrix), camera (matrix,\n"
+"      focal_length, horizontal_aperture, vertical_aperture, near, far,\n"
+"      perspective) or None.\n"
+"   :raises RuntimeError: when it cannot be read, or is no capture.\n");
+static PyObject *brmx_capture_read(PyObject *UNUSED_self, PyObject *args)
+{
+	const char *path;
+	char err[2048] = "";
+	const bru_capture_api *api;
+	bru_capture *cap;
+	bru_capture_info info;
+	PyObject *out, *list, *lines;
+	const char *line, *end;
+	int i, k;
+
+	if (!PyArg_ParseTuple(args, "s:capture_read", &path)) {
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		PyErr_SetString(PyExc_RuntimeError, BRMX_bridge_error());
+		return NULL;
+	}
+	api = B->usd_capture_api(err, (int)sizeof(err));
+	if (api == NULL) {
+		PyErr_SetString(PyExc_RuntimeError, err);
+		return NULL;
+	}
+	Py_BEGIN_ALLOW_THREADS
+	cap = api->open(B->usd_plugin_dir(), path, err, (int)sizeof(err));
+	Py_END_ALLOW_THREADS
+	if (cap == NULL) {
+		PyErr_SetString(PyExc_RuntimeError, err);
+		return NULL;
+	}
+	api->info(cap, &info);
+	out = PyDict_New();
+	dict_set(out, "meters_per_unit", PyFloat_FromDouble(info.meters_per_unit));
+	dict_set(out, "z_up", PyBool_FromLong(info.z_up));
+	dict_set(out, "game_name", PyUnicode_FromString(info.game_name));
+	dict_set(out, "exe_name", PyUnicode_FromString(info.exe_name));
+	lines = PyList_New(0);
+	for (line = info.report; *line; line = *end ? end + 1 : end) {
+		PyObject *l;
+		end = strchr(line, '\n');
+		if (end == NULL) {
+			end = line + strlen(line);
+		}
+		if (end > line) {
+			l = PyUnicode_DecodeUTF8(line, end - line, "replace");
+			if (l) {
+				PyList_Append(lines, l);
+				Py_DECREF(l);
+			}
+		}
+	}
+	dict_set(out, "report", lines);
+
+	list = PyList_New(0);
+	for (i = 0; i < info.mesh_count; i++) {
+		bru_mesh m;
+		PyObject *d;
+		if (!api->mesh(cap, i, &m)) {
+			continue;
+		}
+		d = PyDict_New();
+		dict_set(d, "hash", hex_hash(m.hash));
+		dict_set(d, "name", PyUnicode_FromString(m.name));
+		dict_set(d, "points", bytes_or_none(m.points, sizeof(float) * 3 * (size_t)m.vertex_count));
+		dict_set(d, "face_sizes", bytes_or_none(m.face_sizes, sizeof(int) * (size_t)m.face_count));
+		dict_set(d, "corners", bytes_or_none(m.corners, sizeof(int) * (size_t)m.corner_count));
+		dict_set(d, "normals", bytes_or_none(m.normals, sizeof(float) * 3 * (size_t)m.corner_count));
+		dict_set(d, "uvs", bytes_or_none(m.uvs, sizeof(float) * 2 * (size_t)m.corner_count));
+		dict_set(d, "colors", bytes_or_none(m.colors, sizeof(float) * 4 * (size_t)m.corner_count));
+		dict_set(d, "double_sided", PyBool_FromLong(m.double_sided));
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "meshes", list);
+
+	list = PyList_New(0);
+	for (i = 0; i < info.instance_count; i++) {
+		bru_instance in;
+		if (!api->instance(cap, i, &in)) {
+			continue;
+		}
+		{
+			PyObject *d = PyDict_New();
+			dict_set(d, "hash", hex_hash(in.hash));
+			dict_set(d, "name", PyUnicode_FromString(in.name));
+			dict_set(d, "mesh", PyLong_FromLong(in.mesh));
+			dict_set(d, "material", PyLong_FromLong(in.material));
+			dict_set(d, "sky", PyBool_FromLong(in.sky));
+			dict_set(d, "matrix", matrix_tuple(in.matrix));
+			PyList_Append(list, d);
+			Py_DECREF(d);
+		}
+	}
+	dict_set(out, "instances", list);
+
+	list = PyList_New(0);
+	for (i = 0; i < info.material_count; i++) {
+		bru_material mt;
+		PyObject *d, *inputs;
+		if (!api->material(cap, i, &mt)) {
+			continue;
+		}
+		d = PyDict_New();
+		dict_set(d, "hash", hex_hash(mt.hash));
+		dict_set(d, "name", PyUnicode_FromString(mt.name));
+		dict_set(d, "mdl", PyUnicode_FromString(mt.mdl));
+		dict_set(d, "sub_identifier", PyUnicode_FromString(mt.sub_identifier));
+		inputs = PyDict_New();
+		for (k = 0; k < mt.input_count; k++) {
+			bru_input in;
+			if (api->material_input(cap, i, k, &in)) {
+				dict_set(inputs, in.name, input_value(&in));
+			}
+		}
+		dict_set(d, "inputs", inputs);
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "materials", list);
+
+	list = PyList_New(0);
+	for (i = 0; i < info.light_count; i++) {
+		bru_light l;
+		PyObject *d;
+		if (!api->light(cap, i, &l)) {
+			continue;
+		}
+		d = PyDict_New();
+		dict_set(d, "hash", hex_hash(l.hash));
+		dict_set(d, "name", PyUnicode_FromString(l.name));
+		dict_set(d, "kind", PyUnicode_FromString(light_kind(l.kind)));
+		dict_set(d, "color", Py_BuildValue("(fff)", l.color[0], l.color[1], l.color[2]));
+		dict_set(d, "intensity", PyFloat_FromDouble(l.intensity));
+		dict_set(d, "exposure", PyFloat_FromDouble(l.exposure));
+		dict_set(d, "radius", PyFloat_FromDouble(l.radius));
+		dict_set(d, "angle", PyFloat_FromDouble(l.angle));
+		dict_set(d, "width", PyFloat_FromDouble(l.width));
+		dict_set(d, "height", PyFloat_FromDouble(l.height));
+		dict_set(d, "length", PyFloat_FromDouble(l.length));
+		dict_set(d, "shaped", PyBool_FromLong(l.shaped));
+		dict_set(d, "cone_angle", PyFloat_FromDouble(l.cone_angle));
+		dict_set(d, "cone_softness", PyFloat_FromDouble(l.cone_softness));
+		dict_set(d, "focus", PyFloat_FromDouble(l.focus));
+		dict_set(d, "matrix", matrix_tuple(l.matrix));
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "lights", list);
+
+	{
+		bru_camera c;
+		if (api->camera(cap, &c)) {
+			PyObject *d = PyDict_New();
+			dict_set(d, "matrix", matrix_tuple(c.matrix));
+			dict_set(d, "focal_length", PyFloat_FromDouble(c.focal_length));
+			dict_set(d, "horizontal_aperture", PyFloat_FromDouble(c.horizontal_aperture));
+			dict_set(d, "vertical_aperture", PyFloat_FromDouble(c.vertical_aperture));
+			dict_set(d, "near", PyFloat_FromDouble(c.near_clip));
+			dict_set(d, "far", PyFloat_FromDouble(c.far_clip));
+			dict_set(d, "perspective", PyBool_FromLong(c.perspective));
+			dict_set(out, "camera", d);
+		}
+		else {
+			Py_INCREF(Py_None);
+			dict_set(out, "camera", Py_None);
+		}
+	}
+	api->close(cap);
+	return out;
+}
+
+PyDoc_STRVAR(brmx_dds_to_png_doc,
+".. function:: dds_to_png(dds, png)\n"
+"\n"
+"   BGE-Remix P12: a DDS texture (any format: block-compressed or not; its\n"
+"   first mip level) written as a PNG, with the bridge's DirectXTex.\n"
+"\n"
+"   :return: (ok, error)\n");
+static PyObject *brmx_dds_to_png(PyObject *UNUSED_self, PyObject *args)
+{
+	PyObject *dds_obj, *png_obj;
+	wchar_t *dds, *png;
+	char err[1024] = "";
+	int ok;
+
+	if (!PyArg_ParseTuple(args, "UU:dds_to_png", &dds_obj, &png_obj)) {
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		return Py_BuildValue("(Os)", Py_False, BRMX_bridge_error());
+	}
+	dds = PyUnicode_AsWideCharString(dds_obj, NULL);
+	png = dds ? PyUnicode_AsWideCharString(png_obj, NULL) : NULL;
+	if (dds == NULL || png == NULL) {
+		if (dds) {
+			PyMem_Free(dds);
+		}
+		return NULL;
+	}
+	Py_BEGIN_ALLOW_THREADS
+	ok = B->dds_to_png(dds, png, err, (int)sizeof(err));
+	Py_END_ALLOW_THREADS
+	PyMem_Free(dds);
+	PyMem_Free(png);
+	return Py_BuildValue("(Os)", ok ? Py_True : Py_False, err);
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -659,6 +981,10 @@ static PyMethodDef brmx_methods[] = {
 	{"atlas_preview", (PyCFunction)brmx_atlas_preview, METH_NOARGS, brmx_atlas_preview_doc},
 	{"atlas_pack", (PyCFunction)brmx_atlas_pack, METH_VARARGS, brmx_atlas_pack_doc},
 	{"settings", (PyCFunction)brmx_settings, METH_NOARGS, brmx_settings_doc},  /* BGE-Remix P10.12 */
+	/* BGE-Remix P12: OpenUSD, RTX Remix captures */
+	{"usd_selftest", (PyCFunction)brmx_usd_selftest, METH_VARARGS, brmx_usd_selftest_doc},
+	{"capture_read", (PyCFunction)brmx_capture_read, METH_VARARGS, brmx_capture_read_doc},
+	{"dds_to_png", (PyCFunction)brmx_dds_to_png, METH_VARARGS, brmx_dds_to_png_doc},
 	{NULL, NULL, 0, NULL}
 };
 

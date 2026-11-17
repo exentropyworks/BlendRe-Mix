@@ -19,6 +19,7 @@ add_definitions(-D_WIN32_WINNT=0x0A00)
 add_library(bge_remix_bridge SHARED
 	bridge.cpp
 	bridge_device.cpp
+	bridge_dds.cpp
 	bridge_load.cpp
 	bridge_read.cpp
 	bridge_scene.cpp

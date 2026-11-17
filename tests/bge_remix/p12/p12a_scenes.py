@@ -1,106 +1,120 @@
 """BGE-Remix P12 Part A: the test scenes (made by make_scenes_p12.py).
 
-The room (P12's capture round trip; this round its C1 check): floor, four
-walls and a ceiling, with a box, a sphere, a Brick wall (the Brick preset)
-and a glass pane (a Glass shader), lit by two point lamps; all made here, no
-game material. The scene's script (C1_SCRIPT) waits until RTX Remix draws,
-then 2 s later presses Remix's capture key (Ctrl+Shift+Q, released 10 frames
-later) and waits for a capture file in DXVK_CAPTURE_PATH (at most 20 s more)
-before it ends the game. What it saw goes to BGE_REMIX_P12_OUT.
+The room (P12's capture round trip), built in Blender from the same
+description the capture writer writes its capture from (capture_writer.py):
+floor, four walls and a ceiling, a box drawn twice (the second turned 30
+degrees), a sphere, a Brick wall (its brick texture, the BC1 one the
+capture has) and a glass pane (RTX Remix's translucent material), lit by a
+point lamp and a spot; parts of the same shape share one mesh, as in the
+capture. All materials are RTX Remix materials with the capture's values.
+This is the room the imported one is set beside in the RTX run (S12.a1).
 """
 
+import math
 import os
 
 import bpy
 
+import capture_writer as cw
 import make_scenes_p2 as p2
 import make_scenes_p3 as p3
-import make_scenes_p6 as m6
-import make_scenes_p9 as m9
-
-C1_SCRIPT = '''\
-import ctypes, json, os, time
-import bge
-env = os.environ
-g = bge.logic.globalDict
-st = g.setdefault("p12c1", {"tic": 0})
-VK_CONTROL, VK_SHIFT, VK_Q, KEYUP = 0x11, 0x10, 0x51, 0x0002
-def keys(up):
-    u = ctypes.windll.user32
-    for vk in ((VK_Q, VK_SHIFT, VK_CONTROL) if up else (VK_CONTROL, VK_SHIFT, VK_Q)):
-        u.keybd_event(vk, 0, KEYUP if up else 0, 0)
-def captures():
-    folder = env.get("DXVK_CAPTURE_PATH") or ""
-    try:
-        return sorted(n for n in os.listdir(folder) if n.startswith("capture") and ".usd" in n)
-    except OSError:
-        return []
-def write():
-    path = env.get("BGE_REMIX_P12_OUT")
-    if path:
-        with open(path, "w") as f:
-            json.dump(st, f, indent=1)
-now = time.time()
-st["tic"] += 1
-st.setdefault("start", now)
-if "drawing_at" not in st:
-    drawing = bge.render.isRemixDrawing() if hasattr(bge.render, "isRemixDrawing") else False
-    if drawing or now - st["start"] > 150.0:
-        st["drawing_at"] = now
-        st["remix_drawing"] = drawing
-        st["captures_before"] = captures()
-elif "pressed_at" not in st:
-    if now - st["drawing_at"] >= 2.0:
-        try:
-            u = ctypes.windll.user32
-            st["foreground_title"] = ""
-            h = u.GetForegroundWindow()
-            buf = ctypes.create_unicode_buffer(256)
-            u.GetWindowTextW(h, buf, 256)
-            st["foreground_title"] = buf.value
-            keys(False)
-            st["pressed_at"] = now
-            st["pressed_tic"] = st["tic"]
-        except Exception as e:
-            st["press_error"] = repr(e)
-            st["pressed_at"] = now
-            st["pressed_tic"] = st["tic"]
-else:
-    if not st.get("released") and st["tic"] >= st["pressed_tic"] + 10:
-        if "press_error" not in st:
-            keys(True)
-        st["released"] = True
-    new = [n for n in captures() if n not in st.get("captures_before", [])]
-    if new and "capture_seen_at" not in st:
-        st["capture_seen_at"] = now
-    # once a capture file is there, 5 s more for Remix to finish writing it
-    done = ("capture_seen_at" in st and now - st["capture_seen_at"] >= 5.0) or now - st["pressed_at"] >= 20.0
-    if st.get("released") and done:
-        st["captures_new"] = new
-        st["seconds_after_press"] = round(now - st["pressed_at"], 2)
-        write()
-        bge.logic.endGame()
-'''
 
 
-def room(scene):
-    """floor, four walls, a ceiling (4 x 6 m, 3 m high), static, grey"""
-    grey = m6.material("P12Room", (0.6, 0.6, 0.58))
-    parts = {"Floor": ((4.0, 6.0, 0.2), (0.0, 0.0, -0.1)),
-             "Ceiling": ((4.0, 6.0, 0.2), (0.0, 0.0, 3.1)),
-             "WallN": ((4.0, 0.2, 3.0), (0.0, 3.1, 1.5)),
-             "WallS": ((4.0, 0.2, 3.0), (0.0, -3.1, 1.5)),
-             "WallE": ((0.2, 6.0, 3.0), (2.1, 0.0, 1.5)),
-             "WallW": ((0.2, 6.0, 3.0), (-2.1, 0.0, 1.5))}
-    for name, (size, at) in parts.items():
-        m6.box(scene, name, size, at, grey, physics='STATIC')
+def linear(c):
+    c = min(max(float(c), 0.0), 1.0)
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
 
 
-def brick_material():
-    from bl_operators.bge_remix_presets import apply_preset
-    ma = bpy.data.materials.new("P12Brick")
-    apply_preset(ma, 'BRICK')
-    return ma
+def shape_mesh(name, data):
+    me = bpy.data.meshes.new(name)
+    pts, tris, uvs = data["points"], data["indices"], data["uvs"]
+    me.vertices.add(len(pts))
+    me.vertices.foreach_set("co", [c for p in pts for c in p])
+    me.loops.add(len(tris))
+    me.loops.foreach_set("vertex_index", tris)
+    n = len(tris) // 3
+    me.polygons.add(n)
+    me.polygons.foreach_set("loop_start", [3 * i for i in range(n)])
+    me.polygons.foreach_set("loop_total", [3] * n)
+    me.update(calc_edges=True)
+    me.uv_textures.new("UVMap")
+    me.uv_layers[0].data.foreach_set("uv", [c for i in tris for c in uvs[i]])
+    me.polygons.foreach_set("use_smooth", [True] * n)
+    me.use_auto_smooth = True
+    me.normals_split_custom_set([tuple(data["normals"][i]) for i in tris])
+    return me
+
+
+def png(folder, name, px):
+    """an image of the texture's pixels (rows from the top) saved as PNG"""
+    size = cw.TEXTURE_SIZE
+    ima = bpy.data.images.new(name, size, size, alpha=True)
+    flat = []
+    for y in range(size - 1, -1, -1):  # Blender's rows start at the bottom
+        for x in range(size):
+            flat += [c / 255.0 for c in px[y * size + x]]
+    ima.pixels = flat
+    ima.filepath_raw = os.path.join(folder, name + ".png")
+    ima.file_format = 'PNG'
+    ima.save()
+    return ima
+
+
+def remix_material(key, folder):
+    from bl_operators.bge_remix_material import make_remix_material, _set
+    spec = cw.MATERIALS[key]
+    mat = bpy.data.materials.new("P12" + key)
+    node = make_remix_material(mat)
+    names = {"diffuse_color_constant": "Albedo", "reflection_roughness_constant": "Roughness",
+             "metallic_constant": "Metallic", "emissive_color_constant": "Emissive Color",
+             "emissive_intensity": "Emissive Intensity", "ior_constant": "IOR",
+             "transmittance_color": "Transmittance", "transmittance_measurement_distance": "Transmittance Distance"}
+    srgb = ("diffuse_color_constant", "emissive_color_constant", "transmittance_color")
+    for name, (kind, v) in spec["inputs"].items():
+        if name not in names:
+            continue
+        if kind == "color3f":
+            v = tuple(linear(c) for c in v) if name in srgb else tuple(v)
+            _set(node, names[name], v + (1.0,))
+        else:
+            _set(node, names[name], float(v))
+    if spec["mdl"] == "AperturePBR_Translucent":
+        node.remix_type = 'TRANSLUCENT'
+    tex_px = {"rgba": cw.texture_rgba, "bc1": cw.bc1_pixels}.get(spec.get("texture"))
+    if tex_px:
+        nt = mat.node_tree
+        geo = nt.nodes.new("ShaderNodeGeometry")
+        tex = bpy.data.textures.new("P12" + key, 'IMAGE')
+        tex.image = png(folder, "p12_" + key.lower(), tex_px())
+        tn = nt.nodes.new("ShaderNodeTexture")
+        tn.texture = tex
+        nt.links.new(geo.outputs["UV"], tn.inputs["Vector"])
+        nt.links.new(tn.outputs["Color"], node.inputs["Albedo"])
+    return mat
+
+
+def lamp(scene, spec):
+    """a lamp giving Remix the capture's light (remix_light.cc, distance 1 m)"""
+    name, h, loc, radius, colour, intensity, cone, soft, aim = spec
+    la = bpy.data.lamps.new(name, 'SPOT' if cone is not None else 'POINT')
+    la.color = colour
+    la.distance = 1.0
+    la.shadow_soft_size = radius
+    la.energy = intensity * radius * radius
+    la["bge_physical"] = 0.0 if cone is not None else 1.0
+    if cone is not None:
+        half = math.radians(cone)
+        la.spot_size = 2.0 * half
+        la.spot_blend = soft / (1.0 - math.cos(half))
+    ob = bpy.data.objects.new(name, la)
+    scene.objects.link(ob)
+    ob.matrix_world = matrix(cw.lamp_matrix(spec))
+    return ob
+
+
+def matrix(m):
+    from mathutils import Matrix
+    return Matrix(m)
 
 
 def make_room(folder):
@@ -109,24 +123,41 @@ def make_room(folder):
     scene.name = "P12Room"
     scene.game_settings.fps = 60
     p2.world(scene, (0.05, 0.05, 0.06))
-    room(scene)
-    m6.box(scene, "Box", 0.6, (-0.9, 1.0, 0.3), m6.material("P12Box", (0.7, 0.45, 0.2)), physics='STATIC')
-    m6.ball(scene, "Sphere", 0.35, (0.8, 1.2, 0.35), m6.material("P12Sphere", (0.3, 0.5, 0.8)), physics='STATIC')
-    m6.box(scene, "BrickWall", (2.0, 0.25, 1.2), (0.0, 2.4, 0.6), brick_material(), physics='STATIC')
-    glass, _nt, _s = p3.shader_material("P12Glass", "ShaderNodeBsdfGlass", Color=(1, 1, 1, 1), IOR=1.5)
-    m6.box(scene, "GlassPane", (1.2, 0.02, 1.0), (0.0, 0.2, 0.9), glass, physics='STATIC')
-    p2.lamp(scene, "LampA", 'POINT', (-1.2, -1.0, 2.6), energy=3.0, distance=8.0)
-    p2.lamp(scene, "LampB", 'POINT', (1.2, 1.5, 2.6), energy=2.0, color=(1.0, 0.85, 0.7), distance=8.0)
-    p2.camera(scene, (1.6, -2.7, 1.7), (-0.1, 1.2, 0.7), lens=22.0)
-    m9.logic(scene, "P12C1", C1_SCRIPT)
+    meshes = {cw.CUBE: shape_mesh("P12Cube", cw.cube_mesh()), cw.SPHERE: shape_mesh("P12Sphere", cw.sphere_mesh())}
+    mats = {key: remix_material(key, folder) for key in cw.MATERIALS}
+    for name, mh, size, loc, rot, mkey in cw.PARTS:
+        ob = bpy.data.objects.new(name, meshes[mh])
+        scene.objects.link(ob)
+        ob.matrix_world = matrix(cw.mat_trs(loc, rot, size))
+        if not meshes[mh].materials:
+            meshes[mh].materials.append(None)
+        ob.material_slots[0].link = 'OBJECT'
+        ob.material_slots[0].material = mats[mkey]
+    for spec in cw.LAMPS:
+        lamp(scene, spec)
+    cd = bpy.data.cameras.new("Camera")
+    cd.sensor_fit = 'HORIZONTAL'
+    cd.sensor_width = cw.CAMERA["horizontal_aperture"]
+    cd.lens = cw.CAMERA["focal_length"]
+    cd.clip_start, cd.clip_end = cw.CAMERA["near"], cw.CAMERA["far"]
+    cam = bpy.data.objects.new("Camera", cd)
+    scene.objects.link(cam)
+    cam.matrix_world = matrix(cw.camera_matrix())
+    scene.camera = cam
     p2.add_probe(scene)
     scene["bge_remix"] = 1
     scene.update()
-    p2.save(os.path.join(folder, "p12_room.blend"))
-    return {"file": "p12_room.blend",
-                 "meshes": ["Floor", "Ceiling", "WallN", "WallS", "WallE", "WallW", "Box", "Sphere",
-                            "BrickWall", "GlassPane"],
-                 "lamps": ["LampA", "LampB"]}
+    save(os.path.join(folder, "p12_room.blend"))
+    return {"file": "p12_room.blend", "parts": [p[0] for p in cw.PARTS], "lamps": [l[0] for l in cw.LAMPS]}
+
+
+def save(path):
+    """p2.save without its Classic marks: these are RTX Remix materials and
+    physical (or, the spot, Classic) lamps as made here"""
+    for sc in bpy.data.scenes:
+        sc["bge_remix_pipeline"] = 1
+    bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
+    print("BGE-Remix: wrote", path)
 
 
 def make(folder, E):

@@ -24,6 +24,7 @@ endif()
 message(STATUS "OpenUSD for the RTX Remix bridge: ${USD_ROOT_DIR}")
 
 add_library(bge_remix_usd SHARED
+	usd_capture.cpp
 	usd_core.cpp
 	usd_dll.cpp
 
@@ -33,7 +34,7 @@ add_library(bge_remix_usd SHARED
 target_include_directories(bge_remix_usd PRIVATE "${USD_ROOT_DIR}/include")
 # a static OpenUSD: no dllimport, and none of its functions exported from
 # the DLL (it is built with PXR_STATIC too)
-target_compile_definitions(bge_remix_usd PRIVATE PXR_STATIC=1 NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_definitions(bge_remix_usd PRIVATE PXR_STATIC=1 NOMINMAX WIN32_LEAN_AND_MEAN BGE_REMIX_USD_EXPORTS)
 target_link_libraries(bge_remix_usd "${USD_ROOT_DIR}/lib/usd_m.lib" "${USD_ROOT_DIR}/lib/tbb12.lib"
                       Ws2_32 Dbghelp Shlwapi)
 if(MSVC)

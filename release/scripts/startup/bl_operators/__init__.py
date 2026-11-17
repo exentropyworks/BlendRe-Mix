@@ -37,6 +37,7 @@ _modules = [
     "bge_remix_ragdoll",  # BGE-Remix P11 (B1)
     "bge_remix_destructible",  # BGE-Remix P11 (B2)
     "bge_remix_fluid",  # BGE-Remix P11 (B3)
+    "bge_remix_capture",  # BGE-Remix P12 (A2)
     "clip",
     "console",
     "file",

@@ -6,7 +6,7 @@ newest such download from C:\\BGE-Remix\\transfer, runs the phases' tests on
 this PC's graphics card, and packs the results as
 C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
 
-  run_local.bat              every phase (P0 to P11)
+  run_local.bat              every phase (P0 to P12)
   run_local.bat p8           only P8 (any list works: p4 p8)
   run_local.bat p8rtx        P8's RTX run: the real RTX Remix runtime, every
                              benchmark target, the picture sheets (also
@@ -34,8 +34,8 @@ C:\\BGE-Remix\\transfer\\p0-results.zip, as GitHub's runs did.
   run_local.bat p11rtx       P11's RTX run: motion trails, softness and
                              sharing the graphics card, measured in Remix
                              (also run_p11_rtx.bat in the p11 folder)
-  run_local.bat p12rtx       P12's RTX run: this round, the C1 check (does
-                             Remix capture a BGE-Remix scene?; also
+  run_local.bat p12rtx       P12's RTX run: the room and the room imported
+                             from its capture, side by side in Remix (also
                              run_p12_rtx.bat in the p12 folder)
 
 Needs, once: Python 3 with pillow and numpy (python -m pip install pillow
@@ -64,7 +64,7 @@ MOCK = os.path.join(LOCAL, "mock")
 MOCK_SHIM = os.path.join(LOCAL, "mock_shim")
 RESULTS = os.path.join(LOCAL, "results")
 HERE = os.path.dirname(os.path.abspath(__file__))
-PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11"]
+PHASES = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10", "p11", "p12"]
 EXTRA = ["p8rtx", "p8diag", "p9rtx", "p9study", "p9studyrtx", "p9menu", "p10rtx", "p11rtx", "p12rtx", "smoke"]  # only when asked for
 
 
@@ -164,7 +164,9 @@ def commands():
                                                                    "--out", os.path.join(RESULTS, "p11")],
         "p11rtx": run("p11", "run_p11.py") + ["--ours", OURS, "--rtx", "--results", RESULTS,
                                               "--out", os.path.join(RESULTS, "p11rtx")],
-        # P12: OpenUSD (this round: the C1 check against Remix)
+        # P12: OpenUSD, Remix modding (captures in)
+        "p12": run("p12", "run_p12.py") + ["--ours", OURS] + off + ["--mock", MOCK, "--normal", "--results", RESULTS,
+                                                                   "--out", os.path.join(RESULTS, "p12")],
         "p12rtx": run("p12", "run_p12.py") + ["--ours", OURS, "--rtx", "--results", RESULTS,
                                               "--out", os.path.join(RESULTS, "p12rtx")],
         # the crash check: Blender's window doing what a person does, real Remix

@@ -26,8 +26,7 @@
 #include <exception>
 #include <string>
 
-#define BGE_REMIX_USD_EXPORTS
-#include "bge_remix_usd.h"
+#include "bge_remix_usd.h"  /* BGE_REMIX_USD_EXPORTS: CMakeLists.txt */
 #include "usd_core.h"
 
 static void copy_out(const std::string &text, char *r_out, int max_bytes)

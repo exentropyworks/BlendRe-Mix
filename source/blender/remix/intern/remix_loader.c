@@ -139,6 +139,12 @@ static int load_bridge(void)
 	BRIDGE_FN(frame_read_end, "brb_frame_read_end");
 	BRIDGE_FN(gl_direct_supported, "brb_gl_direct_supported");
 	BRIDGE_FN(frame_draw_instanced, "brb_frame_draw_instanced");
+	BRIDGE_FN(usd_version, "brb_usd_version");  /* P12 */
+	BRIDGE_FN(usd_started, "brb_usd_started");
+	BRIDGE_FN(usd_selftest, "brb_usd_selftest");
+	BRIDGE_FN(usd_capture_api, "brb_usd_capture_api");
+	BRIDGE_FN(usd_plugin_dir, "brb_usd_plugin_dir");
+	BRIDGE_FN(dds_to_png, "brb_dds_to_png");
 #undef BRIDGE_FN
 
 	/* Remix is shut down before the process ends, however it ends. */

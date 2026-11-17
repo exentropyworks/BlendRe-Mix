@@ -1,12 +1,11 @@
 """BGE-Remix P12: OpenUSD, Remix modding and USD exchange
-(run_local.bat p12rtx, also run_p12_rtx.bat).
+(run_local.bat p12; run_local.bat p12rtx, also run_p12_rtx.bat).
 
---rtx (the real RTX Remix runtime): this round, the C1 check (does Remix
-capture a BGE-Remix scene?)
---normal: the tests that need no real Remix (none yet this round)
+--normal (no RTX card needed): the tests that need no real Remix
+--rtx (the real RTX Remix runtime): the tracks' pictures in Remix
 
 The tracks (each its own scene module and test module):
-  p12a  Part A: Remix modding (this round: C1, capture)
+  p12a  Part A: Remix modding (round 2: File > Import > RTX Remix Capture)
 
 BGE_REMIX_P12_TRACKS (comma separated) runs only those tracks.
 """

@@ -93,6 +93,14 @@ typedef struct BRMX_Bridge {
 	int (*frame_read)(unsigned char *r_rgba, int max_bytes, int *r_width, int *r_height);
 	void (*frame_read_end)(void);
 	int (*gl_direct_supported)(void);
+
+	/* interfaces 13, 14 (P12): OpenUSD, RTX Remix captures */
+	const char *(*usd_version)(void);
+	int (*usd_started)(void);
+	int (*usd_selftest)(const wchar_t *folder, char *r_report, int max_bytes);
+	const bru_capture_api *(*usd_capture_api)(char *r_error, int max_bytes);
+	const char *(*usd_plugin_dir)(void);
+	int (*dds_to_png)(const wchar_t *dds, const wchar_t *png, char *r_error, int max_bytes);
 } BRMX_Bridge;
 
 /* The bridge, loaded on first use; NULL when it is missing or from another

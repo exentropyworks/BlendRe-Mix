@@ -24,9 +24,143 @@
  *             of the USD code itself).
  * Exit code: the number of failed checks. */
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+
+#include "bge_remix_usd.h"
+
+/* a capture as JSON (what the reader gave): for check_capture.py */
+static std::string jstr(const char *s)
+{
+	std::string out = "\"";
+	for (const char *c = s ? s : ""; *c; c++) {
+		if (*c == '"' || *c == '\\')
+			out += '\\';
+		if (*c == '\n') {
+			out += "\\n";
+			continue;
+		}
+		out += *c;
+	}
+	return out + "\"";
+}
+
+static std::string jnum(double v)
+{
+	if (!std::isfinite(v))
+		return "null";
+	char buf[64];
+	snprintf(buf, sizeof(buf), "%.9g", v);
+	return buf;
+}
+
+static std::string jhex(uint64_t h)
+{
+	char buf[32];
+	snprintf(buf, sizeof(buf), "\"%016llX\"", (unsigned long long)h);
+	return buf;
+}
+
+static std::string jarr(const double *v, int n)
+{
+	std::string out = "[";
+	for (int i = 0; i < n; i++)
+		out += (i ? ", " : "") + jnum(v[i]);
+	return out + "]";
+}
+
+static std::string jarrf(const float *v, int n)
+{
+	std::string out = "[";
+	for (int i = 0; i < n; i++)
+		out += (i ? ", " : "") + jnum(v[i]);
+	return out + "]";
+}
+
+/* read a capture and write what came out; returns 0 when it was read */
+static int dump_capture(const bru_capture_api *api, const char *plugins, const char *path, const char *json)
+{
+	char err[2048] = "";
+	bru_capture *cap = api->open(plugins, path, err, int(sizeof(err)));
+	FILE *f = fopen(json, "w");
+	if (!f)
+		return 1;
+	if (!cap) {
+		fprintf(f, "{\"error\": %s}\n", jstr(err).c_str());
+		fclose(f);
+		printf("capture %s: not read (%s)\n", path, err);
+		return 2;
+	}
+	bru_capture_info info;
+	api->info(cap, &info);
+	std::string o = "{\"meters_per_unit\": " + jnum(info.meters_per_unit) + ", \"z_up\": " + std::to_string(info.z_up) +
+	                ", \"game_name\": " + jstr(info.game_name) + ", \"report\": " + jstr(info.report);
+	o += ",\n \"meshes\": [";
+	for (int i = 0; i < info.mesh_count; i++) {
+		bru_mesh m;
+		api->mesh(cap, i, &m);
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"hash\": " + jhex(m.hash) + ", \"name\": " + jstr(m.name) +
+		     ", \"vertices\": " + std::to_string(m.vertex_count) + ", \"faces\": " + std::to_string(m.face_count) +
+		     ", \"corners\": " + std::to_string(m.corner_count) + ", \"normals\": " + (m.normals ? "1" : "0") +
+		     ", \"uvs\": " + (m.uvs ? "1" : "0") + ", \"first_point\": " + jarrf(m.points, 3) +
+		     (m.uvs ? ", \"first_uv\": " + jarrf(m.uvs, 2) : "") + "}";
+	}
+	o += "],\n \"instances\": [";
+	for (int i = 0; i < info.instance_count; i++) {
+		bru_instance in;
+		api->instance(cap, i, &in);
+		bru_mesh m;
+		api->mesh(cap, in.mesh, &m);
+		bru_material mt;
+		const bool has_mat = in.material >= 0 && api->material(cap, in.material, &mt);
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"name\": " + jstr(in.name) + ", \"mesh\": " + jhex(m.hash) +
+		     ", \"material\": " + (has_mat ? jhex(mt.hash) : std::string("null")) + ", \"matrix\": " +
+		     jarr(in.matrix, 16) + "}";
+	}
+	o += "],\n \"materials\": [";
+	for (int i = 0; i < info.material_count; i++) {
+		bru_material mt;
+		api->material(cap, i, &mt);
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"hash\": " + jhex(mt.hash) + ", \"mdl\": " + jstr(mt.mdl) +
+		     ", \"sub_identifier\": " + jstr(mt.sub_identifier) + ", \"inputs\": {";
+		for (int k = 0; k < mt.input_count; k++) {
+			bru_input in;
+			api->material_input(cap, i, k, &in);
+			o += std::string(k ? ", " : "") + jstr(in.name) + ": {\"kind\": " + std::to_string(in.kind) +
+			     ", \"v\": " + jarr(in.v, 4) + ", \"text\": " + jstr(in.text) + ", \"path\": " + jstr(in.path) +
+			     ", \"exists\": " + std::to_string(in.exists) + "}";
+		}
+		o += "}}";
+	}
+	o += "],\n \"lights\": [";
+	for (int i = 0; i < info.light_count; i++) {
+		bru_light l;
+		api->light(cap, i, &l);
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"hash\": " + jhex(l.hash) + ", \"kind\": " + std::to_string(l.kind) +
+		     ", \"color\": " + jarrf(l.color, 3) + ", \"intensity\": " + jnum(l.intensity) + ", \"radius\": " +
+		     jnum(l.radius) + ", \"shaped\": " + std::to_string(l.shaped) + ", \"cone_angle\": " + jnum(l.cone_angle) +
+		     ", \"cone_softness\": " + jnum(l.cone_softness) + ", \"matrix\": " + jarr(l.matrix, 16) + "}";
+	}
+	o += "],\n \"camera\": ";
+	bru_camera c;
+	if (api->camera(cap, &c)) {
+		o += "{\"matrix\": " + jarr(c.matrix, 16) + ", \"focal_length\": " + jnum(c.focal_length) +
+		     ", \"horizontal_aperture\": " + jnum(c.horizontal_aperture) + ", \"near\": " + jnum(c.near_clip) +
+		     ", \"far\": " + jnum(c.far_clip) + "}";
+	}
+	else {
+		o += "null";
+	}
+	o += "}\n";
+	fputs(o.c_str(), f);
+	fclose(f);
+	printf("capture %s: %d meshes, %d instances, %d materials, %d lights, camera %d\n%s", path, info.mesh_count,
+	       info.instance_count, info.material_count, info.light_count, info.camera_found, info.report);
+	api->close(cap);
+	return 0;
+}
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -35,6 +169,9 @@
 typedef const char *(*version_fn)(void);
 typedef int (*started_fn)(void);
 typedef int (*selftest_fn)(const wchar_t *, char *, int);
+typedef const bru_capture_api *(*capture_api_fn)(char *, int);
+typedef const char *(*plugin_dir_fn)(void);
+typedef int (*dds_fn)(const wchar_t *, const wchar_t *, char *, int);
 
 static std::wstring wide(const char *s)
 {
@@ -48,7 +185,7 @@ static std::wstring wide(const char *s)
 int main(int argc, char **argv)
 {
 	if (argc < 3) {
-		fprintf(stderr, "usage: p12_usd_check <bge_remix_bridge.dll> <folder>\n");
+		fprintf(stderr, "usage: p12_usd_check <bge_remix_bridge.dll> <folder> [<capture> <dump.json> [<dds>...]]\n");
 		return 1;
 	}
 	int failed = 0;
@@ -84,6 +221,32 @@ int main(int argc, char **argv)
 	bool now = started() == 1 && GetModuleHandleW(L"bge_remix_usd.dll") && GetModuleHandleW(L"tbb12.dll");
 	printf("%s  the self-test loaded bge_remix_usd.dll and tbb12.dll and started OpenUSD\n", now ? "ok   " : "FAIL ");
 	failed += now ? 0 : 1;
+
+	/* P12 round 2: a capture read through the bridge, its DDS textures
+	 * decoded (beside them, as .png) */
+	if (argc >= 5) {
+		capture_api_fn capture_api = (capture_api_fn)GetProcAddress(dll, "brb_usd_capture_api");
+		plugin_dir_fn plugin_dir = (plugin_dir_fn)GetProcAddress(dll, "brb_usd_plugin_dir");
+		dds_fn dds = (dds_fn)GetProcAddress(dll, "brb_dds_to_png");
+		char err[1024] = "";
+		const bru_capture_api *api = capture_api ? capture_api(err, int(sizeof(err))) : nullptr;
+		if (!api || !plugin_dir || !dds) {
+			printf("FAIL  the bridge's capture reader (%s)\n", err);
+			failed++;
+		}
+		else {
+			int r = dump_capture(api, plugin_dir(), argv[3], argv[4]);
+			printf("%s  the capture read through the bridge\n", r == 0 ? "ok   " : "FAIL ");
+			failed += r == 0 ? 0 : 1;
+			for (int i = 5; i < argc; i++) {
+				std::wstring in = wide(argv[i]);
+				std::wstring out = in.substr(0, in.size() - 4) + L".png";
+				int ok = dds(in.c_str(), out.c_str(), err, int(sizeof(err)));
+				printf("%s  %s decoded%s%s\n", ok ? "ok   " : "FAIL ", argv[i], ok ? "" : ": ", ok ? "" : err);
+				failed += ok ? 0 : 1;
+			}
+		}
+	}
 	printf("%d failed\n", failed);
 	return failed;
 }
@@ -95,7 +258,7 @@ int main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: p12_usd_check <folder> [plugin folder]\n");
+		fprintf(stderr, "usage: p12_usd_check <folder> [<plugin folder> [<capture> <dump.json>]]\n");
 		return 1;
 	}
 	int failed = 0;
@@ -105,6 +268,11 @@ int main(int argc, char **argv)
 	std::string report;
 	failed += brb::usd::selftest(argc > 2 ? argv[2] : "", argv[1], report);
 	printf("%s", report.c_str());
+	if (argc >= 5) {
+		int r = dump_capture(bru_capture_get_api(), argv[2], argv[3], argv[4]);
+		printf("%s  the capture read\n", r == 0 ? "ok   " : "FAIL ");
+		failed += r == 0 ? 0 : 1;
+	}
 	printf("%d failed\n", failed);
 	return failed;
 }

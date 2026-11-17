@@ -293,7 +293,8 @@ jobs:
 
       # P12: the bridge's OpenUSD, from the built bridge DLL (no Remix, no
       # graphics card): not started by loading the bridge, then a stage with a
-      # mesh, an RTX Remix material and a rigid body written and read back
+      # mesh, an RTX Remix material and a rigid body written and read back,
+      # and an RTX Remix capture read
       - name: OpenUSD check
         shell: pwsh
         run: |
@@ -301,8 +302,16 @@ jobs:
           cmake --build p12native --config Release -- /m /v:minimal
           if ($LASTEXITCODE -ne 0) { exit 1 }
           New-Item -ItemType Directory -Force usd_check_out | Out-Null
-          p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll usd_check_out
+          # P12 round 2: the test room written as an RTX Remix capture, read
+          # through the bridge (its textures decoded) and checked
+          python blender/tests/bge_remix/p12/capture_writer.py usd_check_out/capture room
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $dds = Get-ChildItem usd_check_out/capture/textures -Filter *.dds | ForEach-Object { $_.FullName }
+          p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll usd_check_out `
+            usd_check_out/capture/capture_room.usda usd_check_out/capture_dump.json @dds
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::some checks failed (see the log)"; exit 1 }
+          python blender/tests/bge_remix/p12/native/check_capture.py usd_check_out/capture/expected.json usd_check_out/capture_dump.json
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the capture was not read as written (see the log)"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
