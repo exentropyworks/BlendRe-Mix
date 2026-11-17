@@ -258,6 +258,11 @@ private:
 	               const MT_Matrix3x3 &camori, uint32_t pick);
 	uint64_t HaloMaterial(struct Material *ma);
 	std::map<const void *, uint64_t> m_halo_materials;
+	/* BGE-Remix P11 (B3): splashes as Remix GPU particles (a hidden ring on
+	 * the surface emits them; water's spray, lava's glowing blobs) */
+	void DrawSplashes(KX_Scene *scene);
+	uint64_t m_splash_mesh[2], m_splash_material[2];
+	int m_splash_draws, m_splashes_sent, m_last_splash_serial;
 	void SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint64_t mesh, const float model[16], uint32_t pick);
 	void ReleaseSkinning(KX_Scene *scene);
 	void PruneDynamic(KX_Scene *scene);

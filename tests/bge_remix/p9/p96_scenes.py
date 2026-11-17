@@ -134,5 +134,6 @@ def make(folder, E):
     E["presets"] = {"files": files, "rects": rects, "order": list(ORDER), "materials": mats, "groups": groups,
                     "table": table, "seams": seams, "size": [m9.WIDTH, m9.HEIGHT],
                     # out of the gate: Remix draws water as glass (it refracts the backdrop),
-                    # skin with subsurface light (flat skin tiles paler than the game's)
-                    "gate_out": ["WATER", "SKIN_LIGHT", "SKIN_MEDIUM", "SKIN_DARK"]}
+                    # skin with subsurface light (flat skin tiles paler than the game's), lava
+                    # glowing (P11 B3: its light falls on what is near it)
+                    "gate_out": ["WATER", "SKIN_LIGHT", "SKIN_MEDIUM", "SKIN_DARK", "LAVA"]}

@@ -474,6 +474,43 @@ void PxPhysicsEnvironment::ConvertObject(KX_GameObject *gameobj, RAS_MeshObject 
 		}
 		AddDestructionPiece(ctrl, IDP_String(piece_of), isroot, std::max(strength, 1e-3f), anchored);
 	}
+	/* BGE-Remix P11 (B3): a fluid volume (Make Fluid Volume: the ID property
+	 * bge_fluid, with its type, density, drag, current and splashes; things
+	 * pass through it, a ghost) */
+	if ((blenderobject->lay & activeLayerBitInfo) != 0 && blenderobject->id.properties) {
+		IDProperty *props = blenderobject->id.properties;
+		IDProperty *is = IDP_GetPropertyFromGroup(props, "bge_fluid");
+		if (is && is->type == IDP_INT && IDP_Int(is) != 0 && !isdyna && !ischar) {
+			auto number = [props](const char *name, float def) {
+				IDProperty *p = IDP_GetPropertyFromGroup(props, name);
+				if (p && p->type == IDP_FLOAT) {
+					return IDP_Float(p);
+				}
+				if (p && p->type == IDP_DOUBLE) {
+					return (float)IDP_Double(p);
+				}
+				if (p && p->type == IDP_INT) {
+					return (float)IDP_Int(p);
+				}
+				return def;
+			};
+			IDProperty *t = IDP_GetPropertyFromGroup(props, "bge_fluid_type");
+			const int type = (t && t->type == IDP_INT && IDP_Int(t) == 1) ? 1 : 0;
+			PxVec3 current(0.0f);
+			IDProperty *c = IDP_GetPropertyFromGroup(props, "bge_fluid_current");
+			if (c && c->type == IDP_ARRAY && c->len >= 3) {
+				for (int k = 0; k < 3; k++) {
+					current[k] = c->subtype == IDP_DOUBLE ? (float)((double *)IDP_Array(c))[k] :
+					             (c->subtype == IDP_FLOAT ? ((float *)IDP_Array(c))[k] :
+					              (c->subtype == IDP_INT ? (float)((int *)IDP_Array(c))[k] : 0.0f));
+				}
+			}
+			IDProperty *sp = IDP_GetPropertyFromGroup(props, "bge_fluid_splashes");
+			const bool splashes = !(sp && sp->type == IDP_INT && IDP_Int(sp) == 0);
+			AddFluidVolume(ctrl, type, number("bge_fluid_density", type ? 3100.0f : 1000.0f),
+			               number("bge_fluid_drag", type ? 24.0f : 3.0f), current, splashes);
+		}
+	}
 	if (ctrl->GetDeformable() && ctrl->GetShapeDesc()) {
 		map_soft_vertices(ctrl->GetShapeDesc()->m_mesh);
 	}

@@ -36,6 +36,7 @@
 #include "KX_CharacterWrapper.h"
 #include "KX_ArticulationWrapper.h"
 #include "KX_DestructibleWrapper.h"  /* BGE-Remix P11 (B2) */
+#include "KX_FluidWrapper.h"  /* BGE-Remix P11 (B3) */
 #include "KX_PyMath.h"  /* BGE-Remix P11 (B1) */
 #include "BL_ArmatureObject.h"
 #include "PHY_IPhysicsController.h"
@@ -561,6 +562,28 @@ static PyObject *gPyGetDestructible(PyObject *self, PyObject *args, PyObject *kw
 	return wrapper->NewProxy(true);
 }
 
+/* BGE-Remix P11 (B3): a fluid volume (Make Fluid Volume) */
+static PyObject *gPyGetFluid(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pyob;
+	KX_GameObject *ob;
+	if (!PyArg_ParseTuple(args, "O", &pyob)) {
+		return NULL;
+	}
+	if (!ConvertPythonToGameObject(KX_GetActiveScene()->GetLogicManager(), pyob, &ob, false,
+	                               "bge.constraints.getFluid(value)"))
+	{
+		return NULL;
+	}
+	PHY_IPhysicsEnvironment *env = ob->GetScene() ? ob->GetScene()->GetPhysicsEnvironment() : NULL;
+	PHY_FluidInfo info;
+	if (!env || !ob->GetPhysicsController() || !env->GetFluid(ob->GetPhysicsController(), &info)) {
+		Py_RETURN_NONE;
+	}
+	KX_FluidWrapper *wrapper = new KX_FluidWrapper(ob);
+	return wrapper->NewProxy(true);
+}
+
 static PyObject *gPyExplode(PyObject *self, PyObject *args, PyObject *kwds)
 {
 	PyObject *pypoint;
@@ -743,6 +766,8 @@ static struct PyMethodDef physicsconstraints_methods[] = {
 
 	{"getDestructible", (PyCFunction)gPyGetDestructible, METH_VARARGS,
 	 "getDestructible(ob): the destructible the object is a piece of (Make Destructible), or None"},
+	{"getFluid", (PyCFunction)gPyGetFluid, METH_VARARGS,
+	 "getFluid(ob): the fluid volume the object is (Make Fluid Volume; PhysX), or None"},
 	{"explode", (PyCFunction)gPyExplode, METH_VARARGS | METH_KEYWORDS,
 	 "explode(point, radius=1.0, damage=1.0): breaks every destructible within the radius (PhysX); how many"},
 	{"getArticulation", (PyCFunction)gPyGetArticulation, METH_VARARGS,

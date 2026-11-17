@@ -31,6 +31,7 @@
 #include "PxArticulation.h"
 #include "PxCharacter.h"
 #include "PxDeformable.h"
+#include "PxFluids.h"
 #include "PxMotionState.h"
 #include "PxPhysicsController.h"
 #include "PxShapes.h"
@@ -263,7 +264,10 @@ PxPhysicsEnvironment::PxPhysicsEnvironment(bool useGpu, PHY_IPhysicsEnvironment 
       m_debrisLifetime(0.0f),
       m_destructionFrame(0),
       m_destructionTime(0.0),
-      m_groupSerial(0)
+      m_groupSerial(0),
+      m_fluidBodies(new std::map<const PxRigidActor *, PxFluidBody>()),
+      m_fluidTime(0.0),
+      m_fluidFrame(0)
 {
 	for (int i = 0; i < PHY_NUM_RESPONSE; i++) {
 		m_triggerCallbacks[i] = NULL;
@@ -329,6 +333,11 @@ PxPhysicsEnvironment::~PxPhysicsEnvironment()
 	while (!m_destructibles.empty()) {
 		DismantleDestructible(m_destructibles.back());
 	}
+	/* P11 (B3): the fluid volumes */
+	for (PxFluidVolume *v : m_fluids) {
+		delete v;
+	}
+	m_fluids.clear();
 	for (PxRaycastVehicle *v : m_vehicles) {
 		delete v;
 	}
@@ -349,6 +358,7 @@ PxPhysicsEnvironment::~PxPhysicsEnvironment()
 	}
 	delete m_events;
 	delete m_culling;
+	delete m_fluidBodies;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -402,6 +412,8 @@ bool PxPhysicsEnvironment::RemoveController(PxPhysicsController *ctrl)
 	if (ctrl->m_shard) {
 		DestructionRemovePiece(ctrl);
 	}
+	/* P11 (B3): a fluid volume goes; a body's points are forgotten */
+	FluidRemove(ctrl);
 	m_controllers.erase(ctrl);
 	ctrl->m_inScene = false;
 	m_kinematics.erase(ctrl);
@@ -573,6 +585,10 @@ void PxPhysicsEnvironment::SimulateOnce(float dt)
 			ch->Step(dt);
 		}
 	}
+	/* P11 (B3): floating, drag and currents in fluid volumes */
+	if (!m_fluids.empty()) {
+		FluidStep(dt);
+	}
 	m_scene->simulate(dt);
 	m_scene->fetchResults(true);
 	for (PxPhysicsController *c : m_controllers) {
@@ -593,6 +609,7 @@ bool PxPhysicsEnvironment::ProceedDeltaTime(double curTime, float timeStep, floa
 		return false;
 	}
 	m_lastStep = subStep;
+	m_fluidFrame++;
 	/* P11 (B1): articulations of roots and joints added since */
 	if (m_articulationsDirty) {
 		BuildArticulations();

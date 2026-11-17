@@ -45,3 +45,14 @@ void PxPhysicsEnvironment::SetupObjectConstraints(KX_GameObject *, KX_GameObject
 }
 
 const char *btTypedConstraint::serialize(void *, btSerializer *) const { never("btTypedConstraint::serialize"); return NULL; }
+
+/* BGE-Remix P11 (B3): the CPU-only PhysX SDK the Linux checks build with has
+ * no CUDA module; PxSystem asks for it (and is told no) */
+#if !defined(_WIN32)
+#  include "PxPhysicsAPI.h"
+extern "C" __attribute__((weak)) physx::PxCudaContextManager *PxCreateCudaContextManager(
+        physx::PxFoundation &, const physx::PxCudaContextManagerDesc &, physx::PxProfilerCallback *, bool)
+{
+	return NULL;
+}
+#endif

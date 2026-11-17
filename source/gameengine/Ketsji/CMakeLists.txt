@@ -77,6 +77,7 @@ set(SRC
 	KX_CameraIpoSGController.cpp
 	KX_ArticulationWrapper.cpp
 	KX_DestructibleWrapper.cpp
+	KX_FluidWrapper.cpp
 	KX_CharacterWrapper.cpp
 	KX_ConstraintActuator.cpp
 	KX_ConstraintWrapper.cpp
@@ -156,6 +157,7 @@ set(SRC
 	KX_CameraIpoSGController.h
 	KX_ArticulationWrapper.h
 	KX_DestructibleWrapper.h
+	KX_FluidWrapper.h
 	KX_CharacterWrapper.h
 	KX_ClientObjectInfo.h
 	KX_ConstraintActuator.h

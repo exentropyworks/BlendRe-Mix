@@ -26,6 +26,7 @@ set(SRC
 	${GE}/Physics/PhysX/PxCharacter.cpp
 	${GE}/Physics/PhysX/PxDeformable.cpp
 	${GE}/Physics/PhysX/PxDestruction.cpp  # BGE-Remix P11 (B2)
+	${GE}/Physics/PhysX/PxFluids.cpp  # BGE-Remix P11 (B3)
 	${GE}/Physics/PhysX/PxPhysicsController.cpp
 	${GE}/Physics/PhysX/PxPhysicsEnvironment.cpp
 	${GE}/Physics/PhysX/PxShapes.cpp

@@ -13,6 +13,10 @@ The tracks (each its own scene module and test module):
   p11c  Part B step 2 (B2): destruction with NVIDIA Blast (the wall hit hard
         and softly, the pillar blown, the budget, Bullet and stock 2.79b,
         Make Destructible, the Remix View's colours, the crash check)
+  p11d  Part B step 3 (B3): game fluids (floating and sinking in the pool, the
+        drop and its splash, the river's current, lava against water, the
+        plank, Make Fluid Volume, the Lava preset, Bullet and stock 2.79b, the
+        Remix View's colours, the splash to Remix, the crash check)
 
 BGE_REMIX_P11_TRACKS (comma separated) runs only those tracks.
 """
@@ -33,7 +37,7 @@ import run_p2 as p2  # noqa: E402  (running Blender, contact sheets)
 import run_p8 as p8  # noqa: E402  (the player, pictures, the fake runtime)
 import run_p9 as r9  # noqa: E402,F401  (P9's helpers: pipe_play, mock_materials, textures_in, ...)
 
-TRACKS = ("p11a", "p11b", "p11c")
+TRACKS = ("p11a", "p11b", "p11c", "p11d")
 
 
 def make_scenes(ours, out):

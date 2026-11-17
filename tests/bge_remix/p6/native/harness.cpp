@@ -997,6 +997,159 @@ static float moved(const std::vector<PxPhysicsController *> &p, const std::vecto
 	return most;
 }
 
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P11 (B3): fluid volumes */
+
+/* a water (or lava) box: centre, half sizes; its top is the surface */
+static PxPhysicsController *fluid(World &w, float x, float y, float z, float hx, float hy, float hz, int type = 0,
+                                  const physx::PxVec3 &current = physx::PxVec3(0.0f))
+{
+	PxPhysicsController *v = add(w, shape_box(hx, hy, hz), GHOST, x, y, z, 0.0f);
+	w.env->AddFluidVolume(v, type, type ? 3100.0f : 1000.0f, type ? 24.0f : 3.0f, current, true);
+	return v;
+}
+
+static physx::PxTransform pose(PxPhysicsController *c)
+{
+	return c->GetDynamic() ? c->GetDynamic()->getGlobalPose() : physx::PxTransform(physx::PxIdentity);
+}
+
+static void test_fluids()
+{
+	printf("\nfluids (P11 B3)\n");
+	{
+		/* a 6 x 6 x 2 m pool (its surface at z 2): a 1 m box of 300 kg floats
+		 * 0.3 m deep; one of 2000 kg goes to the bottom */
+		World w;
+		ground(w);
+		PxPhysicsController *pool = fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *light = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, -1.2f, 0, 2.5f, 300.0f);
+		PxPhysicsController *heavy = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, 1.2f, 0, 2.5f, 2000.0f);
+		w.step(60 * 8);
+		const double depth = 2.0 - (pos(light).z() - 0.5);
+		CHECK(fabs(depth - 0.3) < 0.02, "pool: the 300 kg box floats 0.3 m deep (%.3f m)", depth);
+		CHECK(light->GetLinearVelocity().length() < 0.02, "pool: and is at rest (%.3f m/s)",
+		      light->GetLinearVelocity().length());
+		CHECK(fabs(pos(heavy).z() - 0.5) < 0.02, "pool: the 2000 kg box rests on the bottom (z %.3f)", pos(heavy).z());
+		CHECK(w.env->GetFluidState(light) == 1 && w.env->GetFluidState(heavy) == 2,
+		      "pool: one floats, one sinks (%d, %d)", w.env->GetFluidState(light), w.env->GetFluidState(heavy));
+		const float sub = w.env->GetSubmerged(pool, light);
+		CHECK(fabs(sub - 0.3f) < 0.02f, "pool: 0.3 of it under the surface (%.3f)", sub);
+		PHY_FluidInfo info;
+		const bool got = w.env->GetFluid(pool, &info);
+		CHECK(got && info.inside.size() == 2, "pool: two objects in it (%d)", (int)info.inside.size());
+		CHECK(w.env->GetFluidActivity(pool) == 1, "pool: in use (%d)", w.env->GetFluidActivity(pool));
+	}
+	{
+		/* a light ball dropped from 3 m: it slows in the water, comes to rest
+		 * at the surface, and splashes once where it went in */
+		World w;
+		ground(w);
+		PxPhysicsController *pool = fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *ball = add(w, shape_sphere(0.25f), RIGID, 0.5f, -0.3f, 5.25f, 20.0f);
+		float in_speed = 0.0f, after = 0.0f, low = 1e9f;
+		int entered = -1;
+		std::vector<PHY_FluidSplash> splashes;
+		int activity = -1;
+		for (int i = 0; i < 60 * 10; i++) {
+			w.step(1);
+			w.env->TakeFluidSplashes(splashes);
+			if (!splashes.empty() && activity < 0) {
+				activity = w.env->GetFluidActivity(pool);
+			}
+			const double z = pos(ball).z();
+			if (entered < 0 && z - 0.25 < 2.0) {
+				entered = i;
+				in_speed = (float)ball->GetLinearVelocity().length();
+			}
+			if (entered >= 0 && i == entered + 15) {
+				after = (float)ball->GetLinearVelocity().length();
+			}
+			if (entered >= 0) {
+				low = std::min(low, (float)pos(ball).z());
+			}
+		}
+		CHECK(in_speed > 6.0f, "drop: it went in fast (%.2f m/s)", in_speed);
+		CHECK(after < 0.5f * in_speed, "drop: it slowed sharply in the water (%.2f m/s a quarter second in)", after);
+		CHECK(low > 0.3f, "drop: it never reached the bottom (lowest z %.2f)", low);
+		const double depth = 2.0 - (pos(ball).z() - 0.25);
+		CHECK(ball->GetLinearVelocity().length() < 0.05 && depth > 0.0 && depth < 0.5,
+		      "drop: at rest at the surface (%.3f m under, %.3f m/s)", depth, ball->GetLinearVelocity().length());
+		/* (bobbing back, it may splash again, far less) */
+		bool smaller = true;
+		for (size_t i = 1; i < splashes.size(); i++) {
+			smaller = smaller && splashes[i].speed < 0.5f * splashes[0].speed;
+		}
+		CHECK(!splashes.empty() && smaller, "drop: one splash where it went in (%d, the rest from bobbing back, %s)",
+		      (int)splashes.size(), smaller ? "far smaller" : "not smaller");
+		if (!splashes.empty()) {
+			const PHY_FluidSplash &s = splashes[0];
+			CHECK(fabs(s.point.z() - 2.0) < 1e-3 && fabs(s.point.x() - 0.5) < 0.05 && fabs(s.point.y() + 0.3) < 0.05,
+			      "drop: on the surface where it went in (%.2f %.2f %.2f)", s.point.x(), s.point.y(), s.point.z());
+			CHECK(s.speed > 6.0f && fabs(s.size - 0.5f) < 0.05f && s.type == 0, "drop: speed %.2f, size %.2f, type %d",
+			      s.speed, s.size, s.type);
+		}
+		CHECK(activity == 3, "drop: the pool shows the splash (%d)", activity);
+	}
+	{
+		/* a 20 x 4 x 1 m river with a 1 m/s current along x: a raft drifts
+		 * 3 to 5 m in 5 s, hardly sideways */
+		World w;
+		ground(w);
+		fluid(w, 0, 0, 0.5f, 10, 2, 0.5f, 0, physx::PxVec3(1.0f, 0.0f, 0.0f));
+		PxPhysicsController *raft = add(w, shape_box(1.0f, 0.5f, 0.1f), RIGID, -6.0f, 0, 1.0f, 100.0f);
+		w.step(30);
+		const MT_Vector3 was = pos(raft);
+		w.step(60 * 5);
+		const MT_Vector3 d = pos(raft) - was;
+		CHECK(d.x() > 3.0 && d.x() < 5.0, "river: the raft drifted %.2f m downstream", d.x());
+		CHECK(fabs(d.y()) < 0.2, "river: and %.3f m sideways", d.y());
+	}
+	{
+		/* lava against water: a 1 m box of 1500 kg sinks in water, floats in
+		 * lava; a 300 kg one pushed down comes up faster, thrown in stops
+		 * sooner, in lava */
+		float up_speed[2], kept[2];
+		double rest_z[2];
+		for (int lava = 0; lava < 2; lava++) {
+			World w;
+			ground(w);
+			fluid(w, 0, 0, 1, 3, 3, 1, lava);
+			PxPhysicsController *b = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, -1.5f, 0, 2.5f, 1500.0f);
+			PxPhysicsController *p = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, 1.5f, -1.5f, 1.5f, 300.0f);
+			PxPhysicsController *t = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, -2.0f, 2.0f, 2.2f, 300.0f);
+			t->SetLinearVelocity(MT_Vector3(5.0f, 0.0f, 0.0f), false);
+			/* (the pushed box let go 1 m down: how fast it starts up) */
+			w.step(1);
+			up_speed[lava] = (float)p->GetLinearVelocity().z();
+			w.step(59);
+			kept[lava] = (float)t->GetLinearVelocity().x();
+			w.step(60 * 8);
+			rest_z[lava] = pos(b).z();
+		}
+		CHECK(fabs(rest_z[0] - 0.5) < 0.02, "lava/water: the 1500 kg box sinks in water (z %.3f)", rest_z[0]);
+		CHECK(fabs((2.0 - (rest_z[1] - 0.5)) - 1500.0 / 3100.0) < 0.03, "lava/water: and floats in lava, %.3f m deep",
+		      2.0 - (rest_z[1] - 0.5));
+		CHECK(up_speed[1] > up_speed[0], "lava/water: pushed down, lava pushes it up harder (%.3f against %.3f m/s after a frame)",
+		      up_speed[1], up_speed[0]);
+		CHECK(kept[1] < kept[0], "lava/water: thrown in, it stops sooner in lava (%.2f against %.2f m/s)", kept[1],
+		      kept[0]);
+	}
+	{
+		/* a plank (2 x 0.4 x 0.2 m, 30 kg) stood on end in the pool: it turns
+		 * and lies flat */
+		World w;
+		ground(w);
+		fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *plank = add(w, shape_box(0.2f, 0.1f, 1.0f), RIGID, 0, 0, 2.2f, 30.0f);
+		plank->GetDynamic()->setGlobalPose(
+		        physx::PxTransform(physx::PxVec3(0, 0, 2.2f), physx::PxQuat(0.1f, physx::PxVec3(0, 1, 0))));
+		w.step(60 * 10);
+		const physx::PxVec3 axis = pose(plank).q.rotate(physx::PxVec3(0, 0, 1));
+		CHECK(fabs(axis.z) < 0.2f, "plank: it lies flat (its length %.2f from level)", fabs(axis.z));
+	}
+}
+
 static void test_destruction()
 {
 	printf("\ndestruction (P11 B2)\n");
@@ -1138,6 +1291,7 @@ int main(int argc, char **argv)
 	    {"sleep", test_sleep},
 	    {"articulation", test_articulation},
 	    {"destruction", test_destruction},
+	    {"fluids", test_fluids},
 	};
 	for (const T &t : tests) {
 		if (only && strcmp(only, t.name)) {

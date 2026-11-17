@@ -55,9 +55,12 @@ def physics():
     keep = ("index", "kind", "name", "owner", "state", "info")
     els = gv.elements("PHYSICS") if gv else []
     warnings = gv.warnings() if gv else []
+    # (P11 B3: the layer's shapes, by element: a fluid volume's outline and arrows)
+    shapes = gv.shapes("PHYSICS") if gv and hasattr(gv, "shapes") else []
     return {"elements": [{k: e[k] for k in keep} for e in els],
             "warnings": [{"code": w["code"], "level": w["level"], "owner": w["owner"], "name": w["name"],
-                          "text": w["text"]} for w in warnings if w["layer"] == "PHYSICS"]}
+                          "text": w["text"]} for w in warnings if w["layer"] == "PHYSICS"],
+            "shapes": [{"type": sh["type"], "a": sh["a"]} for sh in shapes]}
 
 
 def s_build():

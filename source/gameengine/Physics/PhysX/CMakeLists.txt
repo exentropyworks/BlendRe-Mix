@@ -63,6 +63,7 @@ set(SRC
 	PxCharacter.cpp
 	PxDeformable.cpp
 	PxDestruction.cpp
+	PxFluids.cpp
 	PxPhysicsController.cpp
 	PxPhysicsConvert.cpp
 	PxPhysicsEnvironment.cpp
@@ -74,6 +75,7 @@ set(SRC
 	PxCharacter.h
 	PxDeformable.h
 	PxDestruction.h
+	PxFluids.h
 	PxMotionState.h
 	PxPhysicsController.h
 	PxPhysicsEnvironment.h

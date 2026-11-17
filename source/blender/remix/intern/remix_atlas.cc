@@ -376,7 +376,7 @@ bool atlas_tiles_by_default(const Material *ma)
 		return false;
 	}
 	const std::string key = prop_string(&ma->id, "bge_remix_preset");
-	if (key.empty() || key == "BRICK" || key == "WATER") {
+	if (key.empty() || key == "BRICK" || key == "WATER" || key == "LAVA") {
 		return false;
 	}
 	return prop_int(&ma->id, "bge_remix_tile_mode", 0) != TILE_WHOLE;

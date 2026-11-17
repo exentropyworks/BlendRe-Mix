@@ -48,6 +48,8 @@ struct PxCtrlInfo;
 struct PxArticulationGroup;
 struct PxDestructible;
 struct PxDestructionGroup;
+struct PxFluidVolume;
+struct PxFluidBody;
 namespace physx {
 class PxShape;
 }
@@ -206,6 +208,17 @@ public:
 	void TakeDestructionRemovals(std::vector<PHY_IPhysicsController *> &r_pieces) override;
 	int GetDestructionActivity(PHY_IPhysicsController *piece) override;
 
+	/* BGE-Remix P11 (B3, PxFluids.cpp): fluid volumes. A volume (at
+	 * conversion): its settings; its shape is read at the next step. */
+	void AddFluidVolume(PxPhysicsController *ctrl, int type, float density, float drag,
+	                    const physx::PxVec3 &current, bool splashes);
+	bool GetFluid(PHY_IPhysicsController *volume, PHY_FluidInfo *info) override;
+	void SetFluidCurrent(PHY_IPhysicsController *volume, const MT_Vector3 &current) override;
+	float GetSubmerged(PHY_IPhysicsController *volume, PHY_IPhysicsController *ctrl) override;
+	void TakeFluidSplashes(std::vector<PHY_FluidSplash> &r_splashes) override;
+	int GetFluidActivity(PHY_IPhysicsController *volume) override;
+	int GetFluidState(PHY_IPhysicsController *ctrl) override;
+
 	/* counters for the tests and the stats overlay */
 	struct Stats {
 		int steps;
@@ -261,6 +274,13 @@ private:
 	void SplitDestructible(PxDestructible *d, void *actor);
 	void DestructionBudget();
 	PxDestructible *DestructibleOf(PHY_IPhysicsController *piece) const;
+	/* P11 (B3, PxFluids.cpp) */
+	void FluidStep(float dt);
+	bool BuildFluidVolume(PxFluidVolume *v);
+	PxFluidVolume *FluidOf(PHY_IPhysicsController *ctrl) const;
+	void FluidRemove(PxPhysicsController *ctrl);
+	bool FluidSamples(physx::PxRigidActor *actor, PxFluidBody &b);
+	float FluidShare(const PxFluidVolume *v, physx::PxRigidActor *actor, PxFluidBody &b);
 	void BuildArticulations();
 	PxArticulationGroup *BuildArticulation(PxPhysicsController *root);
 	/* the constraint's settings onto its articulation joint (param: the one
@@ -343,6 +363,13 @@ private:
 	int m_destructionFrame;
 	double m_destructionTime;
 	int m_groupSerial;
+	/* P11 (B3) */
+	std::vector<PxFluidVolume *> m_fluids;
+	std::map<const physx::PxRigidActor *, PxFluidBody> *m_fluidBodies;
+	std::vector<PHY_FluidSplash> m_splashes;
+	std::vector<double> m_splashTimes;
+	double m_fluidTime;
+	int m_fluidFrame;
 
 	friend class PxPhysicsController;
 	friend class PxRaycastVehicle;

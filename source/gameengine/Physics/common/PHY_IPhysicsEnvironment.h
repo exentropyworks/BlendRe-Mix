@@ -89,6 +89,30 @@ struct PHY_DestructibleInfo
 	PHY_DestructibleInfo() : root(NULL), groups(0), bonds(0), bondsBroken(0), anchored(false), strength(0.0f) {}
 };
 
+/* BGE-Remix P11 (B3): a fluid volume (PhysX: water or lava that things
+ * float in, are slowed by and carried along by), as the game sees it */
+struct PHY_FluidInfo
+{
+	int type;                                    /* 0 water, 1 lava */
+	float density;                               /* kg/m3 */
+	float drag;                                  /* per second, moving and turning */
+	MT_Vector3 current;                          /* m/s, along the volume's own axes */
+	bool splashes;
+	std::vector<PHY_IPhysicsController *> inside; /* the objects in it now */
+	PHY_FluidInfo() : type(0), density(1000.0f), drag(2.0f), current(0.0, 0.0, 0.0), splashes(true) {}
+};
+
+/* a splash: where a body crossed a fluid volume's surface */
+struct PHY_FluidSplash
+{
+	MT_Vector3 point;                            /* on the surface (world) */
+	MT_Vector3 up;                               /* the surface's normal */
+	float size;                                  /* the body's size (m) */
+	float speed;                                 /* how fast it crossed (m/s) */
+	int type;                                    /* the volume's: 0 water, 1 lava */
+	PHY_FluidSplash() : point(0.0, 0.0, 0.0), up(0.0, 0.0, 1.0), size(1.0f), speed(0.0f), type(0) {}
+};
+
 struct PHY_RayCastResult
 {
 	PHY_IPhysicsController* m_controller;
@@ -283,6 +307,21 @@ class PHY_IPhysicsEnvironment
 		 * or at rest, 1 breaking, 2 the budget has taken pieces of it, 3
 		 * damaged by a script just now. */
 		virtual int GetDestructionActivity(PHY_IPhysicsController *piece) { return -1; }
+
+		/* BGE-Remix P11 (B3): fluid volumes (PhysX; the others leave them
+		 * ghosts things fall through). The volume of a volume's object
+		 * (false: not one, or not this engine's). */
+		virtual bool GetFluid(PHY_IPhysicsController *volume, PHY_FluidInfo *info) { return false; }
+		virtual void SetFluidCurrent(PHY_IPhysicsController *volume, const MT_Vector3 &current) {}
+		/* How much of an object is under the volume's surface, 0 to 1. */
+		virtual float GetSubmerged(PHY_IPhysicsController *volume, PHY_IPhysicsController *ctrl) { return 0.0f; }
+		/* The splashes since the last call (the game shows them). */
+		virtual void TakeFluidSplashes(std::vector<PHY_FluidSplash> &r_splashes) {}
+		/* For the Remix View: a volume's activity (-1 not a volume, 0 nothing
+		 * in it, 1 something in it, 3 a splash just now), and an object's
+		 * state in fluids (-1 in none, 1 it floats, 2 it sinks). */
+		virtual int GetFluidActivity(PHY_IPhysicsController *volume) { return -1; }
+		virtual int GetFluidState(PHY_IPhysicsController *ctrl) { return -1; }
 
 		/* Set the rigid body joints constraints values for converted objects and replicated group instances. */
 		virtual void SetupObjectConstraints(KX_GameObject *obj_src, KX_GameObject *obj_dest,

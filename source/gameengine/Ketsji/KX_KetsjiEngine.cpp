@@ -913,6 +913,22 @@ bool KX_KetsjiEngine::NextFrame()
 						}
 					}
 				}
+				/* BGE-Remix P11 (B3): the splashes where bodies went into fluid
+				 * volumes (the game's picture and Remix show them) */
+				{
+					std::vector<PHY_FluidSplash> splashes;
+					scene->GetPhysicsEnvironment()->TakeFluidSplashes(splashes);
+					static const bool say = getenv("BGE_REMIX_SPLASH_LOG") != NULL;  /* (the tests) */
+					for (const PHY_FluidSplash &sp : splashes) {
+						scene->AddSplash(sp.point, sp.up, sp.size, sp.speed, sp.type, m_clockTime);
+						if (say) {
+							printf("BGE-Remix splash: %s at %.3f %.3f %.3f, size %.3f, speed %.3f, time %.3f\n",
+							       sp.type == 1 ? "lava" : "water", sp.point.x(), sp.point.y(), sp.point.z(), sp.size,
+							       sp.speed, m_clockTime);
+							fflush(stdout);
+						}
+					}
+				}
 
 				m_logger->StartLog(tc_scenegraph, m_kxsystem->GetTimeInSeconds(), true);
 				SG_SetActiveStage(SG_STAGE_PHYSICS2_UPDATE);

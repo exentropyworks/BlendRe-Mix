@@ -702,6 +702,31 @@ void update_live(KX_Scene *scene)
 					             info.groups == 1 ? "" : "s", info.bondsBroken, info.bonds);
 				}
 			}
+			/* BGE-Remix P11 (B3): a fluid volume, in Ayhan's colours: White
+			 * nothing in it, Green something in it, Blue a splash just now;
+			 * an object in one: Green it floats, Yellow it sinks */
+			if (env && go->GetPhysicsController()) {
+				PHY_IPhysicsController *ctrl = go->GetPhysicsController();
+				const int act = env->GetFluidActivity(ctrl);
+				PHY_FluidInfo fi;
+				if (act >= 0 && env->GetFluid(ctrl, &fi)) {
+					l.state = act == 3 ? GV_STATE_BLUE : (act == 1 ? GV_STATE_GREEN : GV_STATE_WHITE);
+					l.fired = act == 3;
+					const int n = (int)fi.inside.size();
+					BLI_snprintf(l.text, sizeof(l.text), "%s, %d object%s in it%s", fi.type == 1 ? "lava" : "water", n,
+					             n == 1 ? "" : "s", act == 3 ? ", a splash" : "");
+				}
+				else if (!(bo && bo->id.properties && IDP_GetPropertyFromGroup(bo->id.properties, "bge_destructible") &&
+				           env->GetDestructionActivity(ctrl) > 0))
+				{
+					/* (a destructible's own colours first, while it breaks) */
+					const int st = env->GetFluidState(ctrl);
+					if (st == 1 || st == 2) {
+						l.state = st == 1 ? GV_STATE_GREEN : GV_STATE_YELLOW;
+						BLI_snprintf(l.text, sizeof(l.text), "%s", st == 1 ? "floats" : "sinks");
+					}
+				}
+			}
 		}
 		if (l.fired) {
 			l.fired_frames++;

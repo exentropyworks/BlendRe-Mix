@@ -51,8 +51,9 @@ PICK_LAYER = "bge_remix_cell"
 # presets whose pattern is regular (P10.2's term): their corner colours keep
 # the pattern in step (whole repeats), only the noise on it differs
 REGULAR = {'BRICK'}
-# random presets without the 16 tiles by default: Water (its flipbook)
-NOT_BY_DEFAULT = {'WATER'}
+# random presets without the 16 tiles by default: Water and Lava (BGE-Remix
+# P11, B3), their flipbooks
+NOT_BY_DEFAULT = {'WATER', 'LAVA'}
 # the default set's largest tile: 256 pixels (a 1024 atlas, a quick first
 # start; Ayhan, 7 Nov), 512 for a material marked Sharp (seen up close)
 DEFAULT_TILE_SIZE = 256
@@ -62,7 +63,7 @@ SHARP_TILE_SIZE = 512
 DEFAULT_MORPH = 0.6
 DEFAULT_NORMAL_GAIN = 2.0
 # how fast an animated preset's pattern drifts over the surface (m/s)
-SPEEDS = {'WATER': 0.15}
+SPEEDS = {'WATER': 0.15, 'LAVA': 0.03}
 DEFAULT_SPEED = 0.05
 # a flipbook frame moves the pattern by this share of the tile (so the
 # frame rate is the speed over it)

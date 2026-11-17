@@ -306,6 +306,66 @@ class PHYSICS_PT_game_destruction(PhysicsButtonsPanel, Panel):
             layout.label("Breaking needs PhysX (World > Physics); here it plays as one whole object", icon='ERROR')
 
 
+class PHYSICS_PT_game_fluid(PhysicsButtonsPanel, Panel):
+    """BGE-Remix P11 (B3): fluid volumes (Make Fluid Volume; water or lava under PhysX)"""
+    bl_label = "Fluid Volume"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return (ob is not None and ob.type == 'MESH' and context.scene.render.engine in cls.COMPAT_ENGINES)
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty
+        bpy.types.Object.bge_fluid_type = EnumProperty(
+            name="Type",
+            description="Water or lava",
+            items=(('WATER', "Water", "", 0), ('LAVA', "Lava", "", 1)), default='WATER')
+        bpy.types.Object.bge_fluid_density = FloatProperty(
+            name="Density",
+            description="How much the fluid weighs (kg/m\u00b3): lighter things than the fluid they push aside float",
+            default=1000.0, min=1.0, soft_max=20000.0)
+        bpy.types.Object.bge_fluid_drag = FloatProperty(
+            name="Drag",
+            description="How quickly things in it slow down, moving and turning (per second, when wholly under)",
+            default=3.0, min=0.0, soft_max=100.0)
+        bpy.types.Object.bge_fluid_current = FloatVectorProperty(
+            name="Current",
+            description="Its flow (m/s) along the object's own axes: things in it are carried towards that speed",
+            size=3, default=(0.0, 0.0, 0.0), subtype='VELOCITY', unit='VELOCITY')
+        bpy.types.Object.bge_fluid_splashes = BoolProperty(
+            name="Splashes",
+            description="A splash where something goes in fast",
+            default=True)
+
+    @classmethod
+    def unregister(cls):
+        for name in ("bge_fluid_type", "bge_fluid_density", "bge_fluid_drag", "bge_fluid_current",
+                     "bge_fluid_splashes"):
+            if hasattr(bpy.types.Object, name):
+                delattr(bpy.types.Object, name)
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.active_object
+        made = bool(ob.get("bge_fluid"))
+        layout.operator("object.bge_remix_make_fluid_volume",
+                        text="Make Fluid Volume Again" if made else "Make Fluid Volume", icon='MOD_FLUIDSIM')
+        if not made:
+            return
+        col = layout.column()
+        col.prop(ob, "bge_fluid_type")
+        row = col.row()
+        row.prop(ob, "bge_fluid_density")
+        row.prop(ob, "bge_fluid_drag")
+        col.prop(ob, "bge_fluid_current")
+        col.prop(ob, "bge_fluid_splashes")
+        if context.scene.game_settings.physics_engine != 'PHYSX':
+            layout.label("Floating needs PhysX (World > Physics); here things fall through it", icon='ERROR')
+
+
 class PHYSICS_PT_game_collision_bounds(PhysicsButtonsPanel, Panel):
     bl_label = "Collision Bounds"
     COMPAT_ENGINES = {'BLENDER_GAME'}
@@ -1404,6 +1464,7 @@ classes = (
     PHYSICS_PT_game_collision_bounds,
     PHYSICS_PT_game_articulation,
     PHYSICS_PT_game_destruction,
+    PHYSICS_PT_game_fluid,
     PHYSICS_PT_game_obstacles,
     RENDER_PT_embedded,
     RENDER_PT_game_player,

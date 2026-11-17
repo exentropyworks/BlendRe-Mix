@@ -133,6 +133,20 @@ Functions
    :return: How many destructibles it hit.
    :rtype: int
 
+.. function:: getFluid(gameobj)
+
+   BGE-Remix P11: the fluid volume the object is. Make Fluid Volume (the
+   Object menu, or the Physics tab's Fluid Volume panel) makes a mesh water
+   or lava; under PhysX things float in it by their mass and size, are slowed
+   by it and carried along by its current. Under Bullet things fall through
+   it, and this gives None.
+
+   :arg gameobj: The volume's object.
+   :type gameobj: :class:`~bge.types.KX_GameObject`
+
+   :return: The volume, or None (not PhysX, or the object is no volume).
+   :rtype: :class:`~bge.types.KX_FluidWrapper`
+
 .. function:: getCharacter(gameobj)
 
    :arg gameobj: The game object with the character physics.

@@ -107,6 +107,10 @@ extern "C" {
 #  include AUD_SOUND_H
 #endif
 
+#ifdef WITH_BULLET
+#  include "Bullet-C-Api.h"  /* BGE-Remix P11 (B3): a fluid volume's hull */
+#endif
+
 #ifdef WITH_REMIX
 #  include "BRMX_bake.h"
 #  include "BRMX_loader.h"
@@ -1634,6 +1638,130 @@ void GVBuilder::Physics()
 			Warn(first, "PHY_DESTRUCT_BUDGET", GV_WARN_NOTE,
 			     fmt("the scene's destructibles have %d pieces, more than its Destruction Budget (%d, World > "
 			         "Physics): once they break, the oldest loose pieces are removed", total, most).c_str());
+		}
+	}
+
+	/* BGE-Remix P11 (B3): fluid volumes (Make Fluid Volume: bge_fluid): the
+	 * volume's outline (its mesh's convex hull, as the game makes it) and
+	 * its current as arrows on its surface */
+	for (Object *ob : m_objects) {
+		if (!idprop_int(ob->id.properties, "bge_fluid", 0) || !InGame(ob) || ob->type != OB_MESH) {
+			continue;
+		}
+		std::map<std::string, int>::iterator it = body_el.find(name_of(ob));
+		if (it == body_el.end()) {
+			continue;
+		}
+		const int el = it->second;
+		const bool lava = idprop_int(ob->id.properties, "bge_fluid_type", 0) == 1;
+		const float density = idprop_float(ob->id.properties, "bge_fluid_density", lava ? 3100.0f : 1000.0f);
+		const float drag = idprop_float(ob->id.properties, "bge_fluid_drag", lava ? 24.0f : 3.0f);
+		float current[3] = {0.0f, 0.0f, 0.0f};
+		IDProperty *cp = ob->id.properties ? IDP_GetPropertyFromGroup(ob->id.properties, "bge_fluid_current") : NULL;
+		if (cp && cp->type == IDP_ARRAY && cp->len >= 3) {
+			for (int k = 0; k < 3; k++) {
+				current[k] = cp->subtype == IDP_DOUBLE ? (float)((double *)IDP_Array(cp))[k] :
+				             (cp->subtype == IDP_FLOAT ? ((float *)IDP_Array(cp))[k] :
+				              (cp->subtype == IDP_INT ? (float)((int *)IDP_Array(cp))[k] : 0.0f));
+			}
+		}
+		/* (the current along the object's axes, turned with it) */
+		float rot[3][3], flow[3];
+		copy_m3_m4(rot, ob->obmat);
+		normalize_m3(rot);
+		mul_v3_m3v3(flow, rot, current);
+		const float speed = len_v3(flow);
+		BLI_strncpy(elements[el].info,
+		            fmt("%s, %.0f kg/m3, drag %.3g%s", lava ? "lava" : "water", density, drag,
+		                speed > 1e-4f ? fmt(", current %.2f m/s", speed).c_str() : ", no current").c_str(),
+		            sizeof(elements[el].info));
+		elements[el].state = GV_STATE_WHITE;
+		if (m_physx <= 0) {
+			Warn(el, "PHY_FLUID_ENGINE", GV_WARN_NOTE,
+			     "a fluid volume: floating needs PhysX (World > Physics); here things fall through it");
+		}
+		/* the outline: the hull's faces, each a closed line */
+		Mesh *me = (Mesh *)ob->data;
+		std::vector<float> world;
+		float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+		for (int v = 0; me && v < me->totvert; v++) {
+			float co[3];
+			mul_v3_m4v3(co, ob->obmat, me->mvert[v].co);
+			world.insert(world.end(), co, co + 3);
+			minmax_v3v3_v3(lo, hi, co);
+		}
+		if (world.size() < 12) {
+			continue;
+		}
+		bool outlined = false;
+#ifdef WITH_BULLET
+		plConvexHull hull = plConvexHullCompute((float(*)[3]) & world[0], (int)(world.size() / 3));
+		if (hull) {
+			const int faces = plConvexHullNumFaces(hull);
+			for (int f = 0; f < faces; f++) {
+				const int n = plConvexHullGetFaceSize(hull, f);
+				if (n < 3) {
+					continue;
+				}
+				std::vector<int> idx(n);
+				plConvexHullGetFaceVertices(hull, f, &idx[0]);
+				std::vector<float> loop;
+				for (int k = 0; k <= n; k++) {
+					float co[3];
+					int orig;
+					plConvexHullGetVertex(hull, idx[k % n], co, &orig);
+					loop.insert(loop.end(), co, co + 3);
+				}
+				Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el), loop);
+				outlined = true;
+			}
+			plConvexHullDelete(hull);
+		}
+#endif
+		if (!outlined) {
+			/* (its box, in the world) */
+			static const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7},
+			                                 {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+			for (const int *e : edges) {
+				std::vector<float> line;
+				for (int k = 0; k < 2; k++) {
+					const int c = e[k];
+					line.push_back((c & 1) ? hi[0] : lo[0]);
+					line.push_back((c & 2) ? hi[1] : lo[1]);
+					line.push_back((c & 4) ? hi[2] : lo[2]);
+				}
+				Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el), line);
+			}
+		}
+		/* the current: arrows on the surface (3 x 3 over its top), as long as
+		 * a second of the flow carries a thing (at most a third across) */
+		if (speed > 1e-4f) {
+			float dir[3];
+			normalize_v3_v3(dir, flow);
+			const float across = max_ff(hi[0] - lo[0], hi[1] - lo[1]);
+			const float len = min_ff(max_ff(speed, 0.3f), across / 3.0f);
+			float side[3] = {-dir[1], dir[0], 0.0f};
+			if (normalize_v3(side) < 1e-6f) {
+				side[0] = 1.0f;
+				side[1] = side[2] = 0.0f;
+			}
+			for (int i = 0; i < 3; i++) {
+				for (int j = 0; j < 3; j++) {
+					const float c[3] = {lo[0] + (hi[0] - lo[0]) * (i + 0.5f) / 3.0f,
+					                    lo[1] + (hi[1] - lo[1]) * (j + 0.5f) / 3.0f, hi[2] + 0.02f};
+					float tail[3], tip[3], l[3], r[3];
+					madd_v3_v3v3fl(tail, c, dir, -0.5f * len);
+					madd_v3_v3v3fl(tip, c, dir, 0.5f * len);
+					for (int k = 0; k < 3; k++) {
+						l[k] = tip[k] - dir[k] * 0.3f * len + side[k] * 0.15f * len;
+						r[k] = tip[k] - dir[k] * 0.3f * len - side[k] * 0.15f * len;
+					}
+					Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el),
+					       {tail[0], tail[1], tail[2], tip[0], tip[1], tip[2]});
+					Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el),
+					       {l[0], l[1], l[2], tip[0], tip[1], tip[2], r[0], r[1], r[2]});
+				}
+			}
 		}
 	}
 

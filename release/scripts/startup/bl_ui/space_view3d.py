@@ -1325,6 +1325,8 @@ class VIEW3D_MT_object(Menu):
         # BGE-Remix P11 (B2): pieces that break in the game (Cell Fracture)
         if ob is not None and ob.type == 'MESH' and context.scene.render.engine == 'BLENDER_GAME':
             layout.operator("object.bge_remix_make_destructible", icon='MOD_EXPLODE')
+            # BGE-Remix P11 (B3): water or lava that things float in
+            layout.operator("object.bge_remix_make_fluid_volume", icon='MOD_FLUIDSIM')
         layout.menu("VIEW3D_MT_object_constraints")
 
         layout.separator()
