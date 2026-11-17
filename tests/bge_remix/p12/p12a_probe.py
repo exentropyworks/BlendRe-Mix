@@ -117,7 +117,7 @@ def dump_scene(scene):
                                    "matrix": mat_list(ob.matrix_world)}
         if ob.type == 'CAMERA':
             cd = ob.data
-            d["camera_data"] = {"lens": cd.lens, "sensor_width": cd.sensor_width, "sensor_fit": cd.sensor_fit,
+            d["camera_data"] = {"name": ob.name, "lens": cd.lens, "sensor_width": cd.sensor_width, "sensor_fit": cd.sensor_fit,
                                 "clip": [cd.clip_start, cd.clip_end], "matrix": mat_list(ob.matrix_world)}
     return d
 

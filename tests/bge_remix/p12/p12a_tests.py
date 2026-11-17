@@ -7,8 +7,9 @@ against what was written.
 normal(...)
   T12.a1  the bridge's OpenUSD on this PC: round 1's self-test, from this
           build (bge_remix_usd.dll loaded, a stage written and read back)
-  T12.a2  the room comes in: counts exact; parts of the same shape on one
-          mesh (the box drawn twice); every place within 0.1 mm; every
+  T12.a2  the room comes in: counts exact; places of one mesh and material
+          on one Blender mesh (the room's parts, the box drawn twice), a
+          copy for each other material; every place within 0.1 mm; every
           material value; the textures decoded to PNGs (the uncompressed one
           and the BC1 one, pixel for pixel) with their DDS kept; the lamps as
           lamps that give Remix the same lights; the camera; every hash
@@ -130,11 +131,14 @@ def check_room(got, E, mpu, z_up):
     c = {}
     c["it came in as a new scene (%s)" % got.get("result")] = got.get("result") == ["FINISHED"] and bool(S)
     n = S.get("counts") or {}
-    c["counts: %s meshes, %s objects, %s materials, %s lamps, camera %s (want 2, 11, 5, 2, 1)" % (
-        n.get("meshes"), n.get("objects"), n.get("materials"), n.get("lamps"), n.get("camera"))] = \
-        (n.get("meshes"), n.get("objects"), n.get("materials"), n.get("lamps"), n.get("camera")) == (2, 11, 5, 2, 1)
+    c["counts: %s meshes (of %s capture meshes), %s objects, %s materials, %s lamps, camera %s "
+      "(want 5 of 2, 11, 5, 2, 1)" % (n.get("meshes"), n.get("capture_meshes"), n.get("objects"), n.get("materials"),
+                                       n.get("lamps"), n.get("camera"))] = \
+        (n.get("meshes"), n.get("capture_meshes"), n.get("objects"), n.get("materials"), n.get("lamps"),
+         n.get("camera")) == (5, 2, 11, 5, 2, 1)
     # places, shared meshes, materials, hashes
     worst_place, worst_rest, wrong = 0.0, 0.0, []
+    groups = {}
     for o in E["objects"]:
         g = objs.get(o["name"])
         if not g:
@@ -142,29 +146,38 @@ def check_room(got, E, mpu, z_up):
             continue
         place, rest = mdiff(g.get("matrix"), o["matrix"])
         worst_place, worst_rest = max(worst_place, place), max(worst_rest, rest)
-        if g.get("data") != "mesh_" + o["mesh"]:
-            wrong.append("%s on %s" % (o["name"], g.get("data")))
-        if g.get("material") != "mat_" + o["material"] or g.get("material_link") != 'OBJECT':
-            wrong.append("%s material %s (%s)" % (o["name"], g.get("material"), g.get("material_link")))
+        data = g.get("data") or ""
+        if not data.startswith("mesh_" + o["mesh"]) or (meshes.get(data) or {}).get("hash") != o["mesh"]:
+            wrong.append("%s on %s" % (o["name"], data))
+        if g.get("material") != "mat_" + o["material"]:
+            wrong.append("%s material %s" % (o["name"], g.get("material")))
         if g.get("hash") != o["mesh"] or g.get("mesh_hash") != o["mesh"]:
             wrong.append("%s hash %s %s" % (o["name"], g.get("hash"), g.get("mesh_hash")))
+        groups.setdefault((o["mesh"], o["material"]), set()).add(data)
     c["every place within 0.1 mm (worst %.6f m, turn and size %.6f)" % (worst_place, worst_rest)] = \
         worst_place <= PLACE_TOL and worst_rest <= PLACE_TOL
     c["every object on its mesh and material, with its hash%s" % ("" if not wrong else ": " + ", ".join(wrong[:4]))] = \
         not wrong
-    cube = meshes.get("mesh_" + cw.CUBE) or {}
-    sphere = meshes.get("mesh_" + cw.SPHERE) or {}
+    shared = all(len(v) == 1 for v in groups.values()) and \
+        len(set(next(iter(v)) for v in groups.values())) == len(groups)
+    room = next(iter(groups.get((cw.CUBE, cw.MAT["Room"]), {""})))
+    box = next(iter(groups.get((cw.CUBE, cw.MAT["Box"]), {""})))
+    c["places of one mesh and material share a Blender mesh: the room's six parts (%s users), the box twice "
+      "(%s users)" % ((meshes.get(room) or {}).get("users"), (meshes.get(box) or {}).get("users"))] = \
+        shared and (meshes.get(room) or {}).get("users") == 6 and (meshes.get(box) or {}).get("users") == 2
     ec, es = E["meshes"][cw.CUBE], E["meshes"][cw.SPHERE]
-    c["parts of one shape share a mesh: the cube under %s objects, the box twice (want 10)" % cube.get("users")] = \
-        cube.get("users") == 10
-    c["the cube: %s vertices, %s faces, UVs and normals (want %d, %d)" % (
-        cube.get("vertices"), cube.get("polygons"), ec["vertices"], ec["triangles"])] = \
-        (cube.get("vertices"), cube.get("polygons")) == (ec["vertices"], ec["triangles"]) and \
-        bool(cube.get("uv")) and bool(cube.get("custom_normals")) and cube.get("hash") == cw.CUBE
+    cubes = [m for m in meshes.values() if m.get("hash") == cw.CUBE]
+    spheres = [m for m in meshes.values() if m.get("hash") == cw.SPHERE]
+    c["the cube (%d meshes): %s vertices, %s faces, UVs and normals (want 4 meshes of %d, %d)" % (
+        len(cubes), cubes and cubes[0].get("vertices"), cubes and cubes[0].get("polygons"), ec["vertices"],
+        ec["triangles"])] = len(cubes) == 4 and all(
+        (m.get("vertices"), m.get("polygons")) == (ec["vertices"], ec["triangles"]) and m.get("uv") and
+        m.get("custom_normals") for m in cubes)
     c["the sphere: %s vertices, %s faces (want %d, %d)" % (
-        sphere.get("vertices"), sphere.get("polygons"), es["vertices"], es["triangles"])] = \
-        (sphere.get("vertices"), sphere.get("polygons")) == (es["vertices"], es["triangles"]) and \
-        bool(sphere.get("uv")) and sphere.get("hash") == cw.SPHERE
+        spheres and spheres[0].get("vertices"), spheres and spheres[0].get("polygons"), es["vertices"],
+        es["triangles"])] = len(spheres) == 1 and \
+        (spheres[0].get("vertices"), spheres[0].get("polygons")) == (es["vertices"], es["triangles"]) and \
+        bool(spheres[0].get("uv"))
     # materials
     bad = []
     for key, h in cw.MAT.items():
@@ -224,7 +237,7 @@ def check_room(got, E, mpu, z_up):
     place, rest = mdiff(cam.get("matrix"), E["camera"]["matrix"])
     c["the camera: lens %s, sensor %s, place %.6f, turn %.6f" % (cam.get("lens"), cam.get("sensor_width"), place,
                                                                  rest)] = \
-        S.get("camera") == "Camera" and near(cam.get("lens"), E["camera"]["focal_length"]) and \
+        bool(S.get("camera")) and S.get("camera") == cam.get("name") and near(cam.get("lens"), E["camera"]["focal_length"]) and \
         near(cam.get("sensor_width"), E["camera"]["horizontal_aperture"]) and place <= PLACE_TOL and rest <= PLACE_TOL
     cap = S.get("capture") or {}
     c["the capture's units and up axis kept with the scene (%s m a unit, Z up %s)" % (
@@ -284,9 +297,9 @@ def t_broken(args, out, tests):
     S = g.get("scene") or {}
     n = S.get("counts") or {}
     said = [l for l in g.get("log") or [] if "mesh_" + cw.SPHERE in l]
-    c["a mesh file cut short: the rest came in (%s meshes, %s objects; want 1, 10)" % (n.get("meshes"),
-                                                                                     n.get("objects"))] = \
-        g.get("result") == ["FINISHED"] and (n.get("meshes"), n.get("objects")) == (1, 10)
+    c["a mesh file cut short: the rest came in (%s capture meshes, %s objects; want 1, 10)" % (
+        n.get("capture_meshes"), n.get("objects"))] = \
+        g.get("result") == ["FINISHED"] and (n.get("capture_meshes"), n.get("objects")) == (1, 10)
     c["  and the report names the sphere's mesh"] = bool(said)
     d["cut_mesh"] = g.get("log")
     g = import_capture(args, out, "p12a_plain", P["not_a_capture"])

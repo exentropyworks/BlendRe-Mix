@@ -11,9 +11,12 @@ An RTX Remix capture is the folder Remix writes when you capture a D3D9 game
 meshes, materials, lights and textures folders beside it. Pick the stage
 file. It comes in as a new scene, named after it:
 
-- **Meshes**: each Remix mesh becomes one Blender mesh, with its normals, UVs
+- **Meshes**: each Remix mesh becomes a Blender mesh, with its normals, UVs
   and vertex colours. Each place the game drew it becomes an object sharing
-  that mesh (linked copies), so editing one edits them all, as in Remix.
+  that mesh (linked copies), so editing one edits them all, as in Remix. A
+  mesh the game drew with different materials becomes one Blender mesh for
+  each material (the game engine, as in stock 2.79, gives a shared mesh the
+  first object's materials); all of them keep the mesh's hash.
 - **Materials**: each becomes an RTX Remix material (the RTX Remix Material
   node), with Remix's values and textures. Values the node has no place for
   (Remix's texture filtering and wrapping, for instance) are kept with the
