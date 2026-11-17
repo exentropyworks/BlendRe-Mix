@@ -46,9 +46,12 @@ struct PxShapeDesc;
 
 namespace physx {
 class PxRigidActor;
+class PxRigidBody;
 class PxRigidDynamic;
 class PxShape;
 }
+struct PxArticulationGroup;
+struct PxShard;
 
 /* collision classes, as Bullet's CcdConstructionInfo::CollisionFilterGroups */
 enum PxFilterClass {
@@ -66,6 +69,7 @@ enum {
 	PXW_REPORT = 1,     /* a touch or collision sensor listens: report contacts */
 	PXW_TRIGGER = 2,    /* a trigger shape (sensor, ghost) */
 	PXW_DEBRIS = 4,
+	PXW_DESTRUCT = 8,   /* P11 (B2): a destructible's piece: its contacts' impulses are reported */
 };
 
 struct PxCtrlInfo
@@ -101,6 +105,9 @@ struct PxCtrlInfo
 	/* soft body (Blender's bsoft, see PxDeformable) */
 	struct BulletSoftBody *bsoft;
 	int filterGroup, filterMask;
+	/* BGE-Remix P11 (B1): 1 the root of an articulation that moves freely, 2
+	 * one fixed to the world (the object's bge_articulation); 0 none */
+	int articulation;
 };
 
 class PxPhysicsController : public PHY_IPhysicsController
@@ -190,6 +197,10 @@ public:
 	/* for the environment */
 	physx::PxRigidActor *GetActor() { return m_actor; }
 	physx::PxRigidDynamic *GetDynamic();
+	/* P11 (B1): the moving body, a rigid dynamic or an articulation's link */
+	physx::PxRigidBody *GetBody();
+	/* the articulation the object is a link of (NULL: none) */
+	PxArticulationGroup *GetArticulation() const { return m_articulation; }
 	bool IsKinematic() const { return m_kinematic; }
 	bool IsStaticActor() const;
 	bool IsSensor() const { return m_info.sensor; }
@@ -235,6 +246,23 @@ public:
 	void CreateActor();
 	void DestroyActor();
 
+	/* P11 (B1, PxArticulation.cpp): the object becomes this articulation
+	 * link (its shapes and mass move over; its rigid body, out of the scene,
+	 * is released), or a rigid body again at this pose and speed (not yet in
+	 * the scene) */
+	void BecomeLink(physx::PxRigidBody *link, PxArticulationGroup *group);
+	void LeaveLink(const physx::PxTransform &pose, const physx::PxVec3 &lin, const physx::PxVec3 &ang);
+	/* P11 (B2, PxDestruction.cpp): the piece of a destructible becomes a
+	 * shard of a group's body (its own actor released; the group's body has
+	 * its shapes, made by the environment, here r_shapes), or leaves it
+	 * (its object is being removed: no actor again) */
+	void BecomeShard(PxShard *shard);
+	void SetShardShapes(const std::vector<physx::PxShape *> &shapes) { m_shapes = shapes; }
+	void LeaveShard();
+	PxShard *GetShard() const { return m_shard; }
+	/* the piece's world pose (its shard's, or its actor's) */
+	physx::PxTransform PiecePose() const;
+
 private:
 	PxPhysicsController(const PxPhysicsController &other);  /* GetReplica */
 
@@ -261,6 +289,10 @@ private:
 	PxDeformable *m_soft;
 	physx::PxTransform m_lastKinematic;
 	bool m_kinematicMoved;
+	PxArticulationGroup *m_articulation;  /* P11 (B1): a link of it (PxArticulation.cpp) */
+	bool m_articulationWarned;
+	bool m_articulationFailed;  /* its articulation could not join the scene: not tried again */
+	PxShard *m_shard;           /* P11 (B2): a piece of a destructible's group (PxDestruction.cpp) */
 };
 
 #endif  /* __PXPHYSICSCONTROLLER_H__ */

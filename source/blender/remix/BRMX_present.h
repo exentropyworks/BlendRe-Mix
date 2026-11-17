@@ -56,6 +56,11 @@ int BRMX_present_fake(void);
  * frame; nothing drawn), 0 when there was nothing to draw. */
 int BRMX_present_draw(int x, int y, int width, int height);
 
+/* BGE-Remix P11: direct mode keeps a copy of the last picture drawn; this
+ * draws it again over the rectangle (a frame Remix had no new picture for).
+ * 0 when there is none of that size. */
+int BRMX_present_draw_kept(int x, int y, int width, int height);
+
 /* Frames drawn in direct mode since the program started (the stats). */
 int BRMX_present_direct_frames(void);
 

@@ -85,6 +85,68 @@ Functions
    :return: A vehicle constraint object.
    :rtype: :class:`~bge.types.KX_VehicleWrapper`
 
+.. function:: getArticulation(gameobj)
+
+   BGE-Remix P11 (PhysX only): the articulation the object is a link of. An
+   object whose Physics tab sets it as an Articulation Root, and the bodies
+   joined to it by Rigid Body Joints, are solved by PhysX as one
+   articulation (built at the first physics step, built again when a body or
+   joint of it is added or removed).
+
+   An armature with a ragdoll (Make Ragdoll) gives its ragdoll's articulation,
+   whether its capsules are let go or still on the bones: its ``ragdoll``
+   attribute switches between the two.
+
+   :arg gameobj: Any link of the articulation (its root or another body), or a
+      ragdoll's armature.
+   :type gameobj: :class:`~bge.types.KX_GameObject`
+
+   :return: The articulation, or None (not PhysX, or the object is in none).
+   :rtype: :class:`~bge.types.KX_ArticulationWrapper`
+
+.. function:: getDestructible(gameobj)
+
+   BGE-Remix P11: the destructible the object is a piece of. Make Destructible
+   (the Object menu, or the Physics tab's Destruction panel) cuts a mesh into
+   pieces; under PhysX the game breaks them apart with NVIDIA Blast. Under
+   Bullet a destructible plays as one whole object, and this gives None.
+
+   :arg gameobj: Any piece of the destructible.
+   :type gameobj: :class:`~bge.types.KX_GameObject`
+
+   :return: The destructible, or None (not PhysX, or the object is no piece).
+   :rtype: :class:`~bge.types.KX_DestructibleWrapper`
+
+.. function:: explode(point, radius=1.0, damage=1.0)
+
+   BGE-Remix P11 (PhysX only): breaks every destructible within the radius:
+   a bond at the point takes the damage, less towards the radius (1 breaks
+   it). What breaks loose is thrown out from the point (1 m/s for each unit
+   of damage there, less further out).
+
+   :arg point: Where (world coordinates).
+   :type point: 3D vector
+   :arg radius: How far it reaches (m).
+   :type radius: float
+   :arg damage: The damage at the point (1 breaks a bond).
+   :type damage: float
+   :return: How many destructibles it hit.
+   :rtype: int
+
+.. function:: getFluid(gameobj)
+
+   BGE-Remix P11: the fluid volume the object is. Make Fluid Volume (the
+   Object menu, or the Physics tab's Fluid Volume panel) makes a mesh water
+   or lava; under PhysX things float in it by their mass and size, are slowed
+   by it and carried along by its current. Under Bullet things fall through
+   it, and this gives None.
+
+   :arg gameobj: The volume's object.
+   :type gameobj: :class:`~bge.types.KX_GameObject`
+
+   :return: The volume, or None (not PhysX, or the object is no volume).
+   :rtype: :class:`~bge.types.KX_FluidWrapper`
+
 .. function:: getCharacter(gameobj)
 
    :arg gameobj: The game object with the character physics.

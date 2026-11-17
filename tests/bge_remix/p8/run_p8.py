@@ -419,9 +419,12 @@ def mock_env(args, out, tag, cache, size=BAKE_TEST_SIZE, dump=None):
     log = os.path.join(out, tag + "_mock.log")
     if os.path.isfile(log):
         os.remove(log)
+    # (P11: Sharper Small Textures off: these runs check what reaches Remix,
+    # and an image enlarged 4x takes the CPU encoder too long for their
+    # frames; T8.29, T11.a3n and the RTX runs check the enlargement)
     env = {"BGE_REMIX_RUNTIME_DIR": os.path.abspath(args.mock), "BGE_REMIX_MOCK_MODE": "ok",
            "BGE_REMIX_MOCK_LOG": log, "BGE_REMIX_CACHE_DIR": cache, "BGE_REMIX_TEXTURE_NO_GPU": "1",
-           "BGE_REMIX_BAKE_SIZE": str(size), "BGE_REMIX_BAKE_DUMP": dump}
+           "BGE_REMIX_BAKE_SIZE": str(size), "BGE_REMIX_BAKE_DUMP": dump, "BGE_REMIX_TEXTURE_ENLARGE": "0"}
     return log, env
 
 
@@ -2549,9 +2552,12 @@ def partc_runs(args, out, S, expected):
     # T8.29: Remix's fields; the shared texture cache (Remix fills it, the
     # game alone then reads it)
     shared = p3.fresh(os.path.join(out, "cache_c_shared"))
-    # (the fake runtime runs fast: time for the encoder to write the images)
-    remix("c_remix_extras_remix", "remix_extras_remix", cache=shared, seconds=12)
-    ours("c_remix_extras_shared", "remix_extras", {"BGE_REMIX_CACHE_DIR": shared})
+    # (the fake runtime runs fast: time for the encoder to write the images;
+    # P11: with Sharper Small Textures, so the game reads the enlarged files'
+    # own-size levels)
+    remix("c_remix_extras_remix", "remix_extras_remix", cache=shared, seconds=40,
+          extra={"BGE_REMIX_TEXTURE_ENLARGE": "1024"})
+    ours("c_remix_extras_shared", "remix_extras", {"BGE_REMIX_CACHE_DIR": shared, "BGE_REMIX_TEXTURE_ENLARGE": "1024"})
     if have("remix_extras"):
         code, text, _ = blender_script(args.ours, out, "c_match", MATCH_CHECK, blend=S("remix_extras"))
         C["match"] = tagged(text, "P8-MATCH")

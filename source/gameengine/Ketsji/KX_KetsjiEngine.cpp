@@ -40,6 +40,8 @@
 #include "BLI_task.h"
 
 #include "KX_KetsjiEngine.h"
+#include "PHY_IPhysicsController.h"  /* BGE-Remix P11 (B2) */
+#include "KX_ClientObjectInfo.h"  /* BGE-Remix P11 (B2) */
 
 #include <algorithm>
 #include <cmath>
@@ -899,6 +901,34 @@ bool KX_KetsjiEngine::NextFrame()
 				// Perform physics calculations on the scene. This can involve 
 				// many iterations of the physics solver.
 				scene->GetPhysicsEnvironment()->ProceedDeltaTime(m_frameTime,timestep,framestep);//m_deltatimerealDeltaTime);
+
+				/* BGE-Remix P11 (B2): the pieces the Destruction Budget took (oldest first) end */
+				{
+					std::vector<PHY_IPhysicsController *> gone;
+					scene->GetPhysicsEnvironment()->TakeDestructionRemovals(gone);
+					for (PHY_IPhysicsController *ctrl : gone) {
+						KX_GameObject *gameobj = KX_GameObject::GetClientObject((KX_ClientObjectInfo *)ctrl->GetNewClientInfo());
+						if (gameobj) {
+							scene->DelayedRemoveObject(gameobj);
+						}
+					}
+				}
+				/* BGE-Remix P11 (B3): the splashes where bodies went into fluid
+				 * volumes (the game's picture and Remix show them) */
+				{
+					std::vector<PHY_FluidSplash> splashes;
+					scene->GetPhysicsEnvironment()->TakeFluidSplashes(splashes);
+					static const bool say = getenv("BGE_REMIX_SPLASH_LOG") != NULL;  /* (the tests) */
+					for (const PHY_FluidSplash &sp : splashes) {
+						scene->AddSplash(sp.point, sp.up, sp.size, sp.speed, sp.type, m_clockTime);
+						if (say) {
+							printf("BGE-Remix splash: %s at %.3f %.3f %.3f, size %.3f, speed %.3f, time %.3f\n",
+							       sp.type == 1 ? "lava" : "water", sp.point.x(), sp.point.y(), sp.point.z(), sp.size,
+							       sp.speed, m_clockTime);
+							fflush(stdout);
+						}
+					}
+				}
 
 				m_logger->StartLog(tc_scenegraph, m_kxsystem->GetTimeInSeconds(), true);
 				SG_SetActiveStage(SG_STAGE_PHYSICS2_UPDATE);

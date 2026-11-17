@@ -258,6 +258,11 @@ private:
 	               const MT_Matrix3x3 &camori, uint32_t pick);
 	uint64_t HaloMaterial(struct Material *ma);
 	std::map<const void *, uint64_t> m_halo_materials;
+	/* BGE-Remix P11 (B3): splashes as Remix GPU particles (a hidden ring on
+	 * the surface emits them; water's spray, lava's glowing blobs) */
+	void DrawSplashes(KX_Scene *scene);
+	uint64_t m_splash_mesh[2], m_splash_material[2];
+	int m_splash_draws, m_splashes_sent, m_last_splash_serial;
 	void SkinCheck(KX_GameObject *obj, BL_SkinDeformer *skin, uint64_t mesh, const float model[16], uint32_t pick);
 	void ReleaseSkinning(KX_Scene *scene);
 	void PruneDynamic(KX_Scene *scene);
@@ -366,6 +371,8 @@ private:
 	double m_bake_gpu_ms;      /* P8.7: their time on the graphics card */
 	double m_max_swap_ms;      /* slowest frame that swapped materials */
 	double m_frame_ms_max;     /* longest gap between two Remix frames (after the first 10) */
+	int m_frames_kept;         /* P11: frames with no new Remix picture: the last one drawn again */
+	int m_frames_blank;        /* P11: such frames with no last picture either (left as cleared) */
 	double m_last_render;
 	double m_last_end;           /* when the previous Remix frame was on screen */
 	std::vector<float> m_game_ms; /* BGE's own work between two Remix frames */

@@ -171,6 +171,150 @@ void KX_HaloPicture(const GPUHaloStyle *s, int size, float *rgba)
 
 /* ------------------------------------------------------------------------- */
 
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P11 (B3): splashes */
+
+const float *KX_SplashDisc(int *r_tri_count)
+{
+	enum { SIDES = 12 };
+	static float tris[SIDES * 9];
+	static bool made = false;
+	if (!made) {
+		for (int i = 0; i < SIDES; i++) {
+			const float a0 = 2.0f * (float)M_PI * i / SIDES, a1 = 2.0f * (float)M_PI * (i + 1) / SIDES;
+			float *t = &tris[9 * i];
+			t[0] = t[1] = t[2] = 0.0f;
+			t[3] = cosf(a0);
+			t[4] = sinf(a0);
+			t[5] = 0.0f;
+			t[6] = cosf(a1);
+			t[7] = sinf(a1);
+			t[8] = 0.0f;
+		}
+		made = true;
+	}
+	*r_tri_count = SIDES;
+	return tris;
+}
+
+void KX_SplashDescription(const KX_Splash &s, GPUParticleDesc *r_desc, float *r_emit, float r_model[4][4],
+                          GPUHaloStyle *r_halo)
+{
+	const bool lava = s.type == 1;
+	const float size = std::min(std::max(s.size, 0.2f), 4.0f);
+	const float speed = std::min(std::max(s.speed, 1.0f), 15.0f);
+	GPUParticleDesc &d = *r_desc;
+	memset(&d, 0, sizeof(d));
+	/* more and bigger for bigger, faster bodies */
+	const int count = (int)std::min(std::max(60.0f * size * sqrtf(speed), 16.0f), 400.0f);
+	const float emit = 0.1f;
+	d.max_particles = count;
+	d.spawn_rate = (float)count / emit;
+	d.lifetime_min = lava ? 0.7f : 0.6f;
+	d.lifetime_max = lava ? 1.2f : 1.0f;
+	d.speed_normal = std::min(std::max(0.6f * speed, 1.5f), 7.0f) * (lava ? 0.5f : 1.0f);
+	d.cone_angle_deg = lava ? 35.0f : 25.0f;
+	d.speed_from_motion = 0.0f;
+	d.gravity = 9.81f;
+	d.drag = lava ? 1.0f : 0.5f;
+	const float scale = std::min(std::max(size, 0.5f), 2.0f);
+	d.size_min = (lava ? 0.05f : 0.03f) * scale;
+	d.size_max = (lava ? 0.12f : 0.08f) * scale;
+	d.size_end_scale = 0.6f;
+	const float water[3] = {0.85f, 0.93f, 1.0f}, glow[3] = {1.0f, 0.45f, 0.08f}, cool[3] = {0.6f, 0.1f, 0.02f};
+	for (int k = 0; k < 3; k++) {
+		d.color_start[k] = lava ? glow[k] : water[k];
+		d.color_end[k] = lava ? cool[k] : water[k];
+	}
+	d.color_start[3] = lava ? 1.0f : 0.8f;
+	d.color_end[3] = 0.0f;
+	d.rotation_speed = 0.0f;
+	d.collide = 0;
+	d.restitution = 0.0f;
+	*r_emit = emit;
+	/* the ring: at the point, its Z along the surface's normal, a third of
+	 * the body's size across */
+	float z[3] = {(float)s.up.x(), (float)s.up.y(), (float)s.up.z()};
+	if (normalize_v3(z) < 1e-6f) {
+		z[0] = z[1] = 0.0f;
+		z[2] = 1.0f;
+	}
+	float x[3], y[3];
+	ortho_basis_v3v3_v3(x, y, z);
+	const float r = 0.35f * size;
+	unit_m4(r_model);
+	for (int k = 0; k < 3; k++) {
+		r_model[0][k] = x[k] * r;
+		r_model[1][k] = y[k] * r;
+		r_model[2][k] = z[k] * r;
+	}
+	r_model[3][0] = (float)s.point.x();
+	r_model[3][1] = (float)s.point.y();
+	r_model[3][2] = (float)s.point.z();
+	if (r_halo) {
+		GPUHaloStyle &h = *r_halo;
+		memset(&h, 0, sizeof(h));
+		copy_v3_v3(h.color, d.color_start);
+		h.alpha = 1.0f;
+		h.add = lava ? 1.0f : 0.0f;
+		h.hard = lava ? 30.0f : 50.0f;
+		h.size = 1.0f;  /* (times each particle's size) */
+	}
+}
+
+void KX_Sprites::UpdateSplashes(KX_Scene *scene, double time, float dt)
+{
+	const std::vector<KX_Splash> &now = scene->GetSplashes();
+	/* gone, or done */
+	for (size_t i = 0; i < m_splashes.size();) {
+		SplashEntry &e = m_splashes[i];
+		bool there = false;
+		for (const KX_Splash &s : now) {
+			there = there || s.serial == e.serial;
+		}
+		if (!there || time - e.born > KX_Scene::SPLASH_SECONDS || time < e.born) {
+			GPU_particles_free(e.gpu);
+			m_splashes.erase(m_splashes.begin() + i);
+		}
+		else {
+			i++;
+		}
+	}
+	/* new */
+	for (const KX_Splash &s : now) {
+		if (time - s.born > KX_Scene::SPLASH_SECONDS || time < s.born) {
+			continue;
+		}
+		bool have = false;
+		for (const SplashEntry &e : m_splashes) {
+			have = have || e.serial == s.serial;
+		}
+		if (have) {
+			continue;
+		}
+		SplashEntry e;
+		GPUParticleDesc d;
+		KX_SplashDescription(s, &d, &e.emit, e.model, &e.halo);
+		int ntris = 0;
+		const float *tris = KX_SplashDisc(&ntris);
+		e.gpu = GPU_particles_create(&d, tris, ntris, (unsigned int)s.serial * 2654435761u);
+		if (!e.gpu) {
+			continue;
+		}
+		e.serial = s.serial;
+		e.born = s.born;
+		m_splashes.push_back(e);
+	}
+	/* their time: all born within the first moments, none after (the
+	 * simulation's spawn clock stops there) */
+	const float still[3] = {0.0f, 0.0f, 0.0f};
+	for (SplashEntry &e : m_splashes) {
+		const double age = std::max(time - e.born, 0.0);
+		const double clock = std::min(age, (double)e.emit * 0.999);
+		GPU_particles_step(e.gpu, clock, dt, e.model, still, NULL, 0);
+	}
+}
+
 KX_Sprites::KX_Sprites()
     : m_scene(NULL), m_scan(0), m_last_time(0.0), m_have_time(false)
 {
@@ -305,6 +449,9 @@ void KX_Sprites::Release(bool remove_copies)
 	for (size_t i = 0; i < m_emitters.size(); i++)
 		FreeEmitter(m_scene, m_emitters[i], remove_copies);
 	m_emitters.clear();
+	for (size_t i = 0; i < m_splashes.size(); i++)
+		GPU_particles_free(m_splashes[i].gpu);
+	m_splashes.clear();
 	m_colliders.clear();
 	m_scene = NULL;
 	m_have_time = false;
@@ -509,11 +656,10 @@ void KX_Sprites::Update(KX_Scene *scene, double time)
 	}
 	if ((m_scan++ % 60) == 0)
 		Scan(scene);
-	if (m_emitters.empty())
-		return;
 	const float dt = m_have_time ? (float)std::max(time - m_last_time, 0.0) : 0.0f;
 	m_last_time = time;
 	m_have_time = true;
+	UpdateSplashes(scene, time, dt);
 	for (size_t i = 0; i < m_emitters.size(); i++) {
 		EmitterEntry &e = m_emitters[i];
 		float m[4][4];
@@ -561,6 +707,9 @@ void KX_Sprites::Draw(KX_Scene *scene, int pass)
 		object_matrix(h.obj, m);
 		GPU_halos_draw(h.points, h.count, m, &h.style, flares);
 	}
+	/* BGE-Remix P11 (B3): splashes, as halos (soft spray, glowing blobs) */
+	for (size_t i = 0; i < m_splashes.size() && pass != 0 && !flares; i++)
+		GPU_particles_draw_halos(m_splashes[i].gpu, &m_splashes[i].halo, false);
 	for (size_t i = 0; i < m_emitters.size(); i++) {
 		EmitterEntry &e = m_emitters[i];
 		if (e.ren_as == PART_DRAW_HALO) {

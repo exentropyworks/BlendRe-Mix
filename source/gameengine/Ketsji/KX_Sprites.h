@@ -42,6 +42,7 @@
 #include "GPU_sprites.h"
 
 class KX_Scene;
+struct KX_Splash;
 class KX_GameObject;
 struct Object;
 struct Scene;
@@ -53,6 +54,17 @@ struct Material;
  * lifetime, normal speed and its random spread, gravity, drag, size */
 void KX_ParticleDescription(Scene *bscene, ParticleSystem *psys, float gravity, bool colliders, float bounce,
                             GPUParticleDesc *r_desc);
+
+/* BGE-Remix P11 (B3): a splash's particles (shared by the game's picture
+ * and Remix's GPU particles): spray (water) or glowing blobs (lava) thrown
+ * up from a ring on the surface. r_emit: they are all born within this many
+ * seconds; r_model: the ring (a unit disc, its Z the surface's normal),
+ * column major; r_halo: how the game draws them */
+void KX_SplashDescription(const KX_Splash &s, GPUParticleDesc *r_desc, float *r_emit, float r_model[4][4],
+                          GPUHaloStyle *r_halo);
+/* the ring the particles are born on: tri_count triangles (9 floats each),
+ * a unit disc in XY facing +Z */
+const float *KX_SplashDisc(int *r_tri_count);
 
 /* a halo material's look */
 void KX_HaloStyle(const Material *ma, GPUHaloStyle *r_style);
@@ -74,13 +86,14 @@ public:
 	 * pass's), 1 halos and lines, 2 the halos' flares */
 	void Draw(KX_Scene *scene, int pass);
 	bool HasFlares(KX_Scene *scene) const;
-	bool Empty() const { return m_halos.empty() && m_emitters.empty(); }
+	bool Empty() const { return m_halos.empty() && m_emitters.empty() && m_splashes.empty(); }
 	/* remove_copies: the scene is still there (its Object particles go) */
 	void Release(bool remove_copies = true);
 
 	/* the frame's numbers (for the tests' logs) */
 	int HaloCount() const;
 	int EmitterCount() const { return (int)m_emitters.size(); }
+	int SplashCount() const { return (int)m_splashes.size(); }
 
 private:
 	struct HaloEntry {
@@ -107,7 +120,17 @@ private:
 		std::vector<KX_GameObject *> copies;     /* held */
 		bool seen;
 	};
+	/* BGE-Remix P11 (B3): a splash's particles */
+	struct SplashEntry {
+		int serial;
+		GPUParticles *gpu;
+		float model[4][4];
+		double born;
+		float emit;
+		GPUHaloStyle halo;
+	};
 	std::vector<HaloEntry> m_halos;
+	std::vector<SplashEntry> m_splashes;
 	std::vector<EmitterEntry> m_emitters;
 	std::vector<GPUParticleCollider> m_colliders;
 	KX_Scene *m_scene;
@@ -116,6 +139,7 @@ private:
 	bool m_have_time;
 
 	void Scan(KX_Scene *scene);
+	void UpdateSplashes(KX_Scene *scene, double time, float dt);
 	void Colliders(KX_Scene *scene, float *r_bounce);
 	void MoveCopies(KX_Scene *scene, EmitterEntry &e);
 	void FreeEmitter(KX_Scene *scene, EmitterEntry &e, bool remove_copies = true);

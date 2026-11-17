@@ -70,6 +70,7 @@
 
 struct Image;
 struct Material;
+struct Scene;
 
 namespace brmx {
 
@@ -239,6 +240,10 @@ public:
 	 * goes to, or for an image (named by its pixels' hash too) the start of
 	 * that file's name ("<image>_<kind>_"); whether the file is there */
 	static std::wstring file_name_of(const TextureRequest &req, bool *r_exact);
+
+	/* BGE-Remix P11 (A3): small images enlarged for Remix, from the scene's
+	 * "Sharper Small Textures" (bge_remix_sharp_textures, on when unset) */
+	static void enlarge_from_scene(const ::Scene *scene);
 
 	/* for the tests' statistics */
 	int encoded, reused, failed;

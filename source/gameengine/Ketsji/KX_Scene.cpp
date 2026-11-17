@@ -94,6 +94,7 @@
 #include "BL_ModifierDeformer.h"
 #include "BL_ShapeDeformer.h"
 #include "BL_DeformableGameObject.h"
+#include "BL_ArmatureObject.h"  /* BGE-Remix P11 (B1) */
 #include "KX_ObstacleSimulation.h"
 
 #ifdef WITH_BULLET
@@ -171,6 +172,7 @@ KX_Scene::KX_Scene(class SCA_IInputDevice* keyboarddevice,
 	m_ueberExecutionPriority(0),
 	m_blenderScene(scene),
 	m_timersGameTime(-1),  /* BGE-Remix P10.13 (A6): read at the first tic */
+	m_splashSerial(0),  /* BGE-Remix P11 (B3) */
 	m_isActivedHysteresis(false),
 	m_lodHysteresisValue(0),
 	m_texcoObjectsKnown(false)
@@ -1709,6 +1711,10 @@ static void update_anim_thread_func(TaskPool *pool, void *taskdata, int UNUSED(t
 	}
 
 	if (needs_update) {
+		/* BGE-Remix P11 (B1): a ragdoll's bones follow its capsules every frame */
+		if (gameobj->GetGameObjectType() == SCA_IObject::OBJ_ARMATURE) {
+			static_cast<BL_ArmatureObject *>(gameobj)->RagdollTick(curtime);
+		}
 		gameobj->UpdateActionManager(curtime);
 		children = gameobj->GetChildren();
 		parent = gameobj->GetParent();
@@ -1839,6 +1845,32 @@ void KX_Scene::UpdateObjectLods(void)
 			gameobj->UpdateLod(cam_pos);
 		}
 	}
+}
+
+/* BGE-Remix P11 (B3): a splash shows its particles' whole life (they rise
+ * and fall back within about a second) */
+const double KX_Scene::SPLASH_SECONDS = 1.5;
+
+void KX_Scene::AddSplash(const MT_Vector3 &point, const MT_Vector3 &up, float size, float speed, int type,
+                         double now)
+{
+	for (size_t i = 0; i < m_splashes.size();) {
+		if (now - m_splashes[i].born > SPLASH_SECONDS || now < m_splashes[i].born) {
+			m_splashes.erase(m_splashes.begin() + i);
+		}
+		else {
+			i++;
+		}
+	}
+	KX_Splash s;
+	s.point = point;
+	s.up = up;
+	s.size = size;
+	s.speed = speed;
+	s.type = type;
+	s.born = now;
+	s.serial = ++m_splashSerial;
+	m_splashes.push_back(s);
 }
 
 void KX_Scene::UpdateTexcoObjects(void)

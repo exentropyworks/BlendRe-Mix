@@ -34,12 +34,19 @@
 #include "KX_ConstraintWrapper.h"
 #include "KX_VehicleWrapper.h"
 #include "KX_CharacterWrapper.h"
+#include "KX_ArticulationWrapper.h"
+#include "KX_DestructibleWrapper.h"  /* BGE-Remix P11 (B2) */
+#include "KX_FluidWrapper.h"  /* BGE-Remix P11 (B3) */
+#include "KX_PyMath.h"  /* BGE-Remix P11 (B1) */
+#include "BL_ArmatureObject.h"
 #include "PHY_IPhysicsController.h"
 #include "PHY_IVehicle.h"
 #include "PHY_DynamicTypes.h"
 #include "MT_Matrix3x3.h"
 
 #include "KX_GameObject.h" // ConvertPythonToGameObject()
+#include "KX_ClientObjectInfo.h"  /* BGE-Remix P11 (B1) */
+#include "KX_Scene.h"
 #include "KX_PythonInit.h"
 
 #include "EXP_PyObjectPlus.h" 
@@ -491,6 +498,110 @@ static PyObject* gPyGetCharacter(PyObject* self,
 	Py_RETURN_NONE;
 }
 
+/* BGE-Remix P11 (B1): the articulation an object is a link of (PhysX) */
+static PyObject *gPyGetArticulation(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pyob;
+	KX_GameObject *ob;
+	if (!PyArg_ParseTuple(args, "O", &pyob)) {
+		return NULL;
+	}
+	if (!ConvertPythonToGameObject(KX_GetActiveScene()->GetLogicManager(), pyob, &ob, false,
+	                               "bge.constraints.getArticulation(value)"))
+	{
+		return NULL;
+	}
+	/* a ragdoll's armature: its articulation, let go or not */
+	if (ob->GetGameObjectType() == SCA_IObject::OBJ_ARMATURE) {
+		BL_ArmatureObject *arm = static_cast<BL_ArmatureObject *>(ob);
+		KX_GameObject *root = arm->HasRagdoll() ? arm->RagdollRoot() : NULL;
+		if (root) {
+			KX_ArticulationWrapper *wrapper = new KX_ArticulationWrapper(root, arm);
+			return wrapper->NewProxy(true);
+		}
+		Py_RETURN_NONE;
+	}
+	PHY_IPhysicsEnvironment *env = ob->GetScene() ? ob->GetScene()->GetPhysicsEnvironment() : NULL;
+	PHY_ArticulationInfo info;
+	if (env && ob->GetPhysicsController() && env->GetArticulation(ob->GetPhysicsController(), &info)) {
+		KX_GameObject *root = KX_GameObject::GetClientObject((KX_ClientObjectInfo *)info.root->GetNewClientInfo());
+		if (root) {
+			KX_ArticulationWrapper *wrapper = new KX_ArticulationWrapper(root);
+			return wrapper->NewProxy(true);
+		}
+	}
+	Py_RETURN_NONE;
+}
+
+/* BGE-Remix P11 (B2): destructibles (Make Destructible; NVIDIA Blast under PhysX) */
+static PyObject *gPyGetDestructible(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pyob;
+	KX_GameObject *ob;
+	if (!PyArg_ParseTuple(args, "O", &pyob)) {
+		return NULL;
+	}
+	if (!ConvertPythonToGameObject(KX_GetActiveScene()->GetLogicManager(), pyob, &ob, false,
+	                               "bge.constraints.getDestructible(value)"))
+	{
+		return NULL;
+	}
+	PHY_IPhysicsEnvironment *env = ob->GetScene() ? ob->GetScene()->GetPhysicsEnvironment() : NULL;
+	PHY_DestructibleInfo info;
+	if (!env || !ob->GetPhysicsController() || !env->GetDestructible(ob->GetPhysicsController(), &info)) {
+		Py_RETURN_NONE;
+	}
+	std::vector<KX_GameObject *> pieces;
+	for (PHY_IPhysicsController *c : info.pieces) {
+		KX_GameObject *p = KX_GameObject::GetClientObject((KX_ClientObjectInfo *)c->GetNewClientInfo());
+		if (p) {
+			pieces.push_back(p);
+		}
+	}
+	KX_DestructibleWrapper *wrapper = new KX_DestructibleWrapper(pieces);
+	return wrapper->NewProxy(true);
+}
+
+/* BGE-Remix P11 (B3): a fluid volume (Make Fluid Volume) */
+static PyObject *gPyGetFluid(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pyob;
+	KX_GameObject *ob;
+	if (!PyArg_ParseTuple(args, "O", &pyob)) {
+		return NULL;
+	}
+	if (!ConvertPythonToGameObject(KX_GetActiveScene()->GetLogicManager(), pyob, &ob, false,
+	                               "bge.constraints.getFluid(value)"))
+	{
+		return NULL;
+	}
+	PHY_IPhysicsEnvironment *env = ob->GetScene() ? ob->GetScene()->GetPhysicsEnvironment() : NULL;
+	PHY_FluidInfo info;
+	if (!env || !ob->GetPhysicsController() || !env->GetFluid(ob->GetPhysicsController(), &info)) {
+		Py_RETURN_NONE;
+	}
+	KX_FluidWrapper *wrapper = new KX_FluidWrapper(ob);
+	return wrapper->NewProxy(true);
+}
+
+static PyObject *gPyExplode(PyObject *self, PyObject *args, PyObject *kwds)
+{
+	PyObject *pypoint;
+	float radius = 1.0f, amount = 1.0f;
+	static const char *kwlist[] = {"point", "radius", "damage", NULL};
+	if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|ff:explode", const_cast<char **>(kwlist), &pypoint, &radius,
+	                                 &amount))
+	{
+		return NULL;
+	}
+	MT_Vector3 point;
+	if (!PyVecTo(pypoint, point)) {
+		return NULL;
+	}
+	PHY_IPhysicsEnvironment *env = KX_GetActiveScene() ? KX_GetActiveScene()->GetPhysicsEnvironment() : NULL;
+	return PyLong_FromLong(env ? env->Explode(point, radius, amount) : 0);
+}
+
 static PyObject *gPyCreateConstraint(PyObject *self,
                                      PyObject *args,
                                      PyObject *kwds)
@@ -653,6 +764,14 @@ static struct PyMethodDef physicsconstraints_methods[] = {
 	{"getVehicleConstraint",(PyCFunction) gPyGetVehicleConstraint,
 	 METH_VARARGS, (const char *)gPyGetVehicleConstraint__doc__},
 
+	{"getDestructible", (PyCFunction)gPyGetDestructible, METH_VARARGS,
+	 "getDestructible(ob): the destructible the object is a piece of (Make Destructible), or None"},
+	{"getFluid", (PyCFunction)gPyGetFluid, METH_VARARGS,
+	 "getFluid(ob): the fluid volume the object is (Make Fluid Volume; PhysX), or None"},
+	{"explode", (PyCFunction)gPyExplode, METH_VARARGS | METH_KEYWORDS,
+	 "explode(point, radius=1.0, damage=1.0): breaks every destructible within the radius (PhysX); how many"},
+	{"getArticulation", (PyCFunction)gPyGetArticulation, METH_VARARGS,
+	 "getArticulation(ob): the articulation the object is a link of (PhysX), or an armature's ragdoll; or None"},
 	{"getCharacter",(PyCFunction) gPyGetCharacter,
 	 METH_VARARGS, (const char *)gPyGetCharacter__doc__},
 

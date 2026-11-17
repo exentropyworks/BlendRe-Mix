@@ -244,6 +244,7 @@ endif()
 # BGE-Remix (P6): NVIDIA PhysX 5 as a second game engine physics engine
 option(WITH_PHYSX        "Enable NVIDIA PhysX 5 as a game engine physics engine (needs PHYSX_ROOT_DIR)" OFF)
 set(PHYSX_ROOT_DIR "" CACHE PATH "PhysX 5 SDK install (with include/ and bin/<platform>/release/)")
+set(BLAST_SOURCE_DIR "" CACHE PATH "NVIDIA Blast source (the PhysX repo's blast folder): destruction under PhysX (P11 B2)")
 if(APPLE)
 	set(WITH_GAMEENGINE_DECKLINK OFF)
 else()

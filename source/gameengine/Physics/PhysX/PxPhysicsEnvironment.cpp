@@ -28,8 +28,10 @@
 
 #include "PxPhysicsAPI.h"
 
+#include "PxArticulation.h"
 #include "PxCharacter.h"
 #include "PxDeformable.h"
+#include "PxFluids.h"
 #include "PxMotionState.h"
 #include "PxPhysicsController.h"
 #include "PxShapes.h"
@@ -122,6 +124,11 @@ static PxFilterFlags filter_shader(PxFilterObjectAttributes a0, PxFilterData f0,
 		pairFlags |= PxPairFlag::eNOTIFY_TOUCH_FOUND | PxPairFlag::eNOTIFY_TOUCH_PERSISTS |
 		             PxPairFlag::eNOTIFY_TOUCH_LOST | PxPairFlag::eNOTIFY_CONTACT_POINTS;
 	}
+	/* P11 (B2): a destructible's piece: the impulses of its contacts */
+	if ((f0.word3 | f1.word3) & PXW_DESTRUCT) {
+		pairFlags |= PxPairFlag::eNOTIFY_TOUCH_FOUND | PxPairFlag::eNOTIFY_TOUCH_PERSISTS |
+		             PxPairFlag::eNOTIFY_CONTACT_POINTS;
+	}
 	return PxFilterFlag::eDEFAULT;
 }
 
@@ -138,15 +145,43 @@ public:
 		if (header.flags & (PxContactPairHeaderFlag::eREMOVED_ACTOR_0 | PxContactPairHeaderFlag::eREMOVED_ACTOR_1)) {
 			return;
 		}
-		PxPhysicsController *a = (PxPhysicsController *)header.actors[0]->userData;
-		PxPhysicsController *b = (PxPhysicsController *)header.actors[1]->userData;
-		if (!a || !b) {
+		PxPhysicsController *actorA = (PxPhysicsController *)header.actors[0]->userData;
+		PxPhysicsController *actorB = (PxPhysicsController *)header.actors[1]->userData;
+		if (!actorA || !actorB) {
 			return;
 		}
 		for (PxU32 i = 0; i < nbPairs; i++) {
 			const PxContactPair &cp = pairs[i];
 			if (cp.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 | PxContactPairFlag::eREMOVED_SHAPE_1)) {
 				continue;
+			}
+			/* P11 (B2): the pieces of a destructible's group are its shapes' */
+			PxPhysicsController *a = m_env->ShapeOwner(cp.shapes[0], actorA);
+			PxPhysicsController *b = m_env->ShapeOwner(cp.shapes[1], actorB);
+			if (a->GetShard() || b->GetShard()) {
+				if (cp.events & (PxPairFlag::eNOTIFY_TOUCH_FOUND | PxPairFlag::eNOTIFY_TOUCH_PERSISTS)) {
+					PxContactPairPoint pts[16];
+					const PxU32 np = cp.contactCount ? cp.extractContacts(pts, 16) : 0;
+					float j = 0.0f;
+					PxVec3 at(0.0f);
+					for (PxU32 k = 0; k < np; k++) {
+						j += pts[k].impulse.magnitude();
+						at += pts[k].position;
+					}
+					if (np && j > 0.0f) {
+						at *= 1.0f / (float)np;
+						if (a->GetShard()) {
+							m_env->DestructionImpact(a, at, j);
+						}
+						if (b->GetShard()) {
+							m_env->DestructionImpact(b, at, j);
+						}
+					}
+				}
+				/* (sensors only where one listens) */
+				if (!a->Registered() && !b->Registered() && !a->IsSensor() && !b->IsSensor()) {
+					continue;
+				}
 			}
 			m_env->m_stats.contactReports++;
 			if (cp.events & PxPairFlag::eNOTIFY_TOUCH_LOST) {
@@ -181,6 +216,8 @@ public:
 			if (!a || !b) {
 				continue;
 			}
+			a = m_env->ShapeOwner(tp.triggerShape, a);  /* P11 (B2) */
+			b = m_env->ShapeOwner(tp.otherShape, b);
 			m_env->m_stats.triggerReports++;
 			if (tp.status == PxPairFlag::eNOTIFY_TOUCH_LOST) {
 				m_env->ContactLost(a, b);
@@ -220,7 +257,17 @@ PxPhysicsEnvironment::PxPhysicsEnvironment(bool useGpu, PHY_IPhysicsEnvironment 
       m_angularSleep(1.0f),
       m_lastStep(1.0f / 60.0f),
       m_accumulated(0.0),
-      m_ccdMode(0)
+      m_ccdMode(0),
+      m_articulationsDirty(false),
+      m_destructionDirty(false),
+      m_maxPieces(500),
+      m_debrisLifetime(0.0f),
+      m_destructionFrame(0),
+      m_destructionTime(0.0),
+      m_groupSerial(0),
+      m_fluidBodies(new std::map<const PxRigidActor *, PxFluidBody>()),
+      m_fluidTime(0.0),
+      m_fluidFrame(0)
 {
 	for (int i = 0; i < PHY_NUM_RESPONSE; i++) {
 		m_triggerCallbacks[i] = NULL;
@@ -277,6 +324,20 @@ void PxPhysicsEnvironment::InitScene(bool useGpu)
 
 PxPhysicsEnvironment::~PxPhysicsEnvironment()
 {
+	/* P11 (B1): the links back into bodies first (the game objects delete
+	 * their controllers later) */
+	while (!m_articulations.empty()) {
+		DismantleArticulation(m_articulations.back());
+	}
+	/* P11 (B2): the destructibles' groups (their pieces are left without a body) */
+	while (!m_destructibles.empty()) {
+		DismantleDestructible(m_destructibles.back());
+	}
+	/* P11 (B3): the fluid volumes */
+	for (PxFluidVolume *v : m_fluids) {
+		delete v;
+	}
+	m_fluids.clear();
 	for (PxRaycastVehicle *v : m_vehicles) {
 		delete v;
 	}
@@ -297,6 +358,7 @@ PxPhysicsEnvironment::~PxPhysicsEnvironment()
 	}
 	delete m_events;
 	delete m_culling;
+	delete m_fluidBodies;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -330,14 +392,29 @@ void PxPhysicsEnvironment::AddController(PxPhysicsController *ctrl)
 	if (ctrl->IsKinematic()) {
 		m_kinematics.insert(ctrl);
 	}
+	if (ctrl->GetInfo().articulation) {
+		m_articulationsDirty = true;  /* (built at the next step) */
+	}
 	m_stats.actors = (int)m_controllers.size();
 }
 
 bool PxPhysicsEnvironment::RemoveController(PxPhysicsController *ctrl)
 {
-	if (!ctrl || !m_controllers.erase(ctrl)) {
+	if (!ctrl || !m_controllers.count(ctrl)) {
 		return false;
 	}
+	/* P11 (B1): its articulation is taken apart (the rest is built again at
+	 * the next step) */
+	if (ctrl->m_articulation) {
+		DismantleArticulation(ctrl->m_articulation);
+	}
+	/* P11 (B2): a destructible's piece leaves its group */
+	if (ctrl->m_shard) {
+		DestructionRemovePiece(ctrl);
+	}
+	/* P11 (B3): a fluid volume goes; a body's points are forgotten */
+	FluidRemove(ctrl);
+	m_controllers.erase(ctrl);
 	ctrl->m_inScene = false;
 	m_kinematics.erase(ctrl);
 	ForgetPairs(ctrl);
@@ -379,12 +456,14 @@ bool PxPhysicsEnvironment::IsActiveController(PxPhysicsController *ctrl) const
 
 void PxPhysicsEnvironment::ForgetPairs(PxPhysicsController *ctrl)
 {
-	for (auto it = m_touching.begin(); it != m_touching.end();) {
-		if (it->first.first == ctrl || it->first.second == ctrl) {
-			it = m_touching.erase(it);
-		}
-		else {
-			++it;
+	for (auto *pairs : {&m_touching, &m_touchedThisFrame}) {
+		for (auto it = pairs->begin(); it != pairs->end();) {
+			if (it->first.first == ctrl || it->first.second == ctrl) {
+				it = pairs->erase(it);
+			}
+			else {
+				++it;
+			}
 		}
 	}
 }
@@ -444,6 +523,7 @@ void PxPhysicsEnvironment::ContactFound(PxPhysicsController *a, PxPhysicsControl
 	t.point1 = pa;
 	t.point2 = pb;
 	t.normal = normal;
+	m_touchedThisFrame[key] = t;
 }
 
 void PxPhysicsEnvironment::ContactLost(PxPhysicsController *a, PxPhysicsController *b)
@@ -457,12 +537,21 @@ void PxPhysicsEnvironment::CallbackTriggers()
 	if (!cb) {
 		return;
 	}
-	/* a copy: callbacks may remove objects */
+	/* a copy: callbacks may remove objects. P11 fix (A12): with sub-steps a
+	 * touch can begin and end inside one frame (a fast ball bouncing off a
+	 * wall); it was lost before the frame's report, and the Collision sensor
+	 * missed it. The pairs that touched this frame are reported too. */
 	std::vector<Touch> pairs;
-	pairs.reserve(m_touching.size());
+	pairs.reserve(m_touching.size() + m_touchedThisFrame.size());
 	for (auto &kv : m_touching) {
 		pairs.push_back(kv.second);
 	}
+	for (auto &kv : m_touchedThisFrame) {
+		if (!m_touching.count(kv.first)) {
+			pairs.push_back(kv.second);
+		}
+	}
+	m_touchedThisFrame.clear();
 	for (const Touch &t : pairs) {
 		if (!IsActiveController(t.a) || !IsActiveController(t.b)) {
 			continue;
@@ -496,6 +585,10 @@ void PxPhysicsEnvironment::SimulateOnce(float dt)
 			ch->Step(dt);
 		}
 	}
+	/* P11 (B3): floating, drag and currents in fluid volumes */
+	if (!m_fluids.empty()) {
+		FluidStep(dt);
+	}
 	m_scene->simulate(dt);
 	m_scene->fetchResults(true);
 	for (PxPhysicsController *c : m_controllers) {
@@ -516,6 +609,15 @@ bool PxPhysicsEnvironment::ProceedDeltaTime(double curTime, float timeStep, floa
 		return false;
 	}
 	m_lastStep = subStep;
+	m_fluidFrame++;
+	/* P11 (B1): articulations of roots and joints added since */
+	if (m_articulationsDirty) {
+		BuildArticulations();
+	}
+	/* P11 (B2): destructibles' pieces converted since */
+	if (m_destructionDirty) {
+		BuildDestructibles();
+	}
 	/* as Bullet's stepSimulation(interval, 25, subStep): whole sub-steps, the
 	 * rest of the time kept for the next frame */
 	m_accumulated += interval;
@@ -535,6 +637,10 @@ bool PxPhysicsEnvironment::ProceedDeltaTime(double curTime, float timeStep, floa
 	}
 	if (steps > 0) {
 		ProcessFhSprings(steps * subStep);
+	}
+	/* P11 (B2): impacts, explosions and stress break bonds; Blast splits */
+	if (!m_destructibles.empty()) {
+		DestructionStep(steps * subStep);
 	}
 	for (PxPhysicsController *c : m_controllers) {
 		c->SynchronizeMotionStates(timeStep);
@@ -598,6 +704,7 @@ void PxPhysicsEnvironment::ProcessFhSprings(float interval)
 		if (!controller) {
 			continue;
 		}
+		controller = ShapeOwner(hit.block.shape, controller);  /* P11 (B2) */
 		const PxCtrlInfo &hp = controller->GetInfo();
 		if (hp.fhDistance < 1e-6f) {
 			continue;
@@ -842,15 +949,16 @@ namespace {
 class RayFilter : public PxQueryFilterCallback
 {
 public:
-	RayFilter(PHY_IRayCastFilterCallback &cb) : m_cb(cb) {}
+	RayFilter(PHY_IRayCastFilterCallback &cb, const PxPhysicsEnvironment *env) : m_cb(cb), m_env(env) {}
 
-	PxQueryHitType::Enum preFilter(const PxFilterData &, const PxShape *, const PxRigidActor *actor,
+	PxQueryHitType::Enum preFilter(const PxFilterData &, const PxShape *shape, const PxRigidActor *actor,
 	                               PxHitFlags &) override
 	{
 		PxPhysicsController *ctrl = (PxPhysicsController *)actor->userData;
 		if (!ctrl) {
 			return PxQueryHitType::eNONE;
 		}
+		ctrl = m_env->ShapeOwner(shape, ctrl);  /* P11 (B2) */
 		/* as Bullet: never sensors (near, radar, Sensor objects) */
 		if (ctrl->GetInfo().filterGroup & PXF_SENSOR) {
 			return PxQueryHitType::eNONE;
@@ -868,6 +976,7 @@ public:
 
 private:
 	PHY_IRayCastFilterCallback &m_cb;
+	const PxPhysicsEnvironment *m_env;
 };
 
 }  /* namespace */
@@ -885,7 +994,7 @@ PHY_IPhysicsController *PxPhysicsEnvironment::RayTest(PHY_IRayCastFilterCallback
 		return NULL;
 	}
 	dir /= len;
-	RayFilter filter(filterCallback);
+	RayFilter filter(filterCallback, this);
 	PxRaycastBuffer buf;
 	PxQueryFilterData fd(PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::ePREFILTER);
 	const PxHitFlags flags = PxHitFlag::ePOSITION | PxHitFlag::eNORMAL | PxHitFlag::eFACE_INDEX | PxHitFlag::eUV |
@@ -895,6 +1004,9 @@ PHY_IPhysicsController *PxPhysicsEnvironment::RayTest(PHY_IRayCastFilterCallback
 	}
 	const PxRaycastHit &hit = buf.block;
 	PxPhysicsController *controller = (PxPhysicsController *)hit.actor->userData;
+	if (controller) {
+		controller = ShapeOwner(hit.shape, controller);  /* P11 (B2) */
+	}
 
 	PHY_RayCastResult result;
 	memset(&result, 0, sizeof(result));
@@ -1033,6 +1145,12 @@ void PxPhysicsEnvironment::RemoveConstraint(Constraint *c)
 	if (!c) {
 		return;
 	}
+	/* P11 (B1): a joint of an articulation: it is taken apart first (its
+	 * joints are ordinary ones again; the rest is built again at the next
+	 * step) */
+	if (c->link && c->link->GetArticulation()) {
+		DismantleArticulation(c->link->GetArticulation());
+	}
 	if (c->joint) {
 		PxRigidActor *a0, *a1;
 		c->joint->getActors(a0, a1);
@@ -1168,12 +1286,21 @@ int PxPhysicsEnvironment::CreateConstraint(PHY_IPhysicsController *ctrl0, PHY_IP
 		return v->GetUserConstraintId();
 	}
 
+	/* P11 (B1): a joint to an articulation's link: the articulation is taken
+	 * apart and built again with it at the next step */
+	for (PxPhysicsController *ctrl : {c0, c1}) {
+		if (ctrl && ctrl->m_articulation) {
+			DismantleArticulation(ctrl->m_articulation);
+		}
+	}
 	PxRigidActor *a0 = c0->GetActor();
 	if (!a0) {
 		return 0;
 	}
-	const bool s0 = !c0->GetDynamic() || c0->IsKinematic();
-	const bool s1 = !c1 || !c1->GetDynamic() || c1->IsKinematic();
+	/* (a body whose dynamics are suspended, a parented one say, keeps its
+	 * joints for when it is let go, as Bullet; P11 (B1): a ragdoll's capsules) */
+	const bool s0 = !c0->GetDynamic() || (c0->IsKinematic() && !c0->IsSuspended());
+	const bool s1 = !c1 || !c1->GetDynamic() || (c1->IsKinematic() && !c1->IsSuspended());
 	if (s0 && s1) {
 		return 0;
 	}
@@ -1232,6 +1359,7 @@ int PxPhysicsEnvironment::CreateConstraint(PHY_IPhysicsController *ctrl0, PHY_IP
 	c->c1 = c1;
 	c->frameA = frameA;
 	c->frameB = frameB;
+	c->collide = !disableCollision;
 	for (int i = 0; i < 3; i++) {
 		c->linScale[i] = type == PHY_GENERIC_6DOF_CONSTRAINT ? std::max(linScale[i], 1e-6f) : 1.0f;
 	}
@@ -1246,6 +1374,7 @@ int PxPhysicsEnvironment::CreateConstraint(PHY_IPhysicsController *ctrl0, PHY_IP
 	}
 	joint->userData = c;
 	m_constraints[c->id] = c;
+	m_articulationsDirty = true;  /* (it may join an articulation's root) */
 	c0->m_constraints.push_back(c->id);
 	if (c1) {
 		c1->m_constraints.push_back(c->id);
@@ -1347,62 +1476,30 @@ static void apply_drives(PxD6Joint *d6, const bool motor[6], const float vel[6],
 	d6->setDriveVelocity(lin, ang, true);
 }
 
-void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float value0, float value1)
+/* the setting into the constraint's stored values (Bullet's params) */
+void PxPhysicsEnvironment::StoreConstraintParam(Constraint *c, int param, float value0, float value1)
 {
-	Constraint *c = GetConstraint(constraintId);
-	if (!c || !c->joint) {
-		return;
-	}
 	switch (c->type) {
-		case PHY_GENERIC_6DOF_CONSTRAINT: {
-			PxD6Joint *d6 = c->joint->is<PxD6Joint>();
-			if (!d6) {
-				return;
-			}
+		case PHY_GENERIC_6DOF_CONSTRAINT:
 			if (param >= 0 && param <= 5) {
 				c->limits[param][0] = value0;
 				c->limits[param][1] = value1;
-				float lim[6][2];
-				memcpy(lim, c->limits, sizeof(lim));
-				for (int i = 0; i < 3; i++) {
-					if (lim[i][0] <= lim[i][1]) {
-						lim[i][0] *= c->linScale[i];
-						lim[i][1] *= c->linScale[i];
-					}
-				}
-				apply_d6(d6, lim, false);
 			}
 			else if (param >= 6 && param <= 11) {
 				const int i = param - 6;
 				c->motor[i] = value1 > 0.0f;
 				c->motorVelocity[i] = value0;
 				c->motorForce[i] = value1;
-				float vel[6];
-				for (int i = 0; i < 6; i++) {
-					vel[i] = i < 3 ? c->motorVelocity[i] / c->linScale[i] : c->motorVelocity[i];
-				}
-				apply_drives(d6, c->motor, vel, c->motorForce, c->spring, c->springStiffness, c->springDamping);
 			}
 			else if (param >= 12 && param <= 17) {
 				const int i = param - 12;
 				c->spring[i] = value0 != 0.0f;
 				c->springStiffness[i] = value0;
 				c->springDamping[i] = value1;
-				if (c->spring[i]) {
-					/* as Bullet's setEquilibriumPoint: the spring rests where it is now */
-					d6->setDrivePosition(d6->getRelativeTransform(), true);
-				}
-				float vel[6];
-				for (int i = 0; i < 6; i++) {
-					vel[i] = i < 3 ? c->motorVelocity[i] / c->linScale[i] : c->motorVelocity[i];
-				}
-				apply_drives(d6, c->motor, vel, c->motorForce, c->spring, c->springStiffness, c->springDamping);
 			}
 			break;
-		}
 		case PHY_CONE_TWIST_CONSTRAINT: {
-			PxD6Joint *d6 = c->joint->is<PxD6Joint>();
-			if (!d6 || param < 3 || param > 5) {
+			if (param < 3 || param > 5) {
 				return;
 			}
 			/* Bullet: 3 twist span, 4 swing span 2 (Z), 5 swing span 1 (Y);
@@ -1416,32 +1513,89 @@ void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float
 				c->limits[slot][0] = -value1;
 				c->limits[slot][1] = value1;
 			}
-			apply_d6(d6, c->limits, true);
 			break;
 		}
 		case PHY_ANGULAR_CONSTRAINT:
-		case PHY_LINEHINGE_CONSTRAINT: {
-			if (param != 3) {
+		case PHY_LINEHINGE_CONSTRAINT:
+			if (param == 3) {
+				c->limits[3][0] = value0;
+				c->limits[3][1] = value1;
+			}
+			break;
+		default:
+			break;
+	}
+}
+
+void PxPhysicsEnvironment::ApplyJointParams(Constraint *c, int param)
+{
+	if (!c || !c->joint) {
+		return;
+	}
+	switch (c->type) {
+		case PHY_GENERIC_6DOF_CONSTRAINT: {
+			PxD6Joint *d6 = c->joint->is<PxD6Joint>();
+			if (!d6) {
 				return;
 			}
-			c->limits[3][0] = value0;
-			c->limits[3][1] = value1;
+			if (param <= 5) {
+				float lim[6][2];
+				memcpy(lim, c->limits, sizeof(lim));
+				for (int i = 0; i < 3; i++) {
+					if (lim[i][0] <= lim[i][1]) {
+						lim[i][0] *= c->linScale[i];
+						lim[i][1] *= c->linScale[i];
+					}
+				}
+				apply_d6(d6, lim, false);
+			}
+			if (param < 0 || (param >= 6 && param <= 17)) {
+				bool resting = false;
+				for (int i = 0; i < 6; i++) {
+					resting |= c->spring[i] && (param < 0 || param == 12 + i);
+				}
+				if (resting) {
+					/* as Bullet's setEquilibriumPoint: the spring rests where it is now */
+					d6->setDrivePosition(d6->getRelativeTransform(), true);
+				}
+				float vel[6];
+				for (int i = 0; i < 6; i++) {
+					vel[i] = i < 3 ? c->motorVelocity[i] / c->linScale[i] : c->motorVelocity[i];
+				}
+				apply_drives(d6, c->motor, vel, c->motorForce, c->spring, c->springStiffness, c->springDamping);
+			}
+			break;
+		}
+		case PHY_CONE_TWIST_CONSTRAINT:
+			if (param >= 0 && (param < 3 || param > 5)) {
+				return;
+			}
+			if (PxD6Joint *d6 = c->joint->is<PxD6Joint>()) {
+				apply_d6(d6, c->limits, true);
+			}
+			break;
+		case PHY_ANGULAR_CONSTRAINT:
+		case PHY_LINEHINGE_CONSTRAINT: {
+			if (param >= 0 && param != 3) {
+				return;
+			}
+			const float lo = c->limits[3][0], hi = c->limits[3][1];
 			if (PxRevoluteJoint *rev = c->joint->is<PxRevoluteJoint>()) {
-				if (value0 > value1) {
+				if (lo > hi) {
 					rev->setRevoluteJointFlag(PxRevoluteJointFlag::eLIMIT_ENABLED, false);
 				}
 				else {
-					rev->setLimit(PxJointAngularLimitPair(value0, value1));
+					rev->setLimit(PxJointAngularLimitPair(lo, hi));
 					rev->setRevoluteJointFlag(PxRevoluteJointFlag::eLIMIT_ENABLED, true);
 				}
 			}
 			else if (PxD6Joint *d6 = c->joint->is<PxD6Joint>()) {
-				if (value0 > value1) {
+				if (lo > hi) {
 					d6->setMotion(PxD6Axis::eTWIST, PxD6Motion::eFREE);
 				}
 				else {
 					d6->setMotion(PxD6Axis::eTWIST, PxD6Motion::eLIMITED);
-					d6->setTwistLimit(PxJointAngularLimitPair(value0, value1));
+					d6->setTwistLimit(PxJointAngularLimitPair(lo, hi));
 				}
 			}
 			break;
@@ -1451,11 +1605,53 @@ void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float
 	}
 }
 
+/* P11 (B1): an articulation's joint back as the PxJoint P6 makes, with the
+ * settings it had */
+void PxPhysicsEnvironment::RestoreJoint(Constraint *c)
+{
+	if (!c || c->joint || !c->c0 || !c->c0->GetActor()) {
+		return;
+	}
+	PxJoint *joint = MakeJoint(c->c0, c->c1, (PHY_ConstraintType)c->type, c->frameA, c->frameB);
+	if (!joint) {
+		return;
+	}
+	joint->setConstraintFlag(PxConstraintFlag::eCOLLISION_ENABLED, c->collide);
+	joint->userData = c;
+	c->joint = joint;
+	ApplyJointParams(c, -1);
+}
+
+void PxPhysicsEnvironment::SetConstraintParam(int constraintId, int param, float value0, float value1)
+{
+	Constraint *c = GetConstraint(constraintId);
+	if (!c || (!c->joint && !c->link)) {
+		return;
+	}
+	StoreConstraintParam(c, param, value0, value1);
+	if (c->joint) {
+		ApplyJointParams(c, param);
+	}
+	else if (!ApplyArticulationJoint(c, param)) {
+		/* P11 (B1): now a joint an articulation has none for: the
+		 * articulation is taken apart (built again at the next step with it
+		 * as an ordinary joint) */
+		if (PxArticulationGroup *g = c->link->GetArticulation()) {
+			DismantleArticulation(g);
+		}
+	}
+}
+
 float PxPhysicsEnvironment::GetConstraintParam(int constraintId, int param)
 {
 	Constraint *c = GetConstraint(constraintId);
-	if (!c || !c->joint || c->type != PHY_GENERIC_6DOF_CONSTRAINT) {
+	if (!c || c->type != PHY_GENERIC_6DOF_CONSTRAINT) {
 		return 0.0f;
+	}
+	if (!c->joint) {
+		/* P11 (B1): an articulation's joint (its position on that axis) */
+		float pos = 0.0f;
+		return (param >= 0 && param <= 5 && ArticulationJointState(constraintId, param, &pos, NULL)) ? pos : 0.0f;
 	}
 	PxD6Joint *d6 = c->joint->is<PxD6Joint>();
 	if (!d6) {

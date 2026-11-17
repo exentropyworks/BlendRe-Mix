@@ -22,8 +22,11 @@ file(GLOB MOTO_SRC "${BLENDER}/intern/moto/intern/*.cpp")
 set(SRC
 	harness.cpp
 	stubs.cpp
+	${GE}/Physics/PhysX/PxArticulation.cpp  # BGE-Remix P11 (B1)
 	${GE}/Physics/PhysX/PxCharacter.cpp
 	${GE}/Physics/PhysX/PxDeformable.cpp
+	${GE}/Physics/PhysX/PxDestruction.cpp  # BGE-Remix P11 (B2)
+	${GE}/Physics/PhysX/PxFluids.cpp  # BGE-Remix P11 (B3)
 	${GE}/Physics/PhysX/PxPhysicsController.cpp
 	${GE}/Physics/PhysX/PxPhysicsEnvironment.cpp
 	${GE}/Physics/PhysX/PxShapes.cpp
@@ -45,6 +48,35 @@ target_include_directories(p6_physx_checks PRIVATE
 	${BLENDER}/intern/moto/include ${BLENDER}/extern/bullet2/src
 )
 target_compile_definitions(p6_physx_checks PRIVATE WITH_BULLET WITH_PHYSX NDEBUG PX_PHYSX_STATIC_LIB)
+# BGE-Remix P11 (B2): NVIDIA Blast (the PhysX repo's blast folder), as the PhysX backend builds it
+set(BLAST_SOURCE_DIR "" CACHE PATH "NVIDIA Blast source (the PhysX repo's blast folder)")
+if(BLAST_SOURCE_DIR AND EXISTS "${BLAST_SOURCE_DIR}/include/lowlevel/NvBlast.h")
+	set(_bl "${BLAST_SOURCE_DIR}")
+	set(BLAST_SRC
+		${_bl}/source/sdk/lowlevel/NvBlastActor.cpp ${_bl}/source/sdk/lowlevel/NvBlastActorSerializationBlock.cpp
+		${_bl}/source/sdk/lowlevel/NvBlastAsset.cpp ${_bl}/source/sdk/lowlevel/NvBlastAssetHelper.cpp
+		${_bl}/source/sdk/lowlevel/NvBlastFamily.cpp ${_bl}/source/sdk/lowlevel/NvBlastFamilyGraph.cpp
+		${_bl}/source/sdk/globals/NvBlastGlobals.cpp ${_bl}/source/sdk/globals/NvBlastInternalProfiler.cpp
+		${_bl}/source/sdk/common/NvBlastAssert.cpp ${_bl}/source/sdk/common/NvBlastAtomic.cpp
+		${_bl}/source/sdk/common/NvBlastTime.cpp ${_bl}/source/sdk/common/NvBlastTimers.cpp
+		${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp ${_bl}/source/shared/stress_solver/stress.cpp)
+	target_sources(p6_physx_checks PRIVATE ${BLAST_SRC})
+	target_include_directories(p6_physx_checks PRIVATE
+		${_bl}/include/lowlevel ${_bl}/include/globals ${_bl}/include/extensions/stress ${_bl}/include/shared/NvFoundation
+		${_bl}/source/sdk/common ${_bl}/source/sdk/globals ${_bl}/source/sdk/lowlevel ${_bl}/source/shared/NsFoundation/include
+		${_bl}/source/shared/stress_solver ${_bl}/source/shared/utils)
+	if(WIN32)
+		target_include_directories(p6_physx_checks PRIVATE ${_bl}/source/shared/NsFoundation/include/platform/windows
+		                           ${GE}/Physics/PhysX/blast_shim)  # (typeinfo.h, gone from VS 2022)
+		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
+		                            ${_bl}/source/shared/stress_solver/stress.cpp PROPERTIES COMPILE_FLAGS "/FIcmath /FIlimits")
+	else()
+		target_include_directories(p6_physx_checks PRIVATE ${_bl}/source/shared/NsFoundation/include/platform/unix)
+		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
+		                            ${_bl}/source/shared/stress_solver/stress.cpp PROPERTIES COMPILE_FLAGS "-include limits -mavx -mfma")
+	endif()
+	target_compile_definitions(p6_physx_checks PRIVATE WITH_BLAST)
+endif()
 target_link_libraries(p6_physx_checks ${PHYSX_LIBS})
 if(MSVC)
 	target_compile_definitions(p6_physx_checks PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)

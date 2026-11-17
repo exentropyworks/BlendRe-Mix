@@ -94,6 +94,11 @@ PRESETS = {
                  displace=0.01, subsurface=(0.010, 0.014, 0.020)),
     'CONCRETE': dict(label="Concrete", colour=(0.51, 0.51, 0.50), albedo=(0.7, 1.12), rough=(0.75, 0.95),
                      displace=0.003),
+    # BGE-Remix P11 (B3, Ayhan's decision, 17 Nov): dark crust with glowing
+    # cracks, a slow flipbook made like Water's; it lights what is near it in
+    # Remix (emissive: the glow's colour, linear, and the node's intensity)
+    'LAVA': dict(label="Lava", colour=(0.06, 0.05, 0.045), albedo=(0.6, 1.5), rough=(0.55, 0.95),
+                 displace=0.02, emissive=(1.0, 0.32, 0.05), emissive_intensity=6.0),
 }
 # BGE-Remix P10.2: the presets whose pattern repeats exactly inside the
 # tile (regular: whole repeats, no cross-fade); the rest are random
@@ -102,7 +107,7 @@ PRESETS = {
 REGULAR = ('BRICK',)
 TILE_WHOLE, TILE_KEEP_CONTRAST = 1, 2
 ORDER = ('ROCK', 'GRAVEL', 'TARMAC', 'GRASS', 'BRICK', 'BARK', 'WATER', 'SKIN_LIGHT', 'SKIN_MEDIUM',
-         'SKIN_DARK', 'DIRT', 'SAND', 'SNOW', 'CONCRETE')
+         'SKIN_DARK', 'DIRT', 'SAND', 'SNOW', 'CONCRETE', 'LAVA')
 # the group's outputs, and the RTX Remix node's inputs they feed
 OUTPUTS = (("Albedo", "Albedo"), ("Roughness", "Roughness"), ("Height", "Height"))
 
@@ -205,6 +210,9 @@ def _interface(ng, p):
     ng.outputs.new("NodeSocketColor", "Albedo")
     ng.outputs.new("NodeSocketFloat", "Roughness")
     ng.outputs.new("NodeSocketFloat", "Height")
+    if p.get("emissive"):
+        # BGE-Remix P11 (B3): the glow (Lava), into the node's Emissive Color
+        ng.outputs.new("NodeSocketColor", "Emissive")
 
 
 def _coords(b):
@@ -234,6 +242,9 @@ def _finish(b, p, tone, rough, height, wet_mask=None):
     b.out("Albedo", b.mix('MIX', albedo, albedo, fac=0.0, clamp=True))
     b.out("Roughness", b.m('ADD', rough, 0.0, clamp=True))
     b.out("Height", b.m('ADD', height, 0.0, clamp=True))
+    if p.get("emissive"):
+        # (the pattern's glow, 0..1, kept on the builder)
+        b.out("Emissive", b.mix('MIX', (0.0, 0.0, 0.0), tuple(p["emissive"]), fac=b.glow, clamp=True))
 
 
 def _wear(b, tone, rough, mask, tone_to, rough_by):
@@ -473,9 +484,28 @@ def _concrete(b, p, co):
     return tone, rough, height, None
 
 
+def _lava(b, p, co):
+    """BGE-Remix P11 (B3): plates of dark crust; between them, and where the
+    flow shows through, the molten rock glows (b.glow, for the Emissive output)"""
+    plates = b.tex("plates", 'VORONOI', co, noise_scale=0.3, weight_1=-1.0, weight_2=1.0)
+    flow = b.tex("flow", 'CLOUDS', co, noise_scale=0.25, noise_depth=3)
+    grain = b.tex("grain", 'CLOUDS', co, noise_scale=0.04, noise_depth=2)
+    crack = b.m('SUBTRACT', 1.0, b.m('MULTIPLY', plates.outputs["Value"], 6.0), clamp=True)
+    pool = b.m('MULTIPLY', b.m('SUBTRACT', flow.outputs["Value"], 0.62), 4.0, clamp=True)
+    glow = b.m('MAXIMUM', crack, pool)
+    b.glow = glow
+    # the crust stands up; the molten rock lies low
+    height = b.m('SUBTRACT', b.m('ADD', b.m('MULTIPLY', grain.outputs["Value"], 0.3), 0.7), b.m('MULTIPLY', glow, 0.7))
+    tone = b.rng(grain.outputs["Value"], p["albedo"][0], p["albedo"][1])
+    rough = b.lerp(b.rng(grain.outputs["Value"], p["rough"][0] + 0.2, p["rough"][1]), p["rough"][0], glow)
+    # wear: the crust cooled paler
+    tone, rough = _wear(b, tone, rough, b.m('SUBTRACT', 1.0, glow), 1.3, 0.0)
+    return tone, rough, height, None
+
+
 _PATTERNS = {'ROCK': _rock, 'GRAVEL': _gravel, 'TARMAC': _tarmac, 'GRASS': _grass, 'BRICK': _brick,
              'BARK': _bark, 'WATER': _water, 'SKIN_LIGHT': _skin, 'SKIN_MEDIUM': _skin, 'SKIN_DARK': _skin,
-             'DIRT': _dirt, 'SAND': _sand, 'SNOW': _snow, 'CONCRETE': _concrete}
+             'DIRT': _dirt, 'SAND': _sand, 'SNOW': _snow, 'CONCRETE': _concrete, 'LAVA': _lava}
 
 
 def preset_group(key):
@@ -591,8 +621,11 @@ def apply_preset(mat, key):
     g.location = (node.location[0] - 300, node.location[1])
     for out_name, in_name in OUTPUTS:
         nt.links.new(g.outputs[out_name], node.inputs[in_name])
+    if p.get("emissive") and g.outputs.get("Emissive") is not None and node.inputs.get("Emissive Color") is not None:
+        nt.links.new(g.outputs["Emissive"], node.inputs["Emissive Color"])
     # the node's other values
-    sets = {"Metallic": 0.0, "Opacity": 1.0, "Emissive Intensity": 0.0, "Displace In": p["displace"],
+    sets = {"Metallic": 0.0, "Opacity": 1.0, "Emissive Intensity": p.get("emissive_intensity", 0.0),
+            "Displace In": p["displace"],
             "Displace Out": 0.0, "Subsurface": 0.0}
     node.remix_type = p.get("remix_type", 'OPAQUE')
     if node.remix_type == 'TRANSLUCENT':

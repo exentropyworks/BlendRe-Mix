@@ -47,6 +47,8 @@
 #include "KX_FontObject.h"  /* P8.20: the particle description */
 
 #include "KX_Scene.h"
+#include "KX_KetsjiEngine.h"  /* BGE-Remix P11 (B3): the clock (splashes) */
+#include "KX_PythonInit.h"
 #include "KX_GameObject.h"
 #include "KX_Light.h"
 #include "KX_Camera.h"
@@ -420,6 +422,8 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	}
 	m_max_swap_ms = 0.0;
 	m_frame_ms_max = 0.0;
+	m_frames_kept = 0;
+	m_frames_blank = 0;
 	m_last_render = 0.0;
 	m_last_end = 0.0;
 	m_first_textured_frame = -1;
@@ -453,6 +457,9 @@ KX_RemixRenderer::KX_RemixRenderer(RAS_ICanvas *canvas, bool window_mode_allowed
 	m_highlight_color[2] = 0.1f;
 	m_vp_x0 = m_vp_y0 = 0;
 	m_skinned_objects = m_deformed_objects = m_billboards = m_emitters = m_particle_draws = 0;
+	/* BGE-Remix P11 (B3) */
+	m_splash_mesh[0] = m_splash_mesh[1] = m_splash_material[0] = m_splash_material[1] = 0;
+	m_splash_draws = m_splashes_sent = m_last_splash_serial = 0;
 	m_deform_uploads = m_cpu_skin_notes = m_shadow_faces = m_picks_answered = 0;
 	m_pick_frames_total = m_pick_frames_count = 0;
 	m_skin_ms_total = 0.0;
@@ -612,6 +619,8 @@ bool KX_RemixRenderer::Start(KX_Scene *scene, int width, int height, const Setti
 		BRMX_Quality quality;
 		BRMX_quality_from_scene(scene->GetBlenderScene(), &quality);
 		BRMX_quality_apply(&quality);
+		/* P11 (A3): small images enlarged for Remix (Sharper Small Textures) */
+		brmx::TextureCache::enlarge_from_scene(scene->GetBlenderScene());
 		/* P9.1: the Render tab's curated settings and the tone mapping */
 		BRMX_scene_options_apply(scene->GetBlenderScene());
 		/* P9.7: the debug view chosen in the Remix View (a game started
@@ -2478,6 +2487,139 @@ uint64_t KX_RemixRenderer::EmitterMesh(KX_Scene *scene, KX_GameObject *obj, RAS_
 	return e.hash;
 }
 
+/* BGE-Remix P11 (B3): a splash's particles to Remix: a hidden ring (12
+ * triangles facing up) at the surface emits them, all within the first
+ * tenth of a second; the ring is drawn for the particles' shortest life, so
+ * none is born again. Water's are spray (a soft round picture, blended);
+ * lava's glow (the same picture, emissive and added) */
+void KX_RemixRenderer::DrawSplashes(KX_Scene *scene)
+{
+	const std::vector<KX_Splash> &splashes = scene->GetSplashes();
+	if (splashes.empty()) {
+		return;
+	}
+	const double now = KX_GetActiveEngine() ? KX_GetActiveEngine()->GetClockTime() : 0.0;
+	for (const KX_Splash &s : splashes) {
+		GPUParticleDesc gd;
+		float emit, model[4][4];
+		GPUHaloStyle halo;
+		KX_SplashDescription(s, &gd, &emit, model, &halo);
+		const double age = now - s.born;
+		if (age < 0.0 || age > gd.lifetime_min) {
+			continue;
+		}
+		const int t = s.type == 1 ? 1 : 0;
+		if (!m_splash_material[t]) {
+			/* the picture: the halo of the splash's look (as HaloMaterial) */
+			const int size = 64;
+			const uint64_t key = hash_bytes(&halo, sizeof(halo), 1469598103934665603ull);
+			wchar_t hex[24];
+			swprintf(hex, 24, L"%016llx", (unsigned long long)key);
+			const std::wstring folder = brmx::TextureCache::folder();
+			CreateDirectoryW(folder.c_str(), NULL);
+			const std::wstring path = folder + L"\\splash_k" + hex + L".dds";
+			if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+				std::vector<float> rgba((size_t)size * size * 4);
+				KX_HaloPicture(&halo, size, &rgba[0]);
+				std::vector<unsigned char> px(rgba.size());
+				for (size_t i = 0; i < rgba.size(); i++) {
+					float v = std::min(std::max(rgba[i], 0.0f), 1.0f);
+					if ((i & 3) != 3) {
+						v = (v <= 0.0031308f) ? v * 12.92f : 1.055f * powf(v, 1.0f / 2.4f) - 0.055f;
+					}
+					px[i] = (unsigned char)(v * 255.0f + 0.5f);
+				}
+				brb_texture_desc desc;
+				memset(&desc, 0, sizeof(desc));
+				desc.path = path.c_str();
+				desc.kind = BRB_TEXTURE_COLOR;
+				desc.width = size;
+				desc.height = size;
+				desc.rgba8 = &px[0];
+				if (m_bridge->texture_write(&desc, NULL) != 0) {
+					continue;
+				}
+			}
+			brb_material_desc d;
+			memset(&d, 0, sizeof(d));
+			d.hash = UniqueHash("splash", t ? "lava" : "water", &m_splash_material[t]);
+			d.type = BRB_MATERIAL_OPAQUE;
+			d.opacity = 1.0f;
+			d.alpha_blend = 1;
+			d.clamp = 1;
+			if (t) {
+				d.roughness = 1.0f;
+				d.emissive[0] = d.emissive[1] = d.emissive[2] = 1.0f;
+				d.emissive_intensity = 4.0f;
+				d.emissive_texture = path.c_str();
+				d.additive = 1;
+			}
+			else {
+				d.albedo[0] = d.albedo[1] = d.albedo[2] = 1.0f;
+				d.roughness = 0.2f;
+				d.albedo_texture = path.c_str();
+			}
+			m_bridge->material_create(&d);
+			m_splash_material[t] = d.hash;
+		}
+		if (!m_splash_mesh[t]) {
+			int ntris = 0;
+			const float *tris = KX_SplashDisc(&ntris);
+			Geometry g;
+			g.verts.resize(1);
+			g.indices.resize(1);
+			for (int i = 0; i < ntris * 3; i++) {
+				brb_vertex v;
+				memset(&v, 0, sizeof(v));
+				memcpy(v.position, &tris[3 * i], sizeof(v.position));
+				v.normal[2] = 1.0f;
+				v.uv[0] = 0.5f + 0.5f * v.position[0];
+				v.uv[1] = 0.5f + 0.5f * v.position[1];
+				v.color = 0xffffffffu;
+				g.verts[0].push_back(v);
+				g.indices[0].push_back((uint32_t)i);
+			}
+			g.materials.push_back(m_splash_material[t]);
+			const uint64_t hash = UniqueHash("splash ring", t ? "lava" : "water", &m_splash_mesh[t]);
+			if (!SendGeometry(hash, g)) {
+				m_hashes.erase(hash);
+				continue;
+			}
+			m_splash_mesh[t] = hash;
+		}
+		brb_particle_desc p;
+		memset(&p, 0, sizeof(p));
+		p.max_particles = (uint32_t)gd.max_particles;
+		p.spawn_rate = gd.spawn_rate;
+		p.lifetime_min = gd.lifetime_min;
+		p.lifetime_max = gd.lifetime_max;
+		p.speed_normal = gd.speed_normal;
+		p.cone_angle_deg = gd.cone_angle_deg;
+		p.gravity = gd.gravity;
+		p.drag = gd.drag;
+		p.size_min = gd.size_min;
+		p.size_max = gd.size_max;
+		p.size_end_scale = gd.size_end_scale;
+		memcpy(p.color_start, gd.color_start, sizeof(p.color_start));
+		memcpy(p.color_end, gd.color_end, sizeof(p.color_end));
+		p.hide_emitter = 1;
+		p.billboard = 0;
+		brb_draw_desc d;
+		memset(&d, 0, sizeof(d));
+		d.mesh = m_splash_mesh[t];
+		memcpy(d.model, model, sizeof(d.model));
+		d.flags = BRB_DRAW_DOUBLE_SIDED | BRB_DRAW_BLEND;
+		d.categories = BRB_CATEGORY_PARTICLE_EMITTER;
+		d.particles = &p;
+		m_bridge->frame_draw_ex(&d);
+		m_splash_draws++;
+		if (s.serial > m_last_splash_serial) {
+			m_last_splash_serial = s.serial;
+			m_splashes_sent++;
+		}
+	}
+}
+
 bool KX_RemixRenderer::DrawEmitters(KX_Scene *scene, KX_GameObject *obj, Object *ob, const float model[16],
                                     uint32_t pick)
 {
@@ -3339,6 +3481,7 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 		m_skin_ms_frames++;
 	}
 	(void)ts;
+	DrawSplashes(scene);  /* BGE-Remix P11 (B3) */
 	PruneDynamic(scene);
 	UpdatePicking(scene);
 
@@ -3385,7 +3528,17 @@ void KX_RemixRenderer::RenderScene(KX_Scene *scene, KX_Camera *cam, const MT_Mat
 	const int win_y = win_vp ? win_vp[1] : viewport.GetBottom();
 	if (m_mode == BRB_MODE_DIRECT) {
 		const double t2 = now_seconds();
-		BRMX_present_draw(win_x, win_y, width, height);
+		if (!BRMX_present_draw(win_x, win_y, width, height)) {
+			/* P11 fix: Remix had no new picture for this frame, which left
+			 * the cleared window (black) on screen (P11's motion check: a
+			 * black screenshot); its last picture is drawn again */
+			if (BRMX_present_draw_kept(win_x, win_y, width, height)) {
+				m_frames_kept++;
+			}
+			else {
+				m_frames_blank++;
+			}
+		}
 		m_upload_ms.push_back((float)((now_seconds() - t2) * 1000.0));
 		std::wstring path;
 		if (m_frames == m_screenshot_frame && env_path(L"BGE_REMIX_SCREENSHOT", path)) {
@@ -3499,6 +3652,8 @@ void KX_RemixRenderer::WriteStats()
 	fprintf(f, "  \"mode\": \"%s\",\n", m_mode == BRB_MODE_COPY ? "copy" : m_mode == BRB_MODE_CHILD ? "window" :
 	                                       m_mode == BRB_MODE_DIRECT ? "direct" : "none");
 	fprintf(f, "  \"direct_frames\": %d,\n", BRMX_present_direct_frames() - m_direct_frames_base);
+	fprintf(f, "  \"frames_kept\": %d,\n", m_frames_kept);
+	fprintf(f, "  \"frames_blank\": %d,\n", m_frames_blank);
 	fprintf(f, "  \"copy_mode_reason\": \"%s\",\n", m_direct_note.c_str());
 	fprintf(f, "  \"status\": \"%s\",\n", status.c_str());
 	fprintf(f, "  \"notice\": \"%s\",\n", notice.c_str());
@@ -3546,6 +3701,8 @@ void KX_RemixRenderer::WriteStats()
 	fprintf(f, "  \"dynamic_ms_mean\": %.4f,\n", m_skin_ms_frames ? m_skin_ms_total / m_skin_ms_frames : 0.0);
 	fprintf(f, "  \"billboards\": %d,\n  \"particle_draws\": %d,\n  \"emitters\": %d,\n  \"gpu_emitters\": %d,\n",
 	        m_billboards, m_particle_draws, m_emitters, st.emitters);
+	/* BGE-Remix P11 (B3): splashes sent to Remix's GPU particles */
+	fprintf(f, "  \"splashes_sent\": %d,\n  \"splash_emitter_draws\": %d,\n", m_splashes_sent, m_splash_draws);
 	fprintf(f, "  \"picks_answered\": %d,\n  \"pick_frames_mean\": %.3f\n", m_picks_answered,
 	        m_pick_frames_count ? (double)m_pick_frames_total / m_pick_frames_count : -1.0);
 	fprintf(f, "}\n");

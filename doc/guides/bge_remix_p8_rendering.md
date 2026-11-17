@@ -407,12 +407,18 @@ example `BGE_REMIX_NO_INSTANCING=1`), or from a game script with
   of their colour in Remix than in the fallback: Remix's ACES converts
   colours in a way the fallback's curve does not copy (P9.2). Very dark
   colours also read a little lighter in Remix.
-- Image textures and normal maps look softer in Remix than in the fallback,
-  less so at larger window sizes, most likely Remix's denoiser (P9.2b found
-  no Remix setting that changes it: texture detail, anisotropic filtering,
-  upscaling, the graphics preset). Small images on their own also reach
-  Remix's picture at lower detail (P10.4: packing them sharpens them). To be
-  looked into with P14's quality work (decided 7 Nov).
+- Image textures and normal maps look softer in Remix than in the fallback.
+  P11 found why: Remix 1.6.1 draws a texture with less detail than the
+  image holds, and small images lose the most (fine bars from a 256 pixel
+  image come out plain grey; the same bars from a 1024 pixel image stay).
+  It is not the denoiser, DLSS, the quality preset or the camera, and none
+  of Remix's texture options changes it. **Sharper Small Textures** (Render
+  tab, on by default) enlarges images under 1024 pixels before Remix gets
+  them, which brings most of the detail back; the finest one-pixel detail
+  stays softer than in the fallback. It costs graphics memory (a 256 pixel
+  image takes about 1 MB instead of 64 KB) and a little encoding time on
+  the first start. Baked procedural textures and packed atlas pages keep
+  their own sizes.
 - In Remix a hemi lamp is sky light: it lights the whole scene, and no lamp
   keeps to its own layer.
 - Remix's lights reach everywhere: a lamp's Distance (and Sphere) does not

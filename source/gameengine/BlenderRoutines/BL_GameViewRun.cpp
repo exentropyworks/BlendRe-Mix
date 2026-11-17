@@ -75,6 +75,7 @@ extern "C" {
 #include "BL_GameViewRun.h"
 
 extern "C" {
+	#include "DNA_constraint_types.h"
 	#include "DNA_object_types.h"
 	#include "DNA_property_types.h"
 	#include "DNA_scene_types.h"
@@ -83,6 +84,7 @@ extern "C" {
 	#include "DNA_windowmanager_types.h"
 
 	#include "BKE_context.h"
+	#include "BKE_idprop.h"  /* P11 (B2) */
 	#include "BKE_global.h"
 	#include "BKE_main.h"
 
@@ -550,6 +552,67 @@ std::map<KX_GameObject *, int> contacts(KX_Scene *scene)
 	return n;
 }
 
+/* BGE-Remix P11 (B1): a joint of an articulation (PhysX) live, in Ayhan's
+ * colours: White at rest, Green moving, Yellow at a limit, Blue driven (a
+ * motor, a spring, a target or speed set), Red a joint of an articulation's
+ * body left ordinary; false: no articulation on either body (the joint's
+ * colour stays) */
+bool joint_live(KX_Scene *scene, KX_GameObject *go, const char *name,
+                const std::map<std::string, KX_GameObject *> &objs, GVLive &l)
+{
+	PHY_IPhysicsEnvironment *env = scene ? scene->GetPhysicsEnvironment() : NULL;
+	Object *ob = go->GetBlenderObject();
+	if (!env || !ob || !go->GetPhysicsController()) {
+		return false;
+	}
+	bRigidBodyJointConstraint *dat = NULL;
+	for (bConstraint *con = (bConstraint *)ob->constraints.first; con; con = con->next) {
+		if (con->type == CONSTRAINT_TYPE_RIGIDBODYJOINT && con->data && STREQ(con->name, name)) {
+			dat = (bRigidBodyJointConstraint *)con->data;
+		}
+	}
+	if (!dat) {
+		return false;
+	}
+	KX_GameObject *target = NULL;
+	if (dat->tar) {
+		std::map<std::string, KX_GameObject *>::const_iterator it = objs.find(dat->tar->id.name + 2);
+		target = it == objs.end() ? NULL : it->second;
+	}
+	PHY_IPhysicsController *a = go->GetPhysicsController();
+	PHY_IPhysicsController *b = target ? target->GetPhysicsController() : NULL;
+	PHY_ArticulationInfo info;
+	if (!env->GetArticulation(a, &info) && !(b && env->GetArticulation(b, &info))) {
+		return false;
+	}
+	/* the joint is the inbound joint of whichever is the other's child */
+	int id = 0;
+	for (size_t i = 1; i < info.links.size() && b; i++) {
+		PHY_IPhysicsController *parent = info.links[info.parents[i]];
+		if ((info.links[i] == a && parent == b) || (info.links[i] == b && parent == a)) {
+			id = info.joints[i];
+		}
+	}
+	int axis = -1;
+	float pos = 0.0f;
+	const int act = id ? env->GetArticulationJointActivity(id, &axis, &pos) : -1;
+	if (act < 0) {
+		l.state = GV_STATE_RED;
+		BLI_strncpy(l.text, "ordinary joint", sizeof(l.text));
+		return true;
+	}
+	static const short states[4] = {GV_STATE_WHITE, GV_STATE_GREEN, GV_STATE_YELLOW, GV_STATE_BLUE};
+	l.state = states[act];
+	l.fired = act == 1 || act == 3;
+	if (axis >= 3) {
+		BLI_snprintf(l.text, sizeof(l.text), "%.1f deg", pos * 57.29578f);
+	}
+	else if (axis >= 0) {
+		BLI_snprintf(l.text, sizeof(l.text), "%.3f", pos);
+	}
+	return true;
+}
+
 void update_live(KX_Scene *scene)
 {
 	Run &r = run();
@@ -611,12 +674,58 @@ void update_live(KX_Scene *scene)
 				r.live_prev[i] = l.text;
 			}
 		}
+		else if (STRPREFIX(e.kind, "joint:") && go) {
+			joint_live(scene, go, e.name, objs, l);
+		}
 		else if (STRPREFIX(e.kind, "body:") && go) {
 			std::map<KX_GameObject *, int>::iterator it = touching.find(go);
 			const int n = it == touching.end() ? 0 : it->second;
 			if (n) {
 				BLI_snprintf(l.text, sizeof(l.text), "%d contact%s", n, n == 1 ? "" : "s");
 				l.fired = 1;
+			}
+			/* BGE-Remix P11 (B2): a destructible's parent piece, in Ayhan's
+			 * colours: White whole or at rest, Green breaking, Yellow at the
+			 * Destruction Budget, Blue damaged by a script */
+			PHY_IPhysicsEnvironment *env = scene->GetPhysicsEnvironment();
+			Object *bo = go->GetBlenderObject();
+			if (env && bo && bo->id.properties && go->GetPhysicsController() &&
+			    IDP_GetPropertyFromGroup(bo->id.properties, "bge_destructible"))
+			{
+				const int act = env->GetDestructionActivity(go->GetPhysicsController());
+				PHY_DestructibleInfo info;
+				if (act >= 0 && env->GetDestructible(go->GetPhysicsController(), &info)) {
+					static const short states[4] = {GV_STATE_WHITE, GV_STATE_GREEN, GV_STATE_YELLOW, GV_STATE_BLUE};
+					l.state = states[act];
+					l.fired = act == 1 || act == 3;
+					BLI_snprintf(l.text, sizeof(l.text), "%d group%s, %d of %d bonds broken", info.groups,
+					             info.groups == 1 ? "" : "s", info.bondsBroken, info.bonds);
+				}
+			}
+			/* BGE-Remix P11 (B3): a fluid volume, in Ayhan's colours: White
+			 * nothing in it, Green something in it, Blue a splash just now;
+			 * an object in one: Green it floats, Yellow it sinks */
+			if (env && go->GetPhysicsController()) {
+				PHY_IPhysicsController *ctrl = go->GetPhysicsController();
+				const int act = env->GetFluidActivity(ctrl);
+				PHY_FluidInfo fi;
+				if (act >= 0 && env->GetFluid(ctrl, &fi)) {
+					l.state = act == 3 ? GV_STATE_BLUE : (act == 1 ? GV_STATE_GREEN : GV_STATE_WHITE);
+					l.fired = act == 3;
+					const int n = (int)fi.inside.size();
+					BLI_snprintf(l.text, sizeof(l.text), "%s, %d object%s in it%s", fi.type == 1 ? "lava" : "water", n,
+					             n == 1 ? "" : "s", act == 3 ? ", a splash" : "");
+				}
+				else if (!(bo && bo->id.properties && IDP_GetPropertyFromGroup(bo->id.properties, "bge_destructible") &&
+				           env->GetDestructionActivity(ctrl) > 0))
+				{
+					/* (a destructible's own colours first, while it breaks) */
+					const int st = env->GetFluidState(ctrl);
+					if (st == 1 || st == 2) {
+						l.state = st == 1 ? GV_STATE_GREEN : GV_STATE_YELLOW;
+						BLI_snprintf(l.text, sizeof(l.text), "%s", st == 1 ? "floats" : "sinks");
+					}
+				}
 			}
 		}
 		if (l.fired) {

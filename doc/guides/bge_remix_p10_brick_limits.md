@@ -129,7 +129,7 @@ Each entry gives:
 - **Old games**: yes.
 
 ### A12. Collision sensors may miss hits with physics substeps above 1
-- **Not done**: test first (not approved).
+- **Fixed** (P11, test T11.a12): confirmed by the test first (a ball thrown at a wall six times: Bullet at 2 substeps saw 0 of 6 bounces, 4 substeps 3 of 6; PhysX at 4 substeps 3 of 6). A touch that began and ended inside one frame was gone before the frame's report. Bullet now reports contacts after each substep, and PhysX also reports the pairs that touched during the frame. With 1 substep nothing changed.
 - **What**: this was reported, but never confirmed by a developer.
 - **Evidence**: [developer.blender.org T39075](https://developer.blender.org/T39075), item 1.
 - **Who**: fast objects with substeps.
@@ -171,7 +171,7 @@ Each entry gives:
 - **Old games**: yes.
 
 ### A17. An object added from a scaled child comes out scaled
-- **Not done**: test first (not approved).
+- **Tested, by design** (P11, test T11.a17; decided 8 Nov 2026: kept as it is): an added object takes its spawner's world size, whether the spawner is scaled itself or sits under a scaled parent. Bullet and PhysX do the same, and the added object's physics shape is the size it is drawn. To add objects at their own size, use a spawner whose world scale is 1 (for example an empty that is not a child of a scaled object).
 - **What**: this was reported, and it is unclear whether it is a bug.
 - **Evidence**: [developer.blender.org T39075](https://developer.blender.org/T39075), item 7.
 - **Who**: Add Object from parented spawners.

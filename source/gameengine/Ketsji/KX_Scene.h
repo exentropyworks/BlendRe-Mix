@@ -95,6 +95,17 @@ class KX_ObstacleSimulation;
 /* for ID freeing */
 #define IS_TAGGED(_id) ((_id) && (((ID *)_id)->tag & LIB_TAG_DOIT))
 
+/* BGE-Remix P11 (B3): a splash the game shows (where a body crossed a fluid
+ * volume's surface fast): in the game's picture and Remix's GPU particles */
+struct KX_Splash
+{
+	MT_Vector3 point, up;   /* on the surface (world), its normal */
+	float size, speed;      /* the body's size (m), how fast it went in (m/s) */
+	int type;               /* 0 water, 1 lava */
+	double born;            /* the game's clock (seconds) */
+	int serial;
+};
+
 /**
  * The KX_Scene holds all data for an independent scene. It relates
  * KX_Objects to the specific objects in the modules.
@@ -297,6 +308,8 @@ protected:
 
 	struct Scene* m_blenderScene;
 	int m_timersGameTime;  /* BGE-Remix P10.13 (A6): -1 not read yet, 0 stock, 1 game time */
+	std::vector<KX_Splash> m_splashes;  /* BGE-Remix P11 (B3) */
+	int m_splashSerial;
 
 	RAS_2DFilterManager m_filtermanager;
 
@@ -571,6 +584,13 @@ public:
 	/* BGE-Remix P8.5: texture slots mapped by Object coordinates follow
 	 * their object's game object (gives the places to the GPU materials) */
 	void UpdateTexcoObjects(void);
+
+	/* BGE-Remix P11 (B3): the splashes the physics made (taken after each
+	 * physics step), kept while they show (SPLASH_SECONDS) */
+	static const double SPLASH_SECONDS;
+	void AddSplash(const MT_Vector3 &point, const MT_Vector3 &up, float size, float speed, int type, double now);
+	const std::vector<KX_Splash> &GetSplashes() const { return m_splashes; }
+	int SplashesMade() const { return m_splashSerial; }
 
 	// LoD Hysteresis functions
 	void SetLodHysteresis(bool active);

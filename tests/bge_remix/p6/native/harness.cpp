@@ -1,11 +1,13 @@
 /* BGE-Remix P6: native checks of the PhysX backend (CPU), without Blender.
  * Each test builds a small world through the same calls the game engine
  * makes, runs it at 60 Hz and compares with what Bullet does. */
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -682,6 +684,9 @@ static void test_character()
 static void test_vehicle()
 {
 	printf("vehicle: an 800 kg car on 4 raycast wheels, rear-wheel drive, then brakes\n");
+	/* (the wheels' motion states are the caller's, as KX_VehicleWrapper's:
+	 * freed after the world, which uses them to the end) */
+	std::vector<std::unique_ptr<PxDefaultMotionState> > owned;
 	World w;
 	ground(w, 0.8f);
 	PxPhysicsController *car = add(w, shape_box(1.0f, 2.0f, 0.4f), RIGID, 0, 0, 1.2f, 800.0f);
@@ -697,6 +702,7 @@ static void test_vehicle()
 	const float pts[4][2] = {{-wx, wy}, {wx, wy}, {-wx, -wy}, {wx, -wy}};
 	for (int i = 0; i < 4; i++) {
 		PxDefaultMotionState *ms = new PxDefaultMotionState();
+		owned.emplace_back(ms);
 		wheels.push_back(ms);
 		v->AddWheel(ms, MT_Vector3(pts[i][0], pts[i][1], wz), MT_Vector3(0, 0, -1), MT_Vector3(-1, 0, 0), 0.4f,
 		            0.4f, i < 2);
@@ -864,6 +870,438 @@ static void test_sleep()
 	CHECK(balls[2]->GetDynamic()->isSleeping(), "with a deactivation time of 2 s it sleeps when still");
 }
 
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P11 (B1): articulations */
+
+static int joint_e(World &w, PxPhysicsController *a, PxPhysicsController *b, PHY_ConstraintType t, MT_Vector3 piv,
+                   MT_Vector3 eul)
+{
+	/* as SetupObjectConstraints: the frame from the joint's Euler angles */
+	MT_Matrix3x3 m(eul);
+	MT_Vector3 x = m.getColumn(0), y = m.getColumn(1), z = m.getColumn(2);
+	return w.env->CreateConstraint(a, b, t, piv.x(), piv.y(), piv.z(), x.x(), x.y(), x.z(), y.x(), y.y(), y.z(),
+	                               z.x(), z.y(), z.z(), 128);
+}
+
+static const float kPi = 3.14159265358979f;
+
+static void test_articulation()
+{
+	printf("\narticulation (P11 B1)\n");
+	{
+		/* a rope bridge hanging on an arc, tied at both ends, with a loop */
+		World w;
+		ground(w);
+		PxPhysicsController *left = add(w, shape_box(0.15f, 0.15f, 1.0f), RIGID, -2.9f, 0, 1.0f, 20.0f, 0.5f, 0,
+		                                [](PxCtrlInfo &ci) { ci.articulation = 2; });
+		std::vector<PxPhysicsController *> p;
+		PxPhysicsController *prev = left;
+		const MT_Vector3 hy(0, 0, kPi / 2);
+		float ex = -2.75f, ez = 2.0f;
+		const float sag = 25.0f * kPi / 180.0f;
+		for (int i = 0; i < 10; i++) {
+			const float phi = -sag + 2.0f * sag * (i + 0.5f) / 10;
+			PxCtrlInfo ci;
+			ci.shape = shape_box(0.25f, 0.5f, 0.04f);
+			ci.mass = 2.0f;
+			ci.dyna = ci.rigid = true;
+			ci.filterGroup = PXF_DEFAULT;
+			ci.filterMask = PXF_ALL;
+			PxDefaultMotionState *ms = new PxDefaultMotionState();
+			ms->SetWorldPosition(ex + 0.25f * cosf(phi), 0, ez + 0.25f * sinf(phi));
+			ms->SetWorldOrientation(0.0f, sinf(-phi * 0.5f), 0.0f, cosf(-phi * 0.5f));
+			PxPhysicsController *c = w.env->CreateController(ci, ms, true);
+			ci.shape->Release();
+			w.ctrls.push_back(c);
+			ex += 0.5f * cosf(phi);
+			ez += 0.5f * sinf(phi);
+			w.env->SetConstraintParam(joint_e(w, c, prev, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(-0.25f, 0, 0), hy), 3,
+			                          1.0f, -1.0f);
+			p.push_back(c);
+			prev = c;
+		}
+		PxPhysicsController *right = add(w, shape_box(0.15f, 0.15f, 1.0f), STATIC, ex + 0.15f, 0, 1.0f, 0);
+		const int tie = joint_e(w, p[9], right, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(0.25f, 0, 0), hy);
+		w.env->SetConstraintParam(tie, 3, 1.0f, -1.0f);
+		const int loop = joint_e(w, p[4], p[6], PHY_POINT2POINT_CONSTRAINT, MT_Vector3(0.25f, 0, 0), MT_Vector3(0, 0, 0));
+		float fastest = 0.0f;
+		const float mid = (float)pos(p[4]).z();
+		for (int f = 0; f < 300; f++) {
+			w.step();
+			for (PxPhysicsController *c : p) {
+				fastest = std::max(fastest, (float)c->GetLinearVelocity().length());
+			}
+		}
+		PHY_ArticulationInfo info;
+		const bool art = w.env->GetArticulation(left, &info);
+		CHECK(art && info.links.size() == 11, "the bridge: one articulation of 11 links (%d)", (int)info.links.size());
+		CHECK(info.ordinary.size() == 2 &&
+		          std::count(info.ordinary.begin(), info.ordinary.end(), tie) &&
+		          std::count(info.ordinary.begin(), info.ordinary.end(), loop),
+		      "the tie to the still post and the loop's ball joint left ordinary, the hinges in it");
+		CHECK(fastest < 2.0f, "it hangs still (fastest plank %.3f m/s)", fastest);
+		CHECK(fabs(pos(p[4]).z() - mid) < 0.05, "plank 4 where it hung (%.3f, from %.3f)", (float)pos(p[4]).z(), mid);
+	}
+	{
+		/* a door: at rest, moving, at its limit, driven */
+		World w;
+		ground(w);
+		PxPhysicsController *post = add(w, shape_box(0.05f, 0.05f, 1.1f), RIGID, 0, 0, 1.3f, 5.0f, 0.5f, 0,
+		                                [](PxCtrlInfo &ci) { ci.articulation = 2; });
+		PxPhysicsController *door = add(w, shape_box(0.5f, 0.03f, 1.0f), RIGID, 0.55f, 0, 1.3f, 10.0f);
+		const int id = joint_e(w, door, post, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(-0.5f, 0, 0),
+		                       MT_Vector3(0, -kPi / 2, 0));
+		w.env->SetConstraintParam(id, 3, -kPi / 2, 10.0f * kPi / 180.0f);
+		int axis = -1;
+		float at = 0.0f;
+		w.step(10);
+		const int rest = w.env->GetArticulationJointActivity(id, &axis, &at);
+		door->ApplyImpulse(MT_Point3(1.0, 0, 1.3), MT_Vector3(0, 15, 0), false);
+		w.step(5);
+		const int moving = w.env->GetArticulationJointActivity(id, &axis, &at);
+		w.step(60);
+		const int limit = w.env->GetArticulationJointActivity(id, &axis, &at);
+		const float open = at;
+		const float speed = 1.0f;
+		w.env->SetArticulationDrive(id, -1, NULL, &speed, 0.0f, 1e5f, 500.0f);
+		w.step(20);
+		float now = 0.0f, vel = 0.0f;
+		const int driven = w.env->GetArticulationJointActivity(id, &axis, &at);
+		w.env->GetArticulationJoint(id, -1, &now, &vel);
+		CHECK(rest == 0 && moving == 1 && limit == 2 && driven == 3,
+		      "the hinge at rest, moving, at its limit, driven (%d %d %d %d)", rest, moving, limit, driven);
+		CHECK(axis == 3 && fabs(open + kPi / 2) < 0.01, "pushed open to its limit, the joint's -90 degrees (%.1f)",
+		      open * 57.2958f);
+		CHECK(fabs(vel - speed) < 0.05f, "driven at its speed (%.3f rad/s)", vel);
+	}
+}
+
+/* P11 (B2): destruction (NVIDIA Blast) */
+static std::vector<PxPhysicsController *> boxes(World &w, const char *key, int nx, int nz, float size, float x0,
+                                                 float z0, bool anchored, float strength = 100.0f)
+{
+	std::vector<PxPhysicsController *> out;
+	const float h = size * 0.5f;
+	for (int k = 0; k < nz; k++) {
+		for (int i = 0; i < nx; i++) {
+			PxPhysicsController *c = add(w, shape_box(h, h, h), RIGID, x0 + size * (i + 0.5f), 0, z0 + size * (k + 0.5f),
+			                             2.0f);
+			w.env->AddDestructionPiece(c, key, out.empty(), strength, anchored);
+			out.push_back(c);
+		}
+	}
+	return out;
+}
+
+static float moved(const std::vector<PxPhysicsController *> &p, const std::vector<MT_Vector3> &was)
+{
+	float most = 0.0f;
+	for (size_t i = 0; i < p.size(); i++) {
+		most = std::max(most, (float)(pos(p[i]) - was[i]).length());
+	}
+	return most;
+}
+
+/* ------------------------------------------------------------------------- */
+/* BGE-Remix P11 (B3): fluid volumes */
+
+/* a water (or lava) box: centre, half sizes; its top is the surface */
+static PxPhysicsController *fluid(World &w, float x, float y, float z, float hx, float hy, float hz, int type = 0,
+                                  const physx::PxVec3 &current = physx::PxVec3(0.0f))
+{
+	PxPhysicsController *v = add(w, shape_box(hx, hy, hz), GHOST, x, y, z, 0.0f);
+	w.env->AddFluidVolume(v, type, type ? 3100.0f : 1000.0f, type ? 24.0f : 3.0f, current, true);
+	return v;
+}
+
+static physx::PxTransform pose(PxPhysicsController *c)
+{
+	return c->GetDynamic() ? c->GetDynamic()->getGlobalPose() : physx::PxTransform(physx::PxIdentity);
+}
+
+static void test_fluids()
+{
+	printf("\nfluids (P11 B3)\n");
+	{
+		/* a 6 x 6 x 2 m pool (its surface at z 2): a 1 m box of 300 kg floats
+		 * 0.3 m deep; one of 2000 kg goes to the bottom */
+		World w;
+		ground(w);
+		PxPhysicsController *pool = fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *light = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, -1.2f, 0, 2.5f, 300.0f);
+		PxPhysicsController *heavy = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, 1.2f, 0, 2.5f, 2000.0f);
+		w.step(60 * 8);
+		const double depth = 2.0 - (pos(light).z() - 0.5);
+		CHECK(fabs(depth - 0.3) < 0.02, "pool: the 300 kg box floats 0.3 m deep (%.3f m)", depth);
+		CHECK(light->GetLinearVelocity().length() < 0.02, "pool: and is at rest (%.3f m/s)",
+		      light->GetLinearVelocity().length());
+		CHECK(fabs(pos(heavy).z() - 0.5) < 0.02, "pool: the 2000 kg box rests on the bottom (z %.3f)", pos(heavy).z());
+		CHECK(w.env->GetFluidState(light) == 1 && w.env->GetFluidState(heavy) == 2,
+		      "pool: one floats, one sinks (%d, %d)", w.env->GetFluidState(light), w.env->GetFluidState(heavy));
+		const float sub = w.env->GetSubmerged(pool, light);
+		CHECK(fabs(sub - 0.3f) < 0.02f, "pool: 0.3 of it under the surface (%.3f)", sub);
+		PHY_FluidInfo info;
+		const bool got = w.env->GetFluid(pool, &info);
+		CHECK(got && info.inside.size() == 2, "pool: two objects in it (%d)", (int)info.inside.size());
+		CHECK(w.env->GetFluidActivity(pool) == 1, "pool: in use (%d)", w.env->GetFluidActivity(pool));
+	}
+	{
+		/* a light ball dropped from 3 m: it slows in the water, comes to rest
+		 * at the surface, and splashes once where it went in */
+		World w;
+		ground(w);
+		PxPhysicsController *pool = fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *ball = add(w, shape_sphere(0.25f), RIGID, 0.5f, -0.3f, 5.25f, 20.0f);
+		float in_speed = 0.0f, after = 0.0f, low = 1e9f;
+		int entered = -1;
+		std::vector<PHY_FluidSplash> splashes;
+		int activity = -1;
+		for (int i = 0; i < 60 * 10; i++) {
+			w.step(1);
+			w.env->TakeFluidSplashes(splashes);
+			if (!splashes.empty() && activity < 0) {
+				activity = w.env->GetFluidActivity(pool);
+			}
+			const double z = pos(ball).z();
+			if (entered < 0 && z - 0.25 < 2.0) {
+				entered = i;
+				in_speed = (float)ball->GetLinearVelocity().length();
+			}
+			if (entered >= 0 && i == entered + 15) {
+				after = (float)ball->GetLinearVelocity().length();
+			}
+			if (entered >= 0) {
+				low = std::min(low, (float)pos(ball).z());
+			}
+		}
+		CHECK(in_speed > 6.0f, "drop: it went in fast (%.2f m/s)", in_speed);
+		CHECK(after < 0.5f * in_speed, "drop: it slowed sharply in the water (%.2f m/s a quarter second in)", after);
+		CHECK(low > 0.3f, "drop: it never reached the bottom (lowest z %.2f)", low);
+		const double depth = 2.0 - (pos(ball).z() - 0.25);
+		CHECK(ball->GetLinearVelocity().length() < 0.05 && depth > 0.0 && depth < 0.5,
+		      "drop: at rest at the surface (%.3f m under, %.3f m/s)", depth, ball->GetLinearVelocity().length());
+		/* (bobbing back, it may splash again, far less) */
+		bool smaller = true;
+		for (size_t i = 1; i < splashes.size(); i++) {
+			smaller = smaller && splashes[i].speed < 0.5f * splashes[0].speed;
+		}
+		CHECK(!splashes.empty() && smaller, "drop: one splash where it went in (%d, the rest from bobbing back, %s)",
+		      (int)splashes.size(), smaller ? "far smaller" : "not smaller");
+		if (!splashes.empty()) {
+			const PHY_FluidSplash &s = splashes[0];
+			CHECK(fabs(s.point.z() - 2.0) < 1e-3 && fabs(s.point.x() - 0.5) < 0.05 && fabs(s.point.y() + 0.3) < 0.05,
+			      "drop: on the surface where it went in (%.2f %.2f %.2f)", s.point.x(), s.point.y(), s.point.z());
+			CHECK(s.speed > 6.0f && fabs(s.size - 0.5f) < 0.05f && s.type == 0, "drop: speed %.2f, size %.2f, type %d",
+			      s.speed, s.size, s.type);
+		}
+		CHECK(activity == 3, "drop: the pool shows the splash (%d)", activity);
+	}
+	{
+		/* a 20 x 4 x 1 m river with a 1 m/s current along x: a raft drifts
+		 * 3 to 5 m in 5 s, hardly sideways */
+		World w;
+		ground(w);
+		fluid(w, 0, 0, 0.5f, 10, 2, 0.5f, 0, physx::PxVec3(1.0f, 0.0f, 0.0f));
+		PxPhysicsController *raft = add(w, shape_box(1.0f, 0.5f, 0.1f), RIGID, -6.0f, 0, 1.0f, 100.0f);
+		w.step(30);
+		const MT_Vector3 was = pos(raft);
+		w.step(60 * 5);
+		const MT_Vector3 d = pos(raft) - was;
+		CHECK(d.x() > 3.0 && d.x() < 5.0, "river: the raft drifted %.2f m downstream", d.x());
+		CHECK(fabs(d.y()) < 0.2, "river: and %.3f m sideways", d.y());
+	}
+	{
+		/* lava against water: a 1 m box of 1500 kg sinks in water, floats in
+		 * lava; a 300 kg one pushed down comes up faster, thrown in stops
+		 * sooner, in lava */
+		float up_speed[2], kept[2];
+		double rest_z[2];
+		for (int lava = 0; lava < 2; lava++) {
+			World w;
+			ground(w);
+			fluid(w, 0, 0, 1, 3, 3, 1, lava);
+			PxPhysicsController *b = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, -1.5f, 0, 2.5f, 1500.0f);
+			PxPhysicsController *p = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, 1.5f, -1.5f, 1.5f, 300.0f);
+			PxPhysicsController *t = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, -2.0f, 2.0f, 2.2f, 300.0f);
+			t->SetLinearVelocity(MT_Vector3(5.0f, 0.0f, 0.0f), false);
+			/* (the pushed box let go 1 m down: how fast it starts up) */
+			w.step(1);
+			up_speed[lava] = (float)p->GetLinearVelocity().z();
+			w.step(59);
+			kept[lava] = (float)t->GetLinearVelocity().x();
+			w.step(60 * 8);
+			rest_z[lava] = pos(b).z();
+		}
+		CHECK(fabs(rest_z[0] - 0.5) < 0.02, "lava/water: the 1500 kg box sinks in water (z %.3f)", rest_z[0]);
+		CHECK(fabs((2.0 - (rest_z[1] - 0.5)) - 1500.0 / 3100.0) < 0.03, "lava/water: and floats in lava, %.3f m deep",
+		      2.0 - (rest_z[1] - 0.5));
+		CHECK(up_speed[1] > up_speed[0], "lava/water: pushed down, lava pushes it up harder (%.3f against %.3f m/s after a frame)",
+		      up_speed[1], up_speed[0]);
+		CHECK(kept[1] < kept[0], "lava/water: thrown in, it stops sooner in lava (%.2f against %.2f m/s)", kept[1],
+		      kept[0]);
+	}
+	{
+		/* (review R2) a two-link articulation in the river drifts as the same
+		 * two bodies joined by an ordinary hinge do */
+		float drift[2];
+		for (int art = 0; art < 2; art++) {
+			World w;
+			ground(w);
+			fluid(w, 0, 0, 0.5f, 10, 2, 0.5f, 0, physx::PxVec3(1.0f, 0.0f, 0.0f));
+			PxPhysicsController *a = add(w, shape_box(0.5f, 0.3f, 0.1f), RIGID, -6.0f, 0, 1.0f, 30.0f, 0.5f, 0,
+			                             [art](PxCtrlInfo &ci) { ci.articulation = art ? 1 : 0; });
+			PxPhysicsController *b = add(w, shape_box(0.5f, 0.3f, 0.1f), RIGID, -5.0f, 0, 1.0f, 30.0f);
+			joint_e(w, b, a, PHY_LINEHINGE_CONSTRAINT, MT_Vector3(-0.5f, 0, 0), MT_Vector3(0, 0, 0));
+			w.step(30);
+			const MT_Vector3 was = pos(a);
+			CHECK((a->GetArticulation() != NULL) == (art == 1), "links: %s", art ? "an articulation" : "a hinge");
+			w.step(300);
+			drift[art] = (float)(pos(a) - was).x();
+		}
+		CHECK(drift[1] > 3.0f && fabs(drift[1] - drift[0]) < 0.1f,
+		      "links: the articulation drifts %.2f m in 5 s, as the hinged bodies (%.2f m)", drift[1], drift[0]);
+	}
+	{
+		/* (review R3) the pool made half as deep while the game runs: the box
+		 * floats on the new surface (1.5 m) */
+		World w;
+		ground(w);
+		PxPhysicsController *pool = fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *box = add(w, shape_box(0.5f, 0.5f, 0.5f), RIGID, 0, 0, 2.5f, 300.0f);
+		w.step(60);
+		/* (as the game: the object's new scale through its motion state) */
+		static_cast<PxDefaultMotionState *>(pool->GetMotionState())->SetWorldScaling(1.0f, 1.0f, 0.5f);
+		w.step(60 * 8);
+		const double depth = 1.5 - (pos(box).z() - 0.5);
+		CHECK(fabs(depth - 0.3) < 0.02, "rescaled: the box floats 0.3 m under the new surface (%.3f m)", depth);
+	}
+	{
+		/* a plank (2 x 0.4 x 0.2 m, 30 kg) stood on end in the pool: it turns
+		 * and lies flat */
+		World w;
+		ground(w);
+		fluid(w, 0, 0, 1, 3, 3, 1);
+		PxPhysicsController *plank = add(w, shape_box(0.2f, 0.1f, 1.0f), RIGID, 0, 0, 2.2f, 30.0f);
+		plank->GetDynamic()->setGlobalPose(
+		        physx::PxTransform(physx::PxVec3(0, 0, 2.2f), physx::PxQuat(0.1f, physx::PxVec3(0, 1, 0))));
+		w.step(60 * 10);
+		const physx::PxVec3 axis = pose(plank).q.rotate(physx::PxVec3(0, 0, 1));
+		CHECK(fabs(axis.z) < 0.2f, "plank: it lies flat (its length %.2f from level)", fabs(axis.z));
+	}
+}
+
+static void test_destruction()
+{
+	printf("\ndestruction (P11 B2)\n");
+#ifndef WITH_BLAST
+	printf("  (built without NVIDIA Blast: skipped)\n");
+	return;
+#else
+	{
+		/* an anchored wall of 6 x 3 blocks: its bonds, and it stands */
+		World w;
+		ground(w);
+		std::vector<PxPhysicsController *> p = boxes(w, "Wall", 6, 3, 0.4f, -1.2f, 0.0f, true);
+		std::vector<MT_Vector3> was;
+		for (PxPhysicsController *c : p) {
+			was.push_back(pos(c));
+		}
+		w.step(60);
+		PHY_DestructibleInfo info;
+		const bool got = w.env->GetDestructible(p[0], &info);
+		CHECK(got && info.bonds == 33, "wall: 27 bonds between blocks and 6 to the world (%d)", info.bonds);
+		CHECK(got && info.groups == 1, "wall: whole after a second (%d groups)", info.groups);
+		CHECK(moved(p, was) < 1e-3f, "wall: it stands still (moved %.4f m)", moved(p, was));
+		/* an explosion in front of the middle (radius 0.8 m, damage 4) */
+		const int hit = w.env->Explode(MT_Vector3(0.0f, -0.3f, 0.6f), 0.8f, 4.0f);
+		w.step(90);
+		w.env->GetDestructible(p[0], &info);
+		CHECK(hit == 1 && info.groups > 1, "wall: the explosion broke it (%d groups, %d bonds broken)", info.groups,
+		      info.bondsBroken);
+		const float corner = (float)(pos(p[0]) - was[0]).length();
+		CHECK(corner < 1e-3f, "wall: its far corner stays held (moved %.4f m)", corner);
+		int loose = 0, thrown = 0;
+		for (size_t i = 0; i < info.groupOf.size(); i++) {
+			loose += info.groupOf[i] > 0 ? 1 : 0;
+		}
+		for (size_t i = 0; i < p.size(); i++) {
+			thrown += (pos(p[i]) - was[i]).length() > 0.1 ? 1 : 0;
+		}
+		CHECK(loose >= 2 && loose <= 8, "wall: the pieces round it broke loose (%d), not the whole wall", loose);
+		CHECK(thrown >= 2, "wall: and were thrown out (%d moved)", thrown);
+	}
+	{
+		/* a pillar of six blocks: blown in the middle, its top falls */
+		World w;
+		ground(w);
+		std::vector<PxPhysicsController *> p = boxes(w, "Pillar", 1, 6, 0.4f, -0.2f, 0.0f, true);
+		w.step(10);
+		const float top = (float)pos(p[5]).z();
+		w.env->Explode(MT_Vector3(0.0f, -0.3f, 1.4f), 0.6f, 4.0f);  /* (its fourth block, from the front) */
+		w.step(90);
+		CHECK(top - pos(p[5]).z() > 0.3f, "pillar: the top fell when its middle went (%.2f m)", top - pos(p[5]).z());
+		CHECK(fabs(pos(p[0]).z() - 0.2) < 1e-3, "pillar: its foot stays (z %.3f)", pos(p[0]).z());
+	}
+	for (int fast = 0; fast < 2; fast++) {
+		/* a 20 kg ball thrown at a wall: 10 m/s breaks it, 3 m/s does not */
+		World w;
+		ground(w);
+		std::vector<PxPhysicsController *> p = boxes(w, "Hit", 6, 3, 0.4f, -1.2f, 0.0f, true, 40.0f);
+		w.step(2);
+		PxPhysicsController *ball = add(w, shape_sphere(0.15f), RIGID, 0.0f, -1.0f, 0.6f, 20.0f);
+		ball->SetLinearVelocity(MT_Vector3(0.0f, fast ? 10.0f : 3.0f, 0.0f), false);
+		w.step(60);
+		PHY_DestructibleInfo info;
+		w.env->GetDestructible(p[0], &info);
+		if (fast) {
+			CHECK(info.groups > 1, "impact at 10 m/s: the wall broke (%d groups)", info.groups);
+		}
+		else {
+			CHECK(info.groups == 1, "impact at 3 m/s: the wall stays whole (%d groups)", info.groups);
+		}
+	}
+	{
+		/* the budget: a crate of 27 blocks blown apart, at most 4 loose pieces */
+		World w;
+		ground(w);
+		w.env->SetDestructionBudget(4, 0.0f);
+		std::vector<PxPhysicsController *> p;
+		const float s = 0.3f;
+		for (int k = 0; k < 3; k++) {
+			std::vector<PxPhysicsController *> row = boxes(w, "Crate", 3, 1, s, -0.45f, s * k, false);
+			(void)row;
+		}
+		w.step(5);
+		w.env->Explode(MT_Vector3(0.0f, 0.0f, 0.45f), 2.0f, 10.0f);
+		w.step(2);
+		std::vector<PHY_IPhysicsController *> gone;
+		w.env->TakeDestructionRemovals(gone);
+		PxPhysicsController *any = NULL;
+		for (PxPhysicsController *c : w.ctrls) {
+			if (c->GetShard() && std::find(gone.begin(), gone.end(), c) == gone.end()) {
+				any = c;
+			}
+		}
+		PHY_DestructibleInfo info;
+		const bool got = any && w.env->GetDestructible(any, &info);
+		CHECK(got && (int)gone.size() >= 1, "budget: pieces removed (%d of %d)", (int)gone.size(), got ? (int)info.pieces.size() : 0);
+		/* the game ends their objects */
+		for (PHY_IPhysicsController *c : gone) {
+			w.ctrls.erase(std::remove(w.ctrls.begin(), w.ctrls.end(), c), w.ctrls.end());
+			delete c;
+		}
+		w.step(2);
+		int loose = 0;
+		if (any && w.env->GetDestructible(any, &info)) {
+			for (int g : info.groupOf) {
+				loose += g > 0 ? 1 : 0;
+			}
+		}
+		CHECK(loose <= 4, "budget: at most 4 broken-off pieces left (%d)", loose);
+	}
+#endif
+}
+
 int main(int argc, char **argv)
 {
 	const char *only = argc > 1 ? argv[1] : NULL;
@@ -891,6 +1329,9 @@ int main(int argc, char **argv)
 	    {"timing", test_substeps},
 	    {"fh", test_fh},
 	    {"sleep", test_sleep},
+	    {"articulation", test_articulation},
+	    {"destruction", test_destruction},
+	    {"fluids", test_fluids},
 	};
 	for (const T &t : tests) {
 		if (only && strcmp(only, t.name)) {

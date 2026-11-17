@@ -107,6 +107,10 @@ extern "C" {
 #  include AUD_SOUND_H
 #endif
 
+#ifdef WITH_BULLET
+#  include "Bullet-C-Api.h"  /* BGE-Remix P11 (B3): a fluid volume's hull */
+#endif
+
 #ifdef WITH_REMIX
 #  include "BRMX_bake.h"
 #  include "BRMX_loader.h"
@@ -1423,16 +1427,357 @@ void GVBuilder::Physics()
 			}
 		}
 	}
-	/* joints (Rigid Body Joint constraints) */
+	/* BGE-Remix P11 (B1): articulations (PhysX), worked out as PxArticulation.cpp
+	 * builds them: from each root (the object's bge_articulation) through
+	 * its joints, a tree; a joint it cannot take stays an ordinary joint */
+	struct JointRef {
+		Object *ob;
+		bConstraint *con;
+		bRigidBodyJointConstraint *dat;
+	};
+	std::vector<JointRef> joints;
 	for (Object *ob : m_objects) {
 		for (bConstraint *con = (bConstraint *)ob->constraints.first; con; con = con->next) {
-			if (con->type != CONSTRAINT_TYPE_RIGIDBODYJOINT || !con->data) {
+			if (con->type == CONSTRAINT_TYPE_RIGIDBODYJOINT && con->data) {
+				joints.push_back({ob, con, (bRigidBodyJointConstraint *)con->data});
+			}
+		}
+	}
+	auto art_root = [](Object *ob) {
+		return (ob && moving(physics_type(ob)) && physics_type(ob) != OB_BODY_TYPE_SOFT) ?
+		        idprop_int(ob->id.properties, "bge_articulation", 0) : 0;
+	};
+	auto articulable = [](const bRigidBodyJointConstraint *dat) {
+		switch (dat->type) {
+			case CONSTRAINT_RB_BALL:
+			case CONSTRAINT_RB_HINGE:
+			case CONSTRAINT_RB_CONETWIST:
+				return true;
+			case CONSTRAINT_RB_GENERIC6DOF: {
+				/* (an axis without its limit set is free) */
+				int lin = 0, ang = 0;
+				for (int i = 0; i < 6; i++) {
+					const bool turns = !(dat->flag & (1 << i)) || dat->minLimit[i] != dat->maxLimit[i];
+					(i < 3 ? lin : ang) += turns ? 1 : 0;
+				}
+				const bool twist = !(dat->flag & (1 << 3)) || dat->minLimit[3] != dat->maxLimit[3];
+				return (lin == 0 && ang == 0) || (lin == 1 && ang == 0) || (lin == 0 && ang == 1 && twist) ||
+				       (lin == 0 && ang >= 2);
+			}
+			default:
+				return false;
+		}
+	};
+	/* how many axes a joint leaves moving (6: none an articulation takes) */
+	auto freedom = [&](const bRigidBodyJointConstraint *dat) {
+		if (!articulable(dat)) {
+			return 6;
+		}
+		int n = 0;
+		switch (dat->type) {
+			case CONSTRAINT_RB_BALL:
+				return 3;
+			case CONSTRAINT_RB_HINGE:
+				return 1;
+			case CONSTRAINT_RB_CONETWIST:
+				for (int i = 3; i < 6; i++) {
+					n += (!(dat->flag & (1 << i)) || dat->maxLimit[i] != 0.0f) ? 1 : 0;
+				}
+				return n;
+			default:
+				for (int i = 0; i < 6; i++) {
+					n += (!(dat->flag & (1 << i)) || dat->minLimit[i] != dat->maxLimit[i]) ? 1 : 0;
+				}
+				return n;
+		}
+	};
+	std::map<bConstraint *, std::string> art_joint;   /* articulated: its root's name */
+	std::map<bConstraint *, const char *> art_left;   /* left ordinary: why */
+	std::map<Object *, Object *> art_of;              /* each link: its root */
+	std::vector<Object *> roots;
+	for (Object *ob : m_objects) {
+		if (art_root(ob) && InGame(ob)) {
+			roots.push_back(ob);
+		}
+	}
+	if (m_physx > 0) {
+		for (Object *root : roots) {
+			if (art_of.count(root)) {
 				continue;
 			}
-			bRigidBodyJointConstraint *dat = (bRigidBodyJointConstraint *)con->data;
+			/* (the stiffest joint reachable first, as PxArticulation.cpp: where
+			 * joints close a loop the loosest is left ordinary) */
+			std::vector<Object *> tree = {root};
+			art_of[root] = root;
+			std::set<bConstraint *> seen;
+			for (;;) {
+				const JointRef *best = NULL;
+				int best_free = 99, best_at = 0;
+				Object *node = NULL;
+				for (size_t k = 0; k < joints.size(); k++) {
+					const JointRef &c = joints[k];
+					if (seen.count(c.con)) {
+						continue;
+					}
+					std::vector<Object *>::iterator at = std::find(tree.begin(), tree.end(), c.ob);
+					if (at == tree.end()) {
+						at = std::find(tree.begin(), tree.end(), c.dat->tar);
+					}
+					if (at == tree.end()) {
+						continue;
+					}
+					const int f = freedom(c.dat);
+					if (f < best_free) {
+						best = &c;
+						best_free = f;
+						best_at = (int)(at - tree.begin());
+					}
+				}
+				if (!best) {
+					break;
+				}
+				const JointRef &j = *best;
+				node = tree[best_at];
+				{
+					seen.insert(j.con);
+					Object *other = j.ob == node ? j.dat->tar : j.ob;
+					const char *why = NULL;
+					if (other && std::find(tree.begin(), tree.end(), other) != tree.end()) {
+						why = "it closes a loop (an articulation is a tree)";
+					}
+					else if (other && (art_of.count(other) || art_root(other) ||
+					                   ELEM(physics_type(other), OB_BODY_TYPE_CHARACTER, OB_BODY_TYPE_SOFT,
+					                        OB_BODY_TYPE_SENSOR)))
+					{
+						why = "the object it joins cannot be a link (another articulation, a character, a soft "
+						      "body)";
+					}
+					else if (!other || !moving(physics_type(other))) {
+						why = "joined to the world or to an object that does not move";
+					}
+					else if (!articulable(j.dat)) {
+						why = "no articulation joint of this kind (a 6DOF sliding on two axes, or sliding and "
+						      "turning)";
+					}
+					if (why) {
+						art_left[j.con] = why;
+						continue;
+					}
+					art_joint[j.con] = name_of(root);
+					art_of[other] = root;
+					tree.push_back(other);
+				}
+			}
+		}
+	}
+	for (Object *root : roots) {
+		std::map<std::string, int>::iterator it = body_el.find(name_of(root));
+		if (it == body_el.end()) {
+			continue;
+		}
+		if (m_physx <= 0) {
+			Warn(it->second, "PHY_ART_ENGINE", GV_WARN_NOTE,
+			     "an articulation root: articulations need PhysX (World > Physics); here its joints are ordinary "
+			     "ones");
+			continue;
+		}
+		int links = 0;
+		for (const auto &a : art_of) {
+			links += a.second == root ? 1 : 0;
+		}
+		if (links < 2) {
+			Warn(it->second, "PHY_ART_ALONE", GV_WARN_NOTE,
+			     "an articulation root with nothing joined to it: it stays an ordinary rigid body");
+		}
+		else {
+			BLI_strncpy(elements[it->second].info,
+			            fmt("articulation root (%s), %d links", idprop_int(root->id.properties, "bge_articulation", 0) == 2 ?
+			                "fixed to the world" : "moves freely", links).c_str(),
+			            sizeof(elements[it->second].info));
+		}
+	}
+
+	/* BGE-Remix P11 (B2): destructibles (Make Destructible): the parent piece
+	 * (bge_destructible) and its pieces (bge_destructible_of, its name) */
+	{
+		std::map<std::string, int> piece_count;
+		for (Object *ob : m_objects) {
+			IDProperty *of = ob->id.properties ? IDP_GetPropertyFromGroup(ob->id.properties, "bge_destructible_of") :
+			                                     NULL;
+			if (of && of->type == IDP_STRING && InGame(ob)) {
+				piece_count[IDP_String(of)]++;
+			}
+		}
+		int total = 0, first = -1;
+		for (Object *ob : m_objects) {
+			if (!idprop_int(ob->id.properties, "bge_destructible", 0) || !InGame(ob)) {
+				continue;
+			}
+			std::map<std::string, int>::iterator it = body_el.find(name_of(ob));
+			if (it == body_el.end()) {
+				continue;
+			}
+			const int n = piece_count[name_of(ob)];
+			total += n;
+			const bool anchored = idprop_int(ob->id.properties, "bge_destructible_anchored", 0) != 0;
+			const float strength = idprop_float(ob->id.properties, "bge_destructible_strength", 100.0f);
+			BLI_strncpy(elements[it->second].info,
+			            fmt("destructible, %d pieces%s, strength %.0f N s", n, anchored ? ", anchored base" : "",
+			                strength).c_str(), sizeof(elements[it->second].info));
+			elements[it->second].state = GV_STATE_WHITE;
+			if (m_physx <= 0) {
+				Warn(it->second, "PHY_DESTRUCT_ENGINE", GV_WARN_NOTE,
+				     "a destructible: breaking needs PhysX (World > Physics); here it plays as one whole object");
+			}
+			if (first < 0) {
+				first = it->second;
+			}
+		}
+		const int most = idprop_int(m_scene->id.properties, "bge_destruction_max_pieces", 500);
+		if (m_physx > 0 && most > 0 && total > most && first >= 0) {
+			Warn(first, "PHY_DESTRUCT_BUDGET", GV_WARN_NOTE,
+			     fmt("the scene's destructibles have %d pieces, more than its Destruction Budget (%d, World > "
+			         "Physics): once they break, the oldest loose pieces are removed", total, most).c_str());
+		}
+	}
+
+	/* BGE-Remix P11 (B3): fluid volumes (Make Fluid Volume: bge_fluid): the
+	 * volume's outline (its mesh's convex hull, as the game makes it) and
+	 * its current as arrows on its surface */
+	for (Object *ob : m_objects) {
+		if (!idprop_int(ob->id.properties, "bge_fluid", 0) || !InGame(ob) || ob->type != OB_MESH) {
+			continue;
+		}
+		std::map<std::string, int>::iterator it = body_el.find(name_of(ob));
+		if (it == body_el.end()) {
+			continue;
+		}
+		const int el = it->second;
+		const bool lava = idprop_int(ob->id.properties, "bge_fluid_type", 0) == 1;
+		const float density = idprop_float(ob->id.properties, "bge_fluid_density", lava ? 3100.0f : 1000.0f);
+		const float drag = idprop_float(ob->id.properties, "bge_fluid_drag", lava ? 24.0f : 3.0f);
+		float current[3] = {0.0f, 0.0f, 0.0f};
+		IDProperty *cp = ob->id.properties ? IDP_GetPropertyFromGroup(ob->id.properties, "bge_fluid_current") : NULL;
+		if (cp && cp->type == IDP_ARRAY && cp->len >= 3) {
+			for (int k = 0; k < 3; k++) {
+				current[k] = cp->subtype == IDP_DOUBLE ? (float)((double *)IDP_Array(cp))[k] :
+				             (cp->subtype == IDP_FLOAT ? ((float *)IDP_Array(cp))[k] :
+				              (cp->subtype == IDP_INT ? (float)((int *)IDP_Array(cp))[k] : 0.0f));
+			}
+		}
+		/* (the current along the object's axes, turned with it) */
+		float rot[3][3], flow[3];
+		copy_m3_m4(rot, ob->obmat);
+		normalize_m3(rot);
+		mul_v3_m3v3(flow, rot, current);
+		const float speed = len_v3(flow);
+		BLI_strncpy(elements[el].info,
+		            fmt("%s, %.0f kg/m3, drag %.3g%s", lava ? "lava" : "water", density, drag,
+		                speed > 1e-4f ? fmt(", current %.2f m/s", speed).c_str() : ", no current").c_str(),
+		            sizeof(elements[el].info));
+		elements[el].state = GV_STATE_WHITE;
+		if (m_physx <= 0) {
+			Warn(el, "PHY_FLUID_ENGINE", GV_WARN_NOTE,
+			     "a fluid volume: floating needs PhysX (World > Physics); here things fall through it");
+		}
+		/* the outline: the hull's faces, each a closed line */
+		Mesh *me = (Mesh *)ob->data;
+		std::vector<float> world;
+		float lo[3] = {FLT_MAX, FLT_MAX, FLT_MAX}, hi[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+		for (int v = 0; me && v < me->totvert; v++) {
+			float co[3];
+			mul_v3_m4v3(co, ob->obmat, me->mvert[v].co);
+			world.insert(world.end(), co, co + 3);
+			minmax_v3v3_v3(lo, hi, co);
+		}
+		if (world.size() < 12) {
+			continue;
+		}
+		bool outlined = false;
+#ifdef WITH_BULLET
+		plConvexHull hull = plConvexHullCompute((float(*)[3]) & world[0], (int)(world.size() / 3));
+		if (hull) {
+			const int faces = plConvexHullNumFaces(hull);
+			for (int f = 0; f < faces; f++) {
+				const int n = plConvexHullGetFaceSize(hull, f);
+				if (n < 3) {
+					continue;
+				}
+				std::vector<int> idx(n);
+				plConvexHullGetFaceVertices(hull, f, &idx[0]);
+				std::vector<float> loop;
+				for (int k = 0; k <= n; k++) {
+					float co[3];
+					int orig;
+					plConvexHullGetVertex(hull, idx[k % n], co, &orig);
+					loop.insert(loop.end(), co, co + 3);
+				}
+				Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el), loop);
+				outlined = true;
+			}
+			plConvexHullDelete(hull);
+		}
+#endif
+		if (!outlined) {
+			/* (its box, in the world) */
+			static const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7},
+			                                 {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+			for (const int *e : edges) {
+				std::vector<float> line;
+				for (int k = 0; k < 2; k++) {
+					const int c = e[k];
+					line.push_back((c & 1) ? hi[0] : lo[0]);
+					line.push_back((c & 2) ? hi[1] : lo[1]);
+					line.push_back((c & 4) ? hi[2] : lo[2]);
+				}
+				Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el), line);
+			}
+		}
+		/* the current: arrows on the surface (3 x 3 over its top), as long as
+		 * a second of the flow carries a thing (at most a third across) */
+		if (speed > 1e-4f) {
+			float dir[3];
+			normalize_v3_v3(dir, flow);
+			const float across = max_ff(hi[0] - lo[0], hi[1] - lo[1]);
+			const float len = min_ff(max_ff(speed, 0.3f), across / 3.0f);
+			float side[3] = {-dir[1], dir[0], 0.0f};
+			if (normalize_v3(side) < 1e-6f) {
+				side[0] = 1.0f;
+				side[1] = side[2] = 0.0f;
+			}
+			for (int i = 0; i < 3; i++) {
+				for (int j = 0; j < 3; j++) {
+					const float c[3] = {lo[0] + (hi[0] - lo[0]) * (i + 0.5f) / 3.0f,
+					                    lo[1] + (hi[1] - lo[1]) * (j + 0.5f) / 3.0f, hi[2] + 0.02f};
+					float tail[3], tip[3], l[3], r[3];
+					madd_v3_v3v3fl(tail, c, dir, -0.5f * len);
+					madd_v3_v3v3fl(tip, c, dir, 0.5f * len);
+					for (int k = 0; k < 3; k++) {
+						l[k] = tip[k] - dir[k] * 0.3f * len + side[k] * 0.15f * len;
+						r[k] = tip[k] - dir[k] * 0.3f * len - side[k] * 0.15f * len;
+					}
+					Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el),
+					       {tail[0], tail[1], tail[2], tip[0], tip[1], tip[2]});
+					Points(Shape(GV_SHAPE_POINTS, GV_LAYER_PHYSICS, el),
+					       {l[0], l[1], l[2], tip[0], tip[1], tip[2], r[0], r[1], r[2]});
+				}
+			}
+		}
+	}
+
+	/* joints (Rigid Body Joint constraints) */
+	for (const JointRef &j : joints) {
+		Object *ob = j.ob;
+		bConstraint *con = j.con;
+		bRigidBodyJointConstraint *dat = j.dat;
+		{
 			const char *jid = joint_id(dat->type);
-			const int el = Add(jid ? fmt("joint:%s", jid).c_str() : "joint:OTHER", con->name, ob,
-			                   dat->tar ? fmt("to %s", name_of(dat->tar)).c_str() : "to the world");
+			const bool articulated = art_joint.count(con) != 0;
+			std::string info = dat->tar ? fmt("to %s", name_of(dat->tar)) : std::string("to the world");
+			if (articulated) {
+				info += fmt(", in %s's articulation", art_joint[con].c_str());
+			}
+			const int el = Add(jid ? fmt("joint:%s", jid).c_str() : "joint:OTHER", con->name, ob, info.c_str());
 			int s = Shape(GV_SHAPE_SPHERE, GV_LAYER_PHYSICS, el);
 			shapes[s].p[0] = 0.08f;
 			shapes[s].p[1] = dat->pivX;
@@ -1449,12 +1794,54 @@ void GVBuilder::Physics()
 				     fmt("joins %s, which has no physics: Blender 2.79 does not make this joint",
 				         physics_type(ob) == OB_BODY_TYPE_NO_COLLISION ? name_of(ob) : name_of(dat->tar)).c_str(), true);
 			}
+			if (dat->tar && !InGame(dat->tar)) {
+				Warn(el, "PHY_JOINT_MISSING", GV_WARN_RED,
+				     fmt("joins %s, which is not in the game when it starts: Blender 2.79 does not make this "
+				         "joint", name_of(dat->tar)).c_str(), true);
+			}
+			/* P11 (B1), in Ayhan's colours: White, in an articulation (ready);
+			 * Red, a joint of an articulation's body it cannot take (an
+			 * ordinary joint); Black, in no articulation (Bullet, or no root) */
+			std::map<bConstraint *, const char *>::iterator left = art_left.find(con);
+			if (left != art_left.end()) {
+				Warn(el, "PHY_ART_LEFT", GV_WARN_RED,
+				     fmt("not part of the articulation: %s; it stays an ordinary joint", left->second).c_str());
+			}
+			elements[el].state = articulated ? GV_STATE_WHITE : GV_STATE_BLACK;
+			/* its limits at the pivot: a hinge's range, a cone twist's cone */
+			if (dat->type == CONSTRAINT_RB_HINGE ||
+			    (dat->type == CONSTRAINT_RB_CONETWIST && (dat->flag & (16 | 32))))
+			{
+				const bool hinge = dat->type == CONSTRAINT_RB_HINGE;
+				s = Shape(hinge ? GV_SHAPE_LIMIT_ARC : GV_SHAPE_LIMIT_CONE, GV_LAYER_PHYSICS, el);
+				shapes[s].p[0] = dat->pivX;
+				shapes[s].p[1] = dat->pivY;
+				shapes[s].p[2] = dat->pivZ;
+				shapes[s].p[3] = dat->axX;
+				shapes[s].p[4] = dat->axY;
+				shapes[s].p[5] = dat->axZ;
+				if (hinge) {
+					/* (the joint's angle is the target's against the owner, as
+					 * Bullet's: the owner's range, from where it lies, is that
+					 * turned over) */
+					const bool limited = (dat->flag & 8) != 0;
+					shapes[s].p[6] = limited ? -dat->maxLimit[3] : 1.0f;
+					shapes[s].p[7] = limited ? -dat->minLimit[3] : -1.0f;
+				}
+				else {
+					shapes[s].p[7] = max_ff((dat->flag & 16) ? dat->maxLimit[4] : 0.0f,
+					                        (dat->flag & 32) ? dat->maxLimit[5] : 0.0f);
+				}
+			}
 			if (dat->tar && moving(physics_type(ob)) && moving(physics_type(dat->tar))) {
+				/* (an articulation's joints hold much more: noted past 1000 to 1) */
 				const float a = max_ff(ob->mass, 1e-6f), b = max_ff(dat->tar->mass, 1e-6f);
-				if (a / b > 10.0f || b / a > 10.0f) {
+				const float most = articulated ? 1000.0f : 10.0f;
+				if (a / b > most || b / a > most) {
 					Warn(el, "PHY_MASS_RATIO", GV_WARN_NOTE,
-					     fmt("masses %.2f and %.2f: a heavy body on a light one makes joints unstable", ob->mass,
-					         dat->tar->mass).c_str());
+					     fmt("masses %.2f and %.2f: a heavy body on a light one makes joints unstable%s", ob->mass,
+					         dat->tar->mass, articulated ? " (even in an articulation)" :
+					         (m_physx > 0 ? " (an articulation holds them: Physics > Articulation)" : "")).c_str());
 				}
 			}
 		}

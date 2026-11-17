@@ -45,6 +45,14 @@ class CcdPhysicsEnvironment;
 class CcdGraphicController;
 struct Scene;
 struct PxCtrlInfo;
+struct PxArticulationGroup;
+struct PxDestructible;
+struct PxDestructionGroup;
+struct PxFluidVolume;
+struct PxFluidBody;
+namespace physx {
+class PxShape;
+}
 
 namespace physx {
 class PxScene;
@@ -158,6 +166,59 @@ public:
 	/* tests: a controller from a construction info, without a Blender object */
 	PxPhysicsController *CreateController(const PxCtrlInfo &info, PHY_IMotionState *motionState, bool addToScene);
 
+	/* BGE-Remix P11 (B1, PxArticulation.cpp): articulations. An object whose
+	 * bge_articulation is set is a root; it and the bodies joined to it (Rigid
+	 * Body Joint constraints) become one articulation at the next step. */
+	void ArticulationsChanged() { m_articulationsDirty = true; }
+	const std::vector<PxArticulationGroup *> &GetArticulations() const { return m_articulations; }
+	/* the articulation back into bodies and ordinary joints (what is left is
+	 * built again at the next step) */
+	void DismantleArticulation(PxArticulationGroup *group);
+	/* the root moves the whole articulation; another link: no effect */
+	void ArticulationTeleport(PxPhysicsController *ctrl, const physx::PxTransform &t);
+	void ArticulationSetVelocity(PxPhysicsController *ctrl, const physx::PxVec3 *lin, const physx::PxVec3 *ang);
+	/* a joint's state for Python and the Remix View: its articulation and
+	 * axis, the position and speed; and its drive's target */
+	bool ArticulationJointState(int constraintId, int axis, float *r_pos, float *r_vel);
+	bool ArticulationSetDrive(int constraintId, int axis, const float *target, const float *velocity,
+	                          float stiffness, float damping, float maxForce);
+	/* (PHY_IPhysicsEnvironment's, for Python: built first if due) */
+	bool GetArticulation(PHY_IPhysicsController *ctrl, PHY_ArticulationInfo *info) override;
+	bool GetArticulationJoint(int constraintId, int axis, float *pos, float *vel) override;
+	bool SetArticulationDrive(int constraintId, int axis, const float *target, const float *velocity,
+	                          float stiffness, float damping, float maxForce) override;
+	const char *GetArticulationNote(int constraintId) override;
+	int GetArticulationJointActivity(int constraintId, int *r_axis, float *r_pos) override;
+
+	/* BGE-Remix P11 (B2, PxDestruction.cpp): destructibles (NVIDIA Blast).
+	 * A piece (at conversion): its destructible's key (the parent piece's
+	 * name) and, from the parent piece, its settings; built at the next step. */
+	void AddDestructionPiece(PxPhysicsController *ctrl, const std::string &key, bool isRoot, float strength,
+	                         bool anchored);
+	/* a contact on a piece (during the simulation): its impulse, where */
+	void DestructionImpact(PxPhysicsController *piece, const physx::PxVec3 &point, float impulse);
+	/* the controller a shape belongs to (a piece's, on its group's body) */
+	PxPhysicsController *ShapeOwner(const physx::PxShape *shape, PxPhysicsController *actorOwner) const;
+	bool HandlesDestruction() override;
+	bool GetDestructible(PHY_IPhysicsController *piece, PHY_DestructibleInfo *info) override;
+	bool DamageDestructible(PHY_IPhysicsController *piece, const MT_Vector3 &point, float radius, float amount) override;
+	void SetDestructibleStrength(PHY_IPhysicsController *piece, float strength) override;
+	int Explode(const MT_Vector3 &point, float radius, float amount) override;
+	void SetDestructionBudget(int maxPieces, float lifetime) override;
+	void TakeDestructionRemovals(std::vector<PHY_IPhysicsController *> &r_pieces) override;
+	int GetDestructionActivity(PHY_IPhysicsController *piece) override;
+
+	/* BGE-Remix P11 (B3, PxFluids.cpp): fluid volumes. A volume (at
+	 * conversion): its settings; its shape is read at the next step. */
+	void AddFluidVolume(PxPhysicsController *ctrl, int type, float density, float drag,
+	                    const physx::PxVec3 &current, bool splashes);
+	bool GetFluid(PHY_IPhysicsController *volume, PHY_FluidInfo *info) override;
+	void SetFluidCurrent(PHY_IPhysicsController *volume, const MT_Vector3 &current) override;
+	float GetSubmerged(PHY_IPhysicsController *volume, PHY_IPhysicsController *ctrl) override;
+	void TakeFluidSplashes(std::vector<PHY_FluidSplash> &r_splashes) override;
+	int GetFluidActivity(PHY_IPhysicsController *volume) override;
+	int GetFluidState(PHY_IPhysicsController *ctrl) override;
+
 	/* counters for the tests and the stats overlay */
 	struct Stats {
 		int steps;
@@ -193,6 +254,42 @@ private:
 	void RemoveConstraint(Constraint *c);
 	physx::PxJoint *MakeJoint(PxPhysicsController *c0, PxPhysicsController *c1, PHY_ConstraintType type,
 	                          const physx::PxTransform &frameA, const physx::PxTransform &frameB);
+	/* P11 (B1) */
+	/* P11 (B2, PxDestruction.cpp) */
+	struct DestructionImpactRec {
+		PxPhysicsController *piece;
+		physx::PxVec3 point;
+		float impulse;
+	};
+	void BuildDestructibles();
+	bool BuildDestructible(PxDestructible *d);
+	void DestructionStep(float dt);
+	void DestructionRemovePiece(PxPhysicsController *ctrl);
+	void DismantleDestructible(PxDestructible *d);
+	PxDestructionGroup *MakeDestructionGroup(PxDestructible *d, const std::vector<int> &pieces, void *actor,
+	                                          const physx::PxTransform &restToWorld, const physx::PxVec3 &lin,
+	                                          const physx::PxVec3 &ang, const physx::PxVec3 &comWas, bool original);
+	void ReleaseDestructionGroup(PxDestructionGroup *g);
+	bool DamageGroups(PxDestructible *d, const physx::PxVec3 &point, float radius, float amount);
+	void SplitDestructible(PxDestructible *d, void *actor);
+	void DestructionBudget();
+	PxDestructible *DestructibleOf(PHY_IPhysicsController *piece) const;
+	/* P11 (B3, PxFluids.cpp) */
+	void FluidStep(float dt);
+	bool BuildFluidVolume(PxFluidVolume *v);
+	PxFluidVolume *FluidOf(PHY_IPhysicsController *ctrl) const;
+	void FluidRemove(PxPhysicsController *ctrl);
+	bool FluidSamples(physx::PxRigidActor *actor, PxFluidBody &b);
+	float FluidShare(const PxFluidVolume *v, physx::PxRigidActor *actor, PxFluidBody &b);
+	void BuildArticulations();
+	PxArticulationGroup *BuildArticulation(PxPhysicsController *root);
+	/* the constraint's settings onto its articulation joint (param: the one
+	 * changed, -1 all); false: an articulation has no joint for them now */
+	bool ApplyArticulationJoint(Constraint *c, int param = -1);
+	/* the constraint's settings onto its PxJoint (param: as above) */
+	void ApplyJointParams(Constraint *c, int param);
+	void RestoreJoint(Constraint *c);
+	void StoreConstraintParam(Constraint *c, int param, float value0, float value1);
 
 	physx::PxScene *m_scene;
 	bool m_gpu;
@@ -205,6 +302,9 @@ private:
 	void *m_triggerCallbacksUserPtrs[PHY_NUM_RESPONSE];
 	/* touching pairs (a < b), kept from found to lost, reported each frame */
 	std::map<std::pair<PxPhysicsController *, PxPhysicsController *>, Touch> m_touching;
+	/* BGE-Remix P11 fix (A12): pairs that touched during this frame's
+	 * sub-steps, also when they parted again before its end */
+	std::map<std::pair<PxPhysicsController *, PxPhysicsController *>, Touch> m_touchedThisFrame;
 
 	struct Constraint {
 		int id;
@@ -220,6 +320,17 @@ private:
 		float motorVelocity[6], motorForce[6];
 		bool spring[6];
 		float springStiffness[6], springDamping[6];
+		bool collide;  /* the linked objects collide (P11 (B1): kept for RestoreJoint) */
+		/* P11 (B1): the articulation link whose inbound joint this is (the
+		 * PxJoint released meanwhile); NULL: an ordinary joint */
+		PxPhysicsController *link;
+		/* the link is the constraint's first object (c0): the articulation
+		 * measures it against c1, the joint (and Bullet, and P6) c1 against
+		 * it, so every position, limit, speed and target turns over */
+		bool reversed;
+		/* why it is not part of the articulation its body is in (a loop, a
+		 * type an articulation has no joint for), for the Remix View */
+		const char *notArticulated;
 	};
 	std::map<int, Constraint *> m_constraints;
 	int m_nextConstraintId;
@@ -239,6 +350,26 @@ private:
 	double m_accumulated;  /* time not simulated yet (less than a sub-step) */
 	int m_ccdMode;
 	Stats m_stats;
+	std::vector<PxArticulationGroup *> m_articulations;
+	bool m_articulationsDirty;
+	/* P11 (B2) */
+	std::vector<PxDestructible *> m_destructibles;
+	bool m_destructionDirty;
+	std::map<const physx::PxShape *, PxPhysicsController *> m_shardShapes;
+	std::vector<DestructionImpactRec> m_impacts;
+	std::vector<PHY_IPhysicsController *> m_destructionRemovals;
+	int m_maxPieces;
+	float m_debrisLifetime;
+	int m_destructionFrame;
+	double m_destructionTime;
+	int m_groupSerial;
+	/* P11 (B3) */
+	std::vector<PxFluidVolume *> m_fluids;
+	std::map<const physx::PxRigidActor *, PxFluidBody> *m_fluidBodies;
+	std::vector<PHY_FluidSplash> m_splashes;
+	std::vector<double> m_splashTimes;
+	double m_fluidTime;
+	int m_fluidFrame;
 
 	friend class PxPhysicsController;
 	friend class PxRaycastVehicle;

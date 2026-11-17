@@ -43,6 +43,7 @@
  */
 
 #include <algorithm>
+#include <string>
 #include <cstdlib>
 #include <cstring>
 
@@ -483,6 +484,33 @@ static brb_status startup_ex_impl(int mode, int width, int height, HWND parent, 
 
 	const double t0 = now_ms();
 	remixapi_ErrorCode r = REMIXAPI_ERROR_CODE_SUCCESS;
+	/* P11 tests: BGE_REMIX_RTX_SET_EARLY "rtx.a=1;rtx.b=2", Remix options set
+	 * before Remix starts (some are read only then) */
+	{
+		char early[1024];
+		const DWORD n = GetEnvironmentVariableA("BGE_REMIX_RTX_SET_EARLY", early, sizeof(early));
+		if (n > 0 && n < sizeof(early) && g_remix.SetConfigVariable) {
+			std::string all(early);
+			size_t at = 0;
+			while (at < all.size()) {
+				size_t end = all.find(';', at);
+				if (end == std::string::npos) {
+					end = all.size();
+				}
+				const std::string kv = all.substr(at, end - at);
+				const size_t eq = kv.find('=');
+				if (eq != std::string::npos && eq > 0) {
+					const std::string key = kv.substr(0, eq), value = kv.substr(eq + 1);
+					const remixapi_ErrorCode e = g_remix.SetConfigVariable(key.c_str(), value.c_str());
+					log("before startup: config %s = %s -> %u", key.c_str(), value.c_str(), (unsigned)e);
+					printf("BGE-Remix: BGE_REMIX_RTX_SET_EARLY %s = %s (%s)\n", key.c_str(), value.c_str(),
+					       e == REMIXAPI_ERROR_CODE_SUCCESS ? "taken" : "refused");
+				}
+				at = end + 1;
+			}
+			fflush(stdout);
+		}
+	}
 	if (mode == BRB_MODE_DIRECT) {
 		r = start_direct(width, height);
 	}

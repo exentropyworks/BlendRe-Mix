@@ -59,8 +59,11 @@ set(INC_SYS
 )
 
 set(SRC
+	PxArticulation.cpp
 	PxCharacter.cpp
 	PxDeformable.cpp
+	PxDestruction.cpp
+	PxFluids.cpp
 	PxPhysicsController.cpp
 	PxPhysicsConvert.cpp
 	PxPhysicsEnvironment.cpp
@@ -68,8 +71,11 @@ set(SRC
 	PxSystem.cpp
 	PxVehicle.cpp
 
+	PxArticulation.h
 	PxCharacter.h
 	PxDeformable.h
+	PxDestruction.h
+	PxFluids.h
 	PxMotionState.h
 	PxPhysicsController.h
 	PxPhysicsEnvironment.h
@@ -77,6 +83,58 @@ set(SRC
 	PxSystem.h
 	PxVehicle.h
 )
+
+# BGE-Remix P11 (B2): NVIDIA Blast (BSD 3-clause), from the PhysX repo's
+# blast folder (BLAST_SOURCE_DIR): its core and stress solver, built in here.
+# Without it destructibles stay whole.
+if(BLAST_SOURCE_DIR AND EXISTS "${BLAST_SOURCE_DIR}/include/lowlevel/NvBlast.h")
+	set(_bl "${BLAST_SOURCE_DIR}")
+	list(APPEND SRC
+		${_bl}/source/sdk/lowlevel/NvBlastActor.cpp
+		${_bl}/source/sdk/lowlevel/NvBlastActorSerializationBlock.cpp
+		${_bl}/source/sdk/lowlevel/NvBlastAsset.cpp
+		${_bl}/source/sdk/lowlevel/NvBlastAssetHelper.cpp
+		${_bl}/source/sdk/lowlevel/NvBlastFamily.cpp
+		${_bl}/source/sdk/lowlevel/NvBlastFamilyGraph.cpp
+		${_bl}/source/sdk/globals/NvBlastGlobals.cpp
+		${_bl}/source/sdk/globals/NvBlastInternalProfiler.cpp
+		${_bl}/source/sdk/common/NvBlastAssert.cpp
+		${_bl}/source/sdk/common/NvBlastAtomic.cpp
+		${_bl}/source/sdk/common/NvBlastTime.cpp
+		${_bl}/source/sdk/common/NvBlastTimers.cpp
+		${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
+		${_bl}/source/shared/stress_solver/stress.cpp
+	)
+	list(APPEND INC_SYS
+		${_bl}/include/lowlevel
+		${_bl}/include/globals
+		${_bl}/include/extensions/stress
+		${_bl}/include/shared/NvFoundation
+		${_bl}/source/sdk/common
+		${_bl}/source/sdk/globals
+		${_bl}/source/sdk/lowlevel
+		${_bl}/source/shared/NsFoundation/include
+		${_bl}/source/shared/stress_solver
+		${_bl}/source/shared/utils
+	)
+	if(WIN32)
+		list(APPEND INC_SYS ${_bl}/source/shared/NsFoundation/include/platform/windows
+		                    ${CMAKE_CURRENT_SOURCE_DIR}/blast_shim)  # (typeinfo.h, gone from VS 2022)
+		# (the stress solver uses std::floor and std::copysignf without <cmath>)
+		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
+		                            ${_bl}/source/shared/stress_solver/stress.cpp
+		                            PROPERTIES COMPILE_FLAGS "/FIcmath /FIlimits")
+	else()
+		list(APPEND INC_SYS ${_bl}/source/shared/NsFoundation/include/platform/unix)
+		set_source_files_properties(${_bl}/source/sdk/extensions/stress/NvBlastExtStressSolver.cpp
+		                            ${_bl}/source/shared/stress_solver/stress.cpp
+		                            PROPERTIES COMPILE_FLAGS "-include limits -mavx -mfma")
+	endif()
+	add_definitions(-DWITH_BLAST)
+	message(STATUS "PhysX: NVIDIA Blast from ${BLAST_SOURCE_DIR}")
+else()
+	message(STATUS "PhysX: no NVIDIA Blast (BLAST_SOURCE_DIR): destructibles stay whole")
+endif()
 
 add_definitions(-DWITH_BULLET -DWITH_PHYSX ${GL_DEFINITIONS})
 if(WIN32)

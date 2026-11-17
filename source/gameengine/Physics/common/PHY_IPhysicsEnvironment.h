@@ -41,6 +41,8 @@
 #include "MEM_guardedalloc.h"
 #endif
 
+#include <vector>  /* BGE-Remix P11 (B1) */
+
 class PHY_IVehicle;
 class PHY_ICharacter;
 class RAS_MeshObject;
@@ -60,6 +62,57 @@ struct bRigidBodyJointConstraint;
 /**
  * pass back information from rayTest
  */
+/* BGE-Remix P11 (B1): an articulation (PhysX: a tree of bodies solved as
+ * one), as the game sees it */
+struct PHY_ArticulationInfo
+{
+	PHY_IPhysicsController *root;
+	bool fixed;                                  /* the root fixed to the world */
+	std::vector<PHY_IPhysicsController *> links; /* the root first, each after its parent */
+	std::vector<int> joints;                     /* each link's joint to its parent (0: the root) */
+	std::vector<int> parents;                    /* each link's parent (an index; -1: the root) */
+	std::vector<int> ordinary;                   /* its bodies' joints left ordinary (a loop, ...) */
+	PHY_ArticulationInfo() : root(NULL), fixed(false) {}
+};
+
+/* BGE-Remix P11 (B2): a destructible (NVIDIA Blast, PhysX), as the game
+ * sees it: its pieces (game objects' controllers), the groups they are in now */
+struct PHY_DestructibleInfo
+{
+	PHY_IPhysicsController *root;                /* the piece Make Destructible made the parent */
+	std::vector<PHY_IPhysicsController *> pieces; /* every piece still in the game */
+	std::vector<int> groupOf;                    /* each piece's group (0: the one still held, if any) */
+	int groups;                                  /* how many groups the pieces are in */
+	int bonds, bondsBroken;
+	bool anchored;
+	float strength;
+	PHY_DestructibleInfo() : root(NULL), groups(0), bonds(0), bondsBroken(0), anchored(false), strength(0.0f) {}
+};
+
+/* BGE-Remix P11 (B3): a fluid volume (PhysX: water or lava that things
+ * float in, are slowed by and carried along by), as the game sees it */
+struct PHY_FluidInfo
+{
+	int type;                                    /* 0 water, 1 lava */
+	float density;                               /* kg/m3 */
+	float drag;                                  /* per second, moving and turning */
+	MT_Vector3 current;                          /* m/s, along the volume's own axes */
+	bool splashes;
+	std::vector<PHY_IPhysicsController *> inside; /* the objects in it now */
+	PHY_FluidInfo() : type(0), density(1000.0f), drag(2.0f), current(0.0, 0.0, 0.0), splashes(true) {}
+};
+
+/* a splash: where a body crossed a fluid volume's surface */
+struct PHY_FluidSplash
+{
+	MT_Vector3 point;                            /* on the surface (world) */
+	MT_Vector3 up;                               /* the surface's normal */
+	float size;                                  /* the body's size (m) */
+	float speed;                                 /* how fast it crossed (m/s) */
+	int type;                                    /* the volume's: 0 water, 1 lava */
+	PHY_FluidSplash() : point(0.0, 0.0, 0.0), up(0.0, 0.0, 1.0), size(1.0f), speed(0.0f), type(0) {}
+};
+
 struct PHY_RayCastResult
 {
 	PHY_IPhysicsController* m_controller;
@@ -213,6 +266,62 @@ class PHY_IPhysicsEnvironment
 							int activeLayerBitInfo,
 							bool isCompoundChild,
 							bool hasCompoundChildren) = 0;
+
+		/* BGE-Remix P11 (B1): articulations (PhysX only; the others have none).
+		 * The articulation the body is a link of (false: none). */
+		virtual bool GetArticulation(PHY_IPhysicsController *ctrl, PHY_ArticulationInfo *info) { return false; }
+		/* An articulation joint's position and speed on one axis (0-2 sliding
+		 * X Y Z, 3-5 turning X Y Z; -1 the joint's first moving axis). */
+		virtual bool GetArticulationJoint(int constraintId, int axis, float *pos, float *vel) { return false; }
+		/* Drive an articulation joint's axis to a position (target) and/or a
+		 * speed (velocity); maxForce <= 0: no limit. */
+		virtual bool SetArticulationDrive(int constraintId, int axis, const float *target, const float *velocity,
+		                                  float stiffness, float damping, float maxForce) { return false; }
+		/* Why a joint of an articulation's body is not in the articulation
+		 * (NULL: it is, or it has no articulation). */
+		virtual const char *GetArticulationNote(int constraintId) { return NULL; }
+		/* What an articulation joint does now, for the Remix View: -1 not an
+		 * articulation joint, 0 at rest, 1 moving, 2 at a limit, 3 driven (a
+		 * motor, a spring, a target or speed set); its first moving axis and
+		 * the position there. */
+		virtual int GetArticulationJointActivity(int constraintId, int *r_axis, float *r_pos) { return -1; }
+
+		/* BGE-Remix P11 (B2): destruction (PhysX with NVIDIA Blast; the others
+		 * keep a destructible whole). Whether this engine breaks them. */
+		virtual bool HandlesDestruction() { return false; }
+		/* The destructible a piece belongs to (false: none, or not broken by this engine). */
+		virtual bool GetDestructible(PHY_IPhysicsController *piece, PHY_DestructibleInfo *info) { return false; }
+		/* Damage around a point (world): 1 breaks a bond at the point, less
+		 * at the radius; false: not a destructible's piece. */
+		virtual bool DamageDestructible(PHY_IPhysicsController *piece, const MT_Vector3 &point, float radius,
+		                                float amount) { return false; }
+		virtual void SetDestructibleStrength(PHY_IPhysicsController *piece, float strength) {}
+		/* Every destructible within the radius: how many were hit. */
+		virtual int Explode(const MT_Vector3 &point, float radius, float amount) { return 0; }
+		/* The scene's budget: the most broken-off pieces (0: no limit), and
+		 * how long they stay (seconds; 0: until the budget needs room). */
+		virtual void SetDestructionBudget(int maxPieces, float lifetime) {}
+		/* The pieces the budget removes (the game ends their objects). */
+		virtual void TakeDestructionRemovals(std::vector<PHY_IPhysicsController *> &r_pieces) {}
+		/* What a destructible does now, for the Remix View: -1 none, 0 whole
+		 * or at rest, 1 breaking, 2 the budget has taken pieces of it, 3
+		 * damaged by a script just now. */
+		virtual int GetDestructionActivity(PHY_IPhysicsController *piece) { return -1; }
+
+		/* BGE-Remix P11 (B3): fluid volumes (PhysX; the others leave them
+		 * ghosts things fall through). The volume of a volume's object
+		 * (false: not one, or not this engine's). */
+		virtual bool GetFluid(PHY_IPhysicsController *volume, PHY_FluidInfo *info) { return false; }
+		virtual void SetFluidCurrent(PHY_IPhysicsController *volume, const MT_Vector3 &current) {}
+		/* How much of an object is under the volume's surface, 0 to 1. */
+		virtual float GetSubmerged(PHY_IPhysicsController *volume, PHY_IPhysicsController *ctrl) { return 0.0f; }
+		/* The splashes since the last call (the game shows them). */
+		virtual void TakeFluidSplashes(std::vector<PHY_FluidSplash> &r_splashes) {}
+		/* For the Remix View: a volume's activity (-1 not a volume, 0 nothing
+		 * in it, 1 something in it, 3 a splash just now), and an object's
+		 * state in fluids (-1 in none, 1 it floats, 2 it sinks). */
+		virtual int GetFluidActivity(PHY_IPhysicsController *volume) { return -1; }
+		virtual int GetFluidState(PHY_IPhysicsController *ctrl) { return -1; }
 
 		/* Set the rigid body joints constraints values for converted objects and replicated group instances. */
 		virtual void SetupObjectConstraints(KX_GameObject *obj_src, KX_GameObject *obj_dest,

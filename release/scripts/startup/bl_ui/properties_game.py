@@ -198,6 +198,180 @@ class PHYSICS_PT_game_physics(PhysicsButtonsPanel, Panel):
             layout.operator("mesh.navmesh_clear")
 
 
+class PHYSICS_PT_game_articulation(PhysicsButtonsPanel, Panel):
+    """BGE-Remix P11 (B1): articulations and ragdolls (PhysX)"""
+    bl_label = "Articulation"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        scene = context.scene
+        if not (ob and ob.game and scene.render.engine in cls.COMPAT_ENGINES and
+                scene.game_settings.physics_engine == 'PHYSX'):
+            return False
+        return ob.type == 'ARMATURE' or ob.game.physics_type in {'DYNAMIC', 'RIGID_BODY'}
+
+    @classmethod
+    def register(cls):
+        from bpy.props import EnumProperty
+        bpy.types.Object.bge_articulation = EnumProperty(
+            name="Articulation Root",
+            description="The object and the bodies joined to it (Rigid Body Joints) are solved as one "
+                        "articulation, whose joints never drift apart",
+            items=(('NONE', "None", "Not the root of an articulation", 0),
+                   ('FREE', "Moves Freely", "The root of an articulation that moves freely (a ragdoll)", 1),
+                   ('FIXED', "Fixed to the World", "The root of an articulation fixed where it is (a robot "
+                                                   "arm, a hanging chain)", 2)),
+            default='NONE')
+
+    @classmethod
+    def unregister(cls):
+        if hasattr(bpy.types.Object, "bge_articulation"):
+            del bpy.types.Object.bge_articulation
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.active_object
+        if ob.type == 'ARMATURE':
+            layout.operator("object.bge_remix_make_ragdoll", icon='MOD_ARMATURE')
+            made = sum(1 for o in context.scene.objects if o.get("bge_ragdoll_armature") == ob.name)
+            if made:
+                layout.label("%d capsules; a script lets them go (getArticulation(armature).ragdoll = True)" %
+                             made, icon='INFO')
+            return
+        layout.prop(ob, "bge_articulation", text="Root")
+        if "bge_ragdoll_bone" in ob:
+            layout.label("A capsule of a ragdoll (bone %s)" % ob["bge_ragdoll_bone"], icon='INFO')
+
+
+class PHYSICS_PT_game_destruction(PhysicsButtonsPanel, Panel):
+    """BGE-Remix P11 (B2): destructibles (Make Destructible; broken by NVIDIA Blast under PhysX)"""
+    bl_label = "Destruction"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return (ob is not None and ob.type == 'MESH' and context.scene.render.engine in cls.COMPAT_ENGINES)
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, FloatProperty, IntProperty
+        bpy.types.Object.bge_destructible_strength = FloatProperty(
+            name="Strength",
+            description="The impulse (N s) a hit needs to break the destructible where it lands; less only "
+                        "damages it",
+            default=100.0, min=0.01, soft_max=10000.0)
+        bpy.types.Object.bge_destructible_anchored = BoolProperty(
+            name="Anchored Base",
+            description="Its bottom pieces are held by the ground (a wall, a building): what is still joined to "
+                        "them stays, the rest falls",
+            default=False)
+        bpy.types.Scene.bge_destruction_max_pieces = IntProperty(
+            name="Max Pieces",
+            description="The most broken-off pieces in the scene; over it, the oldest are removed (0: no limit)",
+            default=500, min=0, soft_max=5000)
+        bpy.types.Scene.bge_destruction_lifetime = FloatProperty(
+            name="Debris Lifetime",
+            description="Broken-off pieces are removed after this many seconds (0: kept until the budget needs "
+                        "room)",
+            default=0.0, min=0.0, soft_max=600.0, subtype='TIME', unit='TIME')
+
+    @classmethod
+    def unregister(cls):
+        for t, name in ((bpy.types.Object, "bge_destructible_strength"), (bpy.types.Object, "bge_destructible_anchored"),
+                        (bpy.types.Scene, "bge_destruction_max_pieces"), (bpy.types.Scene, "bge_destruction_lifetime")):
+            if hasattr(t, name):
+                delattr(t, name)
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.active_object
+        root = None
+        if ob.get("bge_destructible"):
+            root = ob
+        elif ob.get("bge_destructible_of"):
+            root = context.scene.objects.get(ob["bge_destructible_of"])
+        layout.operator("object.bge_remix_make_destructible",
+                        text="Make Destructible Again" if root else "Make Destructible", icon='MOD_EXPLODE')
+        if root is None:
+            return
+        pieces = sum(1 for o in context.scene.objects if o.get("bge_destructible_of") == root.name)
+        layout.label("%d pieces; the parent piece: %s" % (pieces, root.name), icon='INFO')
+        col = layout.column()
+        col.prop(root, "bge_destructible_strength")
+        col.prop(root, "bge_destructible_anchored")
+        if context.scene.game_settings.physics_engine != 'PHYSX':
+            layout.label("Breaking needs PhysX (World > Physics); here it plays as one whole object", icon='ERROR')
+
+
+class PHYSICS_PT_game_fluid(PhysicsButtonsPanel, Panel):
+    """BGE-Remix P11 (B3): fluid volumes (Make Fluid Volume; water or lava under PhysX)"""
+    bl_label = "Fluid Volume"
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return (ob is not None and ob.type == 'MESH' and context.scene.render.engine in cls.COMPAT_ENGINES)
+
+    @classmethod
+    def register(cls):
+        from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty
+
+        def type_changed(ob, context):
+            # (review R1) the type's density and drag, as Make Fluid Volume sets them
+            from bl_operators.bge_remix_fluid import DENSITY, DRAG
+            ob.bge_fluid_density = DENSITY[ob.bge_fluid_type]
+            ob.bge_fluid_drag = DRAG[ob.bge_fluid_type]
+        bpy.types.Object.bge_fluid_type = EnumProperty(
+            name="Type",
+            description="Water or lava (sets its density and drag)",
+            items=(('WATER', "Water", "", 0), ('LAVA', "Lava", "", 1)), default='WATER', update=type_changed)
+        bpy.types.Object.bge_fluid_density = FloatProperty(
+            name="Density",
+            description="How much the fluid weighs (kg/m\u00b3): lighter things than the fluid they push aside float",
+            default=1000.0, min=1.0, soft_max=20000.0)
+        bpy.types.Object.bge_fluid_drag = FloatProperty(
+            name="Drag",
+            description="How quickly things in it slow down, moving and turning (per second, when wholly under)",
+            default=3.0, min=0.0, soft_max=100.0)
+        bpy.types.Object.bge_fluid_current = FloatVectorProperty(
+            name="Current",
+            description="Its flow (m/s) along the object's own axes: things in it are carried towards that speed",
+            size=3, default=(0.0, 0.0, 0.0), subtype='VELOCITY', unit='VELOCITY')
+        bpy.types.Object.bge_fluid_splashes = BoolProperty(
+            name="Splashes",
+            description="A splash where something goes in fast",
+            default=True)
+
+    @classmethod
+    def unregister(cls):
+        for name in ("bge_fluid_type", "bge_fluid_density", "bge_fluid_drag", "bge_fluid_current",
+                     "bge_fluid_splashes"):
+            if hasattr(bpy.types.Object, name):
+                delattr(bpy.types.Object, name)
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.active_object
+        made = bool(ob.get("bge_fluid"))
+        layout.operator("object.bge_remix_make_fluid_volume",
+                        text="Make Fluid Volume Again" if made else "Make Fluid Volume", icon='MOD_FLUIDSIM')
+        if not made:
+            return
+        col = layout.column()
+        col.prop(ob, "bge_fluid_type")
+        row = col.row()
+        row.prop(ob, "bge_fluid_density")
+        row.prop(ob, "bge_fluid_drag")
+        col.prop(ob, "bge_fluid_current")
+        col.prop(ob, "bge_fluid_splashes")
+        if context.scene.game_settings.physics_engine != 'PHYSX':
+            layout.label("Floating needs PhysX (World > Physics); here things fall through it", icon='ERROR')
+
+
 class PHYSICS_PT_game_collision_bounds(PhysicsButtonsPanel, Panel):
     bl_label = "Collision Bounds"
     COMPAT_ENGINES = {'BLENDER_GAME'}
@@ -545,6 +719,13 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
             name="Volumetrics",
             description="Light in the air (fog, light shafts)",
             default=True)
+        # P11 (A3)
+        bpy.types.Scene.bge_remix_sharp_textures = BoolProperty(
+            name="Sharper Small Textures",
+            description="Enlarge images under 1024 pixels before RTX Remix gets them: Remix draws a texture with "
+                        "less detail than the image holds, small ones most (a 256 pixel image then takes about "
+                        "1 MB of graphics memory instead of 64 KB)",
+            default=True)
         # P5.6: F12 with RTX Remix
         bpy.types.Scene.bge_remix_f12_mode = EnumProperty(
             name="F12",
@@ -565,6 +746,7 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
     def unregister(cls):
         for name in ("bge_remix", "bge_remix_fast", "bge_remix_light_scale", "bge_remix_exposure",
                      "bge_remix_preset", "bge_remix_dlss", "bge_remix_rr", "bge_remix_volumetrics",
+                     "bge_remix_sharp_textures",
                      "bge_remix_f12_mode", "bge_remix_f12_frames", "bge_remix_f12_samples"):
             if hasattr(bpy.types.Scene, name):
                 delattr(bpy.types.Scene, name)
@@ -581,6 +763,7 @@ class RENDER_PT_game_remix(RenderButtonsPanel, Panel):
         row = col.row()
         row.prop(scene, "bge_remix_rr")
         row.prop(scene, "bge_remix_volumetrics")
+        col.prop(scene, "bge_remix_sharp_textures")
         col.separator()
         row = col.row()
         row.prop(scene, "bge_remix_f12_mode", expand=True)
@@ -811,6 +994,14 @@ class SCENE_PT_game_physics(SceneButtonsPanel, Panel):
             # BGE-Remix P10.13 (A6, A7)
             from .space_view3d_gameview_logic import draw_scene_logic_options
             draw_scene_logic_options(layout, context.scene)
+
+            # BGE-Remix P11 (B2): the Destruction Budget
+            if gs.physics_engine == 'PHYSX' and hasattr(context.scene, "bge_destruction_max_pieces"):
+                col = layout.column()
+                col.label(text="Destruction Budget:")
+                row = col.row(align=True)
+                row.prop(context.scene, "bge_destruction_max_pieces")
+                row.prop(context.scene, "bge_destruction_lifetime")
 
             col = layout.column()
             col.label(text="Physics Deactivation:")
@@ -1277,6 +1468,9 @@ class OBJECT_PT_levels_of_detail(ObjectButtonsPanel, Panel):
 classes = (
     PHYSICS_PT_game_physics,
     PHYSICS_PT_game_collision_bounds,
+    PHYSICS_PT_game_articulation,
+    PHYSICS_PT_game_destruction,
+    PHYSICS_PT_game_fluid,
     PHYSICS_PT_game_obstacles,
     RENDER_PT_embedded,
     RENDER_PT_game_player,
