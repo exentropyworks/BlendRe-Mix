@@ -207,7 +207,8 @@ if tic == 110:
     except Exception as ex:
         st["errors"].append("tic 110: %r" % ex)
 if tic == TICS:
-    st["left"] = {o.name: o.worldPosition.z for o in scene.objects if o.name.startswith(("Box", "Spare"))}
+    # (round 1: "SparePlace", the empty it is added at, counted as a box)
+    st["left"] = {o.name: o.worldPosition.z for o in scene.objects if o.name.startswith("Box") or o.name == "Spare"}
     write(st)
 '''
 
