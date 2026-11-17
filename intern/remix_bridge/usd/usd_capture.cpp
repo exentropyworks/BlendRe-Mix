@@ -78,6 +78,10 @@
 #include "bge_remix_usd.h"
 #include "usd_core.h"
 
+#ifdef _MSC_VER
+#  include <windows.h>  /* __try: GetExceptionCode */
+#endif
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 struct bru_capture {
@@ -881,11 +885,38 @@ int capture_camera(const bru_capture *cap, bru_camera *r)
 	return 1;
 }
 
+#ifdef _MSC_VER
+/* a crash while reading (a damaged file) is a failure, not Blender's end
+ * (no C++ objects here, so __try may hold the call) */
+bru_capture *open_guarded(const char *plugin_dir, const char *path, char *r_error, int max_bytes,
+                          unsigned long *r_code)
+{
+	__try {
+		return capture_open(plugin_dir, path, r_error, max_bytes);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		*r_code = GetExceptionCode();
+		return nullptr;
+	}
+}
+#endif
+
 /* every call caught: OpenUSD's exceptions do not leave the DLL */
 bru_capture *api_open(const char *plugin_dir, const char *path, char *r_error, int max_bytes)
 {
 	try {
+#ifdef _MSC_VER
+		unsigned long code = 0;
+		bru_capture *cap = open_guarded(plugin_dir, path, r_error, max_bytes, &code);
+		if (code) {
+			char buf[96];
+			snprintf(buf, sizeof(buf), "reading the capture crashed (exception 0x%08lX)", code);
+			fail(buf, r_error, max_bytes);
+		}
+		return cap;
+#else
 		return capture_open(plugin_dir, path, r_error, max_bytes);
+#endif
 	}
 	catch (const std::exception &e) {
 		fail(std::string("reading the capture failed: ") + e.what(), r_error, max_bytes);

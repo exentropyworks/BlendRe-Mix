@@ -309,7 +309,9 @@ jobs:
           $dds = Get-ChildItem usd_check_out/capture/textures -Filter *.dds | ForEach-Object { $_.FullName }
           p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll usd_check_out `
             usd_check_out/capture/capture_room.usda usd_check_out/capture_dump.json @dds
-          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::some checks failed (see the log)"; exit 1 }
+          $code = $LASTEXITCODE
+          Write-Output "p12_usd_check ended with $code"
+          if ($code -ne 0) { Write-Output "::error title=OpenUSD check::some checks failed (see the log; ended with $code)"; exit 1 }
           python blender/tests/bge_remix/p12/native/check_capture.py usd_check_out/capture/expected.json usd_check_out/capture_dump.json
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the capture was not read as written (see the log)"; exit 1 }
 

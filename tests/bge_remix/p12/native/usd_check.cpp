@@ -166,6 +166,8 @@ static int dump_capture(const bru_capture_api *api, const char *plugins, const c
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 
+static const char *g_step = "starting";
+
 typedef const char *(*version_fn)(void);
 typedef int (*started_fn)(void);
 typedef int (*selftest_fn)(const wchar_t *, char *, int);
@@ -182,12 +184,32 @@ static std::wstring wide(const char *s)
 	return w;
 }
 
+/* a crash says where (the module and offset), even when the output is a
+ * pipe: stdout is unbuffered (P12 round 2: a crash left no output at all) */
+static LONG WINAPI on_crash(EXCEPTION_POINTERS *e)
+{
+	void *at = e->ExceptionRecord->ExceptionAddress;
+	HMODULE mod = nullptr;
+	char name[MAX_PATH] = "?";
+	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                       (LPCSTR)at, &mod)) {
+		GetModuleFileNameA(mod, name, MAX_PATH);
+	}
+	printf("FAIL  crashed: exception 0x%08lX at %s+0x%llX (step: %s)\n", e->ExceptionRecord->ExceptionCode, name,
+	       (unsigned long long)((const char *)at - (const char *)mod), g_step);
+	fflush(stdout);
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
 int main(int argc, char **argv)
 {
+	setvbuf(stdout, nullptr, _IONBF, 0);
+	SetUnhandledExceptionFilter(on_crash);
 	if (argc < 3) {
 		fprintf(stderr, "usage: p12_usd_check <bge_remix_bridge.dll> <folder> [<capture> <dump.json> [<dds>...]]\n");
 		return 1;
 	}
+	g_step = "loading the bridge";
 	int failed = 0;
 	wchar_t full[MAX_PATH * 2];
 	GetFullPathNameW(wide(argv[1]).c_str(), MAX_PATH * 2, full, nullptr);
@@ -215,6 +237,7 @@ int main(int argc, char **argv)
 	failed += no_tbb ? 0 : 1;
 
 	static char report[16384];
+	g_step = "the self-test";
 	int n = selftest(wide(argv[2]).c_str(), report, int(sizeof(report)));
 	printf("%s", report);
 	failed += n;
@@ -229,18 +252,21 @@ int main(int argc, char **argv)
 		plugin_dir_fn plugin_dir = (plugin_dir_fn)GetProcAddress(dll, "brb_usd_plugin_dir");
 		dds_fn dds = (dds_fn)GetProcAddress(dll, "brb_dds_to_png");
 		char err[1024] = "";
+		g_step = "the capture reader";
 		const bru_capture_api *api = capture_api ? capture_api(err, int(sizeof(err))) : nullptr;
 		if (!api || !plugin_dir || !dds) {
 			printf("FAIL  the bridge's capture reader (%s)\n", err);
 			failed++;
 		}
 		else {
+			g_step = "reading the capture";
 			int r = dump_capture(api, plugin_dir(), argv[3], argv[4]);
 			printf("%s  the capture read through the bridge\n", r == 0 ? "ok   " : "FAIL ");
 			failed += r == 0 ? 0 : 1;
 			for (int i = 5; i < argc; i++) {
 				std::wstring in = wide(argv[i]);
 				std::wstring out = in.substr(0, in.size() - 4) + L".png";
+				g_step = "decoding a DDS texture";
 				int ok = dds(in.c_str(), out.c_str(), err, int(sizeof(err)));
 				printf("%s  %s decoded%s%s\n", ok ? "ok   " : "FAIL ", argv[i], ok ? "" : ": ", ok ? "" : err);
 				failed += ok ? 0 : 1;

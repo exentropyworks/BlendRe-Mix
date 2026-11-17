@@ -84,6 +84,19 @@ bool decode(const wchar_t *dds, const wchar_t *png, std::string &r_error)
 	return true;
 }
 
+/* a crash inside the decoder (a damaged file) is a failure, not Blender's
+ * end (no C++ objects here, so __try may hold the call) */
+int decode_guarded(const wchar_t *dds, const wchar_t *png, std::string *r_error, unsigned long *r_code)
+{
+	__try {
+		return decode(dds, png, *r_error) ? 1 : 0;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		*r_code = GetExceptionCode();
+		return -1;
+	}
+}
+
 }  // namespace
 
 using namespace brb;
@@ -96,11 +109,19 @@ BRB_API int brb_dds_to_png(const wchar_t *dds, const wchar_t *png, char *r_error
 		err = "no file given";
 	}
 	else {
+		unsigned long code = 0;
+		int r = -1;
 		try {
-			ok = decode(dds, png, err);
+			r = decode_guarded(dds, png, &err, &code);
 		}
 		catch (...) {
 			err = "decoding failed";
+		}
+		ok = r == 1;
+		if (r < 0 && code) {
+			char buf[64];
+			snprintf(buf, sizeof(buf), "decoding crashed (exception 0x%08lX)", code);
+			err = buf;
 		}
 	}
 	if (!ok) {
