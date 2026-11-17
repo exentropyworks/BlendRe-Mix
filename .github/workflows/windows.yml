@@ -17,6 +17,10 @@ env:
   OFFICIAL_URL: https://download.blender.org/release/Blender2.79/blender-2.79b-windows64.zip
   # NVIDIA PhysX 5 (P6), Apache 2.0
   PHYSX_TAG: 110.3-omni-and-physx-5.9.1
+  # OpenUSD 25.11 (TOST licence, Apache 2.0-based) and oneTBB 2021.12
+  # (Apache 2.0), the versions RTX Remix 1.6.1 ships (P12)
+  USD_TAG: v25.11
+  TBB_TAG: v2021.12.0
 
 jobs:
   # Blender 2.79's pre-compiled Windows libraries (the 2.79a tag also covers
@@ -128,8 +132,61 @@ jobs:
           path: physx_sdk
           key: physx-${{ env.PHYSX_TAG }}-${{ hashFiles('blender/build_files/physx/**') }}
 
+  # OpenUSD 25.11 for the RTX Remix bridge (P12): C++ only, one static
+  # library, with oneTBB 2021.12; built once and cached (the key changes with
+  # build_files/usd)
+  usd:
+    runs-on: windows-2022
+    timeout-minutes: 240
+    concurrency:
+      group: usd-sdk
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: blender
+          sparse-checkout: build_files/usd
+
+      - name: Restore OpenUSD
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: usd_sdk
+          key: usd-${{ env.USD_TAG }}-tbb-${{ env.TBB_TAG }}-${{ hashFiles('blender/build_files/usd/**') }}
+          lookup-only: true
+
+      - name: OpenUSD and oneTBB source
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch $env:TBB_TAG https://github.com/uxlfoundation/oneTBB.git tbb_src
+          git clone --depth 1 --branch $env:USD_TAG https://github.com/PixarAnimationStudios/OpenUSD.git usd_src
+
+      - name: Build OpenUSD
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $t = [Diagnostics.Stopwatch]::StartNew()
+          blender/build_files/usd/build_usd.ps1 -Tbb tbb_src -Usd usd_src -Out usd_sdk 2>&1 | Tee-Object -FilePath usd_build.log
+          if (-not $?) { exit 1 }
+          Write-Host "OpenUSD build: $([math]::Round($t.Elapsed.TotalMinutes, 1)) minutes"
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: usd-build-log
+          path: usd_build.log
+          if-no-files-found: ignore
+
+      - name: Save OpenUSD
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: usd_sdk
+          key: usd-${{ env.USD_TAG }}-tbb-${{ env.TBB_TAG }}-${{ hashFiles('blender/build_files/usd/**') }}
+
   build:
-    needs: [libs, physx]
+    needs: [libs, physx, usd]
     runs-on: windows-2022
     timeout-minutes: 360
     steps:
@@ -151,6 +208,13 @@ jobs:
           key: physx-${{ env.PHYSX_TAG }}-${{ hashFiles('blender/build_files/physx/**') }}
           fail-on-cache-miss: true
 
+      - name: Restore OpenUSD
+        uses: actions/cache/restore@v4
+        with:
+          path: usd_sdk
+          key: usd-${{ env.USD_TAG }}-tbb-${{ env.TBB_TAG }}-${{ hashFiles('blender/build_files/usd/**') }}
+          fail-on-cache-miss: true
+
       # BGE-Remix P11 (B2): NVIDIA Blast (BSD 3-clause), the blast folder of
       # the same PhysX repo and tag, built into the PhysX backend
       - name: Blast source
@@ -170,6 +234,7 @@ jobs:
             -DWITH_CYCLES_CUDA_BINARIES=OFF `
             -DWITH_LTO=ON -DWITH_CPU_AVX2=ON -DWITH_MEM_MIMALLOC=ON `
             -DWITH_PHYSX=ON -DPHYSX_ROOT_DIR="$pwd/physx_sdk" -DBLAST_SOURCE_DIR="$pwd/blast_src/blast" `
+            -DUSD_ROOT_DIR="$pwd/usd_sdk" `
             -DCMAKE_EXE_LINKER_FLAGS="/MAP" `
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 2>&1 | Tee-Object -FilePath configure.log
           if ($LASTEXITCODE -ne 0) {
@@ -226,6 +291,19 @@ jobs:
           Copy-Item mockbuild/Release/d3d9.dll "$m/mock/"
           Copy-Item mockbuild/Release/d3d9.dll, mockbuild/Release/d3d9_x64.dll, mockbuild/Release/remixdep.dll "$m/mock_shim/"
 
+      # P12: the bridge's OpenUSD, from the built bridge DLL (no Remix, no
+      # graphics card): not started by loading the bridge, then a stage with a
+      # mesh, an RTX Remix material and a rigid body written and read back
+      - name: OpenUSD check
+        shell: pwsh
+        run: |
+          cmake -S blender/tests/bge_remix/p12/native -B p12native -G "Visual Studio 17 2022" -A x64
+          cmake --build p12native --config Release -- /m /v:minimal
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory -Force usd_check_out | Out-Null
+          p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll usd_check_out
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::some checks failed (see the log)"; exit 1 }
+
       - uses: actions/upload-artifact@v4
         with:
           name: blendremix-win64
@@ -281,12 +359,12 @@ jobs:
           # undefined names fail the step)
           exit 0
 
-      - name: The P9, P10 and P11 test scenes are made
+      - name: The P9, P10, P11 and P12 test scenes are made
         shell: pwsh
         run: |
           $bl = Get-ChildItem ours -Recurse -Filter blender.exe | Select-Object -First 1
           $bad = 0
-          foreach ($p in @(@("p9", "make_scenes_p9.py", "p9_expected.json"), @("p10", "make_scenes_p10.py", "p10_expected.json"), @("p11", "make_scenes_p11.py", "p11_expected.json"))) {
+          foreach ($p in @(@("p9", "make_scenes_p9.py", "p9_expected.json"), @("p10", "make_scenes_p10.py", "p10_expected.json"), @("p11", "make_scenes_p11.py", "p11_expected.json"), @("p12", "make_scenes_p12.py", "p12_expected.json"))) {
             $out = "preflight/$($p[0])"
             New-Item -ItemType Directory -Force $out | Out-Null
             $env:BGE_REMIX_CONVERT = "0"

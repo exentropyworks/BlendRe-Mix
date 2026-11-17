@@ -68,6 +68,10 @@ void set_scene_defaults();
 void set_status(brb_status status, const std::string &text);
 bool file_exists(const std::wstring &path);
 
+/* bridge_usd_api.cpp: a log line on whether OpenUSD (bge_remix_usd.dll)
+ * and tbb12.dll are in the process (P12) */
+void log_usd_state();
+
 /* bridge_load.cpp */
 std::string error_text(remixapi_ErrorCode code);
 std::string with_code(const std::string &what, remixapi_ErrorCode code);

@@ -58,8 +58,9 @@ extern "C" {
  * 10: P8.24 (every field of Remix's materials; DDS rows from the bottom,
  *     texture coordinates no longer flipped).
  * 11: P8.30 (particle systems' newer fields; instanced draws).
- * 12: P10.4 (a material's sprite sheet; textures with their own mipmaps). */
-#define BRB_ABI_VERSION 12
+ * 12: P10.4 (a material's sprite sheet; textures with their own mipmaps).
+ * 13: P12 (the bridge's OpenUSD: brb_usd_*). */
+#define BRB_ABI_VERSION 13
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -520,6 +521,28 @@ BRB_API void brb_frame_read_end(void);
  * with an OpenGL context of the bridge's own: for choosing the mode where
  * the caller has no OpenGL context of its own. */
 BRB_API int brb_gl_direct_supported(void);
+
+/* ------------------------------------------------------------------------- */
+/* Interface version 13: OpenUSD (P12) */
+
+/* OpenUSD is in bge_remix_usd.dll beside the bridge, loaded by the first
+ * call that needs it (not by these first two): a game that never imports or
+ * exports never loads it, nor its threading library (tbb12.dll). */
+
+/* The OpenUSD the bridge was built with ("25.11"). Loads nothing. */
+BRB_API const char *brb_usd_version(void);
+
+/* 1 once OpenUSD was started in this process (by an import, an export or
+ * the self-test), else 0. Loads nothing. */
+BRB_API int brb_usd_started(void);
+
+/* Load and start OpenUSD and check it: write a small stage (a box mesh with
+ * UVs, an RTX Remix material, a rigid body) into the folder as .usda and
+ * .usdc, read both back and check every value, and let OpenUSD's UsdPhysics
+ * reader find the body. The report (UTF-8, one line a check, cut to
+ * max_bytes) goes to r_report when not NULL. Returns the number of failed
+ * checks: 0 is a pass. Needs no Remix runtime. */
+BRB_API int brb_usd_selftest(const wchar_t *folder, char *r_report, int max_bytes);
 
 #ifdef __cplusplus
 }

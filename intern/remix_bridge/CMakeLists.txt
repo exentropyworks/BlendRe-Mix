@@ -25,6 +25,7 @@ add_library(bge_remix_bridge SHARED
 	bridge_startup.cpp
 	bridge_texture.cpp
 	bridge_triangle.cpp
+	bridge_usd_api.cpp
 
 	bge_remix_bridge.h
 	bridge_intern.h
@@ -45,3 +46,12 @@ if(MSVC)
 endif()
 
 install(TARGETS bge_remix_bridge RUNTIME DESTINATION ".")
+
+# BGE-Remix P12: OpenUSD 25.11 in a DLL of its own, bge_remix_usd.dll
+# (usd/CMakeLists.txt), which the bridge loads on the first import, export or
+# check (bridge_usd_api.cpp). Without USD_ROOT_DIR it is not built, and the
+# bridge's USD calls say so.
+if(USD_ROOT_DIR)
+	add_subdirectory(usd)
+	add_dependencies(bge_remix_bridge bge_remix_usd)
+endif()

@@ -241,6 +241,8 @@ option(WITH_REMIX        "Enable the NVIDIA RTX Remix renderer bridge (Windows 6
 if(WITH_REMIX AND NOT (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8))
 	set(WITH_REMIX OFF)
 endif()
+# BGE-Remix (P12): OpenUSD 25.11 in the bridge (build_files/usd/build_usd.ps1)
+set(USD_ROOT_DIR "" CACHE PATH "OpenUSD + oneTBB for the RTX Remix bridge (P12), from build_files/usd/build_usd.ps1")
 # BGE-Remix (P6): NVIDIA PhysX 5 as a second game engine physics engine
 option(WITH_PHYSX        "Enable NVIDIA PhysX 5 as a game engine physics engine (needs PHYSX_ROOT_DIR)" OFF)
 set(PHYSX_ROOT_DIR "" CACHE PATH "PhysX 5 SDK install (with include/ and bin/<platform>/release/)")

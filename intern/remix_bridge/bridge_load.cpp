@@ -108,6 +108,7 @@ BRB_API brb_status brb_load(const wchar_t *runtime_dir)
 		brb_shutdown();
 	}
 	log("load runtime from '%s' (bridge API %s)", utf8(dir).c_str(), brb_api_version());
+	log_usd_state();
 
 	const std::wstring dll_path = dir + L"\\d3d9.dll";
 	if (dir.empty() || !file_exists(dll_path)) {
