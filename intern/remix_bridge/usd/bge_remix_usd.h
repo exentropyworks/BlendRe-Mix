@@ -44,8 +44,9 @@ extern "C" {
 
 /* Bumped whenever a function below changes; the bridge refuses a
  * bge_remix_usd.dll with another value. 1: P12 round 1. 2: P12 round 2
- * (reading RTX Remix captures: bru_capture_get_api). */
-#define BRU_ABI_VERSION 2
+ * (reading RTX Remix captures: bru_capture_get_api). 3: P12 round 3 (any
+ * stage written out as JSON: bru_stage_dump). */
+#define BRU_ABI_VERSION 3
 
 BRU_API int bru_abi_version(void);
 
@@ -179,6 +180,15 @@ typedef struct bru_capture_api {
 /* the capture reader's functions (the getters return 1, or 0 for an index
  * out of range) */
 BRU_API const bru_capture_api *bru_capture_get_api(void);
+
+/* P12 round 3 (usd_dump.cpp): the stage at path (UTF-8) as OpenUSD composes
+ * it, written as JSON to json_path: its metres per unit, up axis, default
+ * prim, customLayerData, OpenUSD's complaints, and every prim (path, type,
+ * active, references, API schemas, local to world, authored attributes
+ * with their values, arrays as their count, first values and, for points,
+ * bounds; relationships' targets). Returns 1, or 0 with the reason. */
+BRU_API int bru_stage_dump(const char *plugin_dir, const char *path, const char *json_path, char *r_error,
+                           int max_bytes);
 
 #ifdef __cplusplus
 }

@@ -185,6 +185,8 @@ class INFO_MT_file_export(Menu):
             self.layout.operator("wm.collada_export", text="Collada (Default) (.dae)")
         if bpy.app.build_options.alembic:
             self.layout.operator("wm.alembic_export", text="Alembic (.abc)")
+        # BGE-Remix P12 (A3): a scene imported from a capture, as a Remix mod
+        self.layout.operator("export_scene.bge_remix_mod", text="RTX Remix Mod (.usda)")
 
 
 class INFO_MT_file_external_data(Menu):

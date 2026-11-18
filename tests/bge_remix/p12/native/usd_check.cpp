@@ -19,14 +19,19 @@
  *             loads the built bridge DLL: loading it must not load OpenUSD
  *             (bge_remix_usd.dll) nor tbb12.dll; then brb_usd_selftest
  *             loads them.
+ *             p12_usd_check.exe <bge_remix_bridge.dll> --dump <stage> <dump.json>
+ *             (P12 round 3) any stage, a mod, written out as JSON through
+ *             the bridge (brb_usd_stage_dump), for check_mod.py.
  *   Elsewhere: p12_usd_check <folder> [<plugin folder>]
  *             the same self-test, usd_core.cpp linked in (the native checks
- *             of the USD code itself).
+ *             of the USD code itself); p12_usd_check --dump <plugin folder>
+ *             <stage> <dump.json> the stage dump.
  * Exit code: the number of failed checks. */
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "bge_remix_usd.h"
@@ -174,6 +179,7 @@ typedef int (*selftest_fn)(const wchar_t *, char *, int);
 typedef const bru_capture_api *(*capture_api_fn)(char *, int);
 typedef const char *(*plugin_dir_fn)(void);
 typedef int (*dds_fn)(const wchar_t *, const wchar_t *, char *, int);
+typedef int (*stage_dump_fn)(const char *, const char *, char *, int);
 
 static std::wstring wide(const char *s)
 {
@@ -217,6 +223,19 @@ int main(int argc, char **argv)
 	if (!dll) {
 		printf("FAIL  the bridge did not load (error %lu)\n", GetLastError());
 		return 1;
+	}
+	/* P12 round 3: a stage (a mod) written out as JSON, nothing else */
+	if (argc >= 5 && strcmp(argv[2], "--dump") == 0) {
+		stage_dump_fn stage_dump = (stage_dump_fn)GetProcAddress(dll, "brb_usd_stage_dump");
+		if (!stage_dump) {
+			printf("FAIL  the bridge lacks brb_usd_stage_dump\n");
+			return 1;
+		}
+		char err[1024] = "";
+		g_step = "the stage dump";
+		int ok = stage_dump(argv[3], argv[4], err, int(sizeof(err)));
+		printf("%s  %s read through the bridge%s%s\n", ok ? "ok   " : "FAIL ", argv[3], ok ? "" : ": ", err);
+		return ok ? 0 : 1;
 	}
 	version_fn version = (version_fn)GetProcAddress(dll, "brb_usd_version");
 	started_fn started = (started_fn)GetProcAddress(dll, "brb_usd_started");
@@ -284,8 +303,15 @@ int main(int argc, char **argv)
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
-		fprintf(stderr, "usage: p12_usd_check <folder> [<plugin folder> [<capture> <dump.json>]]\n");
+		fprintf(stderr, "usage: p12_usd_check <folder> [<plugin folder> [<capture> <dump.json>]]\n"
+		                "       p12_usd_check --dump <plugin folder> <stage> <dump.json>\n");
 		return 1;
+	}
+	if (argc >= 5 && strcmp(argv[1], "--dump") == 0) {
+		char err[1024] = "";
+		int ok = bru_stage_dump(argv[2], argv[3], argv[4], err, int(sizeof(err)));
+		printf("%s  %s read%s%s\n", ok ? "ok   " : "FAIL ", argv[3], ok ? "" : ": ", err);
+		return ok ? 0 : 1;
 	}
 	int failed = 0;
 	bool idle = !brb::usd::started();

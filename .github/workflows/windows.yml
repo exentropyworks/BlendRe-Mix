@@ -314,6 +314,14 @@ jobs:
           if ($code -ne 0) { Write-Output "::error title=OpenUSD check::some checks failed (see the log; ended with $code)"; exit 1 }
           python blender/tests/bge_remix/p12/native/check_capture.py usd_check_out/capture/expected.json usd_check_out/capture_dump.json
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the capture was not read as written (see the log)"; exit 1 }
+          # P12 round 3: a small mod written by the exporter's writer, read
+          # back through the bridge and checked
+          python blender/tests/bge_remix/p12/native/check_mod.py write usd_check_out/mod
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll --dump usd_check_out/mod/mod.usda usd_check_out/mod_dump.json
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the mod did not read back (see the log)"; exit 1 }
+          python blender/tests/bge_remix/p12/native/check_mod.py check usd_check_out/mod usd_check_out/mod_dump.json
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the mod was not read as written (see the log)"; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:

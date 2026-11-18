@@ -10,10 +10,23 @@ argv (after --):
       textures' top rows), lamps and camera. With save.blend: the imported
       scene alone saved to play (with Remix on, a probe and the room's
       world).
+  export <capture> <out.json> <mod folder> <edits> [<sphere place> <wall place>]
+      (round 3) the capture imported, edited by script, then File > Export >
+      RTX Remix Mod (the operator) into <mod folder>; written out: the
+      result, the export's report and counts, the mod read back with the
+      bridge's OpenUSD (its stage dump), what the edits were, and the DDS
+      textures written decoded (their top and bottom rows). edits:
+        room     the sphere's mesh a bevelled box, its material gold, a lamp
+                 and a small cube parented to it, a wall moved
+        none     nothing changed
+        texture  the box's picture painted (top half red, bottom half blue)
+        plain    no import: a scene of its own, not from a capture
 """
 
 import json
+import math
 import os
+import shutil
 import sys
 import traceback
 
@@ -21,6 +34,7 @@ import bpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p2"))
+sys.path.insert(0, HERE)
 
 NODE_INPUTS = ("Albedo", "Opacity", "Roughness", "Metallic", "Emissive Color", "Emissive Intensity", "IOR",
                "Transmittance", "Transmittance Distance", "Anisotropy", "Thin Film")
@@ -138,12 +152,164 @@ def save_to_play(scene, path):
     bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
 
 
+def _parent(ob, parent, world):
+    """ob under parent, at world (Blender's matrices)"""
+    from mathutils import Matrix
+    ob.parent = parent
+    ob.matrix_parent_inverse = Matrix.Identity(4)
+    ob.matrix_basis = parent.matrix_world.inverted() * world
+
+
+def edit_room(scene, sphere_place, wall_place):
+    """the round 3 edits; what they were (Blender's space)"""
+    import bmesh
+    from mathutils import Matrix
+    from bl_operators.bge_remix_material import make_remix_material, remix_node
+    places = {ob.get("bge_remix_capture_place"): ob for ob in scene.objects}
+    sphere, wall = places[sphere_place], places[wall_place]
+    info = {"sphere_matrix": mat_list(sphere.matrix_world)}
+    # the sphere's mesh: a bevelled box, 1 x 0.6 x 0.4, its UVs from its
+    # place (x, y)
+    me = sphere.data
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    bmesh.ops.scale(bm, vec=(1.0, 0.6, 0.4), verts=bm.verts[:])
+    bmesh.ops.bevel(bm, geom=bm.verts[:] + bm.edges[:], offset=0.05, segments=2, vertex_only=False)
+    uv = bm.loops.layers.uv.new("UVMap")
+    for f in bm.faces:
+        for l in f.loops:
+            l[uv].uv = (l.vert.co.x + 0.5, l.vert.co.y / 0.6 + 0.5)
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+    info["box"] = {"vertices": len(me.vertices), "polygons": len(me.polygons), "loops": len(me.loops),
+                   "half": [0.5, 0.3, 0.2]}
+    # its material: gold
+    mat = sphere.material_slots[0].material
+    node = remix_node(mat)
+    node.inputs["Albedo"].default_value = (1.0, 0.766, 0.336, 1.0)
+    node.inputs["Metallic"].default_value = 1.0
+    node.inputs["Roughness"].default_value = 0.25
+    node.inputs["Emissive Intensity"].default_value = 0.0
+    info["gold"] = {"material": mat.name, "albedo": [1.0, 0.766, 0.336], "metallic": 1.0, "roughness": 0.25}
+    # a lamp and a small cube (its own red material) under the sphere
+    la = bpy.data.lamps.new("ModLamp", 'POINT')
+    la.energy = 2.0
+    la.distance = 1.0
+    la.shadow_soft_size = 0.05
+    la["bge_physical"] = 1.0
+    lamp = bpy.data.objects.new("ModLamp", la)
+    scene.objects.link(lamp)
+    cme = bpy.data.meshes.new("ModCube")
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=0.1)
+    bm.to_mesh(cme)
+    bm.free()
+    red = bpy.data.materials.new("BGE_Red")
+    rnode = make_remix_material(red)
+    rnode.inputs["Albedo"].default_value = (1.0, 0.0, 0.0, 1.0)
+    cme.materials.append(red)
+    cube = bpy.data.objects.new("ModCube", cme)
+    scene.objects.link(cube)
+    lamp_world = Matrix.Translation((0.8, 1.2, 1.0))
+    cube_world = Matrix.Translation((0.8, 1.2, 0.85)) * Matrix.Rotation(math.radians(30.0), 4, 'Z')
+    _parent(lamp, sphere, lamp_world)
+    _parent(cube, sphere, cube_world)
+    # a wall moved (a mod cannot carry it)
+    wall.location.x += 0.5
+    scene.update()
+    info["lamp"] = {"name": lamp.name, "world": mat_list(lamp.matrix_world), "energy": 2.0, "distance": 1.0,
+                    "radius": 0.05}
+    info["cube"] = {"name": cube.name, "world": mat_list(cube.matrix_world), "material": red.name,
+                    "vertices": len(cme.vertices), "half": 0.05}
+    info["wall"] = wall.name
+    return info
+
+
+def paint_box(scene, box_material_hash):
+    """the box's picture painted: top half red, bottom half blue"""
+    mat = next(m for m in bpy.data.materials if m.get("bge_remix_capture_hash") == box_material_hash)
+    ima = None
+    for n in mat.node_tree.nodes:
+        tex = getattr(n, "texture", None)
+        if tex is not None and getattr(tex, "image", None) is not None:
+            ima = tex.image
+    w, h = ima.size
+    px = []
+    for y in range(h):
+        c = (1.0, 0.0, 0.0, 1.0) if y >= h // 2 else (0.0, 0.0, 1.0, 1.0)
+        px.extend(c * w)
+    ima.pixels = px
+    return {"material": mat.name, "image": ima.name, "size": [w, h], "dirty": ima.is_dirty}
+
+
+def decoded(folder):
+    """the mod's DDS textures decoded: their top and bottom rows"""
+    import _bge_remix
+    out = {}
+    tex = os.path.join(folder, "textures")
+    for name in sorted(os.listdir(tex)) if os.path.isdir(tex) else ():
+        if not name.lower().endswith(".dds"):
+            continue
+        png = os.path.join(folder, name + ".png")
+        ok, err = _bge_remix.dds_to_png(os.path.join(tex, name), png)
+        d = {"ok": ok, "error": err}
+        if ok:
+            ima = bpy.data.images.load(png)
+            w, h = ima.size
+            d["size"] = [w, h]
+            d["top"] = top_rows(ima, 1)
+            px = list(ima.pixels)
+            d["bottom"] = [[int(round(c * 255.0)) for c in px[x * 4:x * 4 + 4]] for x in range(w)]
+        out[name] = d
+    return out
+
+
+def export(argv, out):
+    import _bge_remix
+    from bl_operators import bge_remix_mod
+    capture, folder, edits = argv[1], argv[3], argv[4]
+    shutil.rmtree(folder, ignore_errors=True)
+    if edits == "plain":
+        scene = bpy.data.scenes.new("Plain")
+    else:
+        before = set(bpy.data.scenes.keys())
+        bpy.ops.import_scene.bge_remix_capture(filepath=capture)
+        scene = [bpy.data.scenes[n] for n in bpy.data.scenes.keys() if n not in before][0]
+    if edits == "room":
+        out["edits"] = edit_room(scene, argv[5], argv[6])
+    elif edits == "texture":
+        import capture_writer as cw
+        out["edits"] = paint_box(scene, cw.MAT["Box"])
+    try:
+        ret = bpy.ops.export_scene.bge_remix_mod({"scene": scene}, directory=folder)
+        out["result"] = sorted(ret)
+    except RuntimeError as e:
+        out["result"] = ["CANCELLED"]
+        out["error"] = str(e)
+    out["last"] = {"report": list(bge_remix_mod.LAST.get("report") or []), "path": bge_remix_mod.LAST.get("path"),
+                   "counts": bge_remix_mod.LAST.get("counts")}
+    out["folder_exists"] = os.path.isdir(folder)
+    mod = os.path.join(folder, "mod.usda")
+    if os.path.isfile(mod):
+        dump = os.path.join(folder + "_dump.json")
+        ok, err = _bge_remix.usd_dump(mod, dump)
+        out["dump_ok"], out["dump_error"] = ok, err
+        if ok:
+            with open(dump) as f:
+                out["dump"] = json.load(f)
+        out["textures"] = decoded(folder)
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     mode = argv[0]
     out = {"mode": mode}
     try:
-        if mode == "selftest":
+        if mode == "export":
+            path = argv[2]
+            export(argv, out)
+        elif mode == "selftest":
             import _bge_remix
             os.makedirs(argv[1], exist_ok=True)
             failed, report, version = _bge_remix.usd_selftest(argv[1])

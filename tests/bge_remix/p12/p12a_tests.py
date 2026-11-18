@@ -22,11 +22,24 @@ normal(...)
           materials and lights as the capture had them; every object its
           own material on the one shared mesh (the game converts a shared
           mesh once for each set of materials)
+  T12.a6  (round 3) the mod: the room imported, then edited by script (the
+          sphere's mesh a bevelled box, its material gold, a lamp and a
+          small cube parented to it, a wall moved), File > Export > RTX Remix
+          Mod, the mod read back with our OpenUSD: the sphere's mesh replaced
+          (the game's own switched off) by the box in the capture's units,
+          the gold at the sphere's material hash, the lamp and the cube under
+          the sphere's mesh hash placed relative to it, nothing else in the
+          mod, the moved wall named in the report
+  T12.a7  the same edits on the Y-up centimetre capture: the mod in
+          centimetres, Y up, with the same shapes and places
+  T12.a8  edge cases: nothing changed says so and writes nothing; a scene
+          not from a capture is refused with a message; a painted texture
+          is written as DDS and reads back
 rtx(...)
   S12.a1  the room and the imported room in Remix, a picture pair
 
-BGE_REMIX_P12A_ONLY (comma separated: selftest, room, units, broken, plays)
-runs only those (a fix round's reruns).
+BGE_REMIX_P12A_ONLY (comma separated: selftest, room, units, broken, plays,
+mod, modunits, modedges) runs only those (a fix round's reruns).
 """
 
 import json
@@ -70,7 +83,8 @@ def blender(args, out, tag, argv, timeout=600):
                             "--"] + argv, p2.base_env(out, tag), os.path.join(out, tag + ".log"), timeout=timeout)
     got = p2.read_json(res) or {}
     got["exit"] = code
-    got["log"] = [l for l in (text or "").splitlines() if l.startswith("BGE-Remix capture import: ")]
+    got["log"] = [l for l in (text or "").splitlines()
+                  if l.startswith(("BGE-Remix capture import: ", "BGE-Remix mod export: "))]
     return got
 
 
@@ -383,10 +397,229 @@ def t_plays(args, out, tests):
     tests[name] = _test(c, {"materials": mats, "lights": lights, "stats": {k: st.get(k) for k in ("running",)}})
 
 
+# ---------------------------------------------------------------------------
+# round 3: File > Export > RTX Remix Mod
+
+def srgb(c):
+    c = min(max(float(c), 0.0), 1.0)
+    return c * 12.92 if c <= 0.0031308 else 1.055 * c ** (1.0 / 2.4) - 0.055
+
+
+def k_matrix(mpu, z_up):
+    """K: the capture's space into Blender's (the import's)"""
+    S = [[mpu, 0.0, 0.0, 0.0], [0.0, mpu, 0.0, 0.0], [0.0, 0.0, mpu, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    if z_up:
+        return S
+    R = [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    return cw.mat_mul(R, S)
+
+
+def from_usd(u):
+    """USD's 16 numbers (rows) as a 4 x 4 (column vectors)"""
+    return [[float(u[c * 4 + r]) for c in range(4)] for r in range(4)] if u and len(u) == 16 else None
+
+
+def box_bounds(half, Kinv):
+    """a box of half sizes in Blender's space, in the capture's: [min, max]"""
+    pts = [[sx * half[0], sy * half[1], sz * half[2]] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]
+    q = [[sum(Kinv[r][c] * p[c] for c in range(3)) for r in range(3)] for p in pts]
+    return [[min(p[i] for p in q) for i in range(3)], [max(p[i] for p in q) for i in range(3)]]
+
+
+def export_mod(args, out, tag, capture, edits, extra=()):
+    res = os.path.join(out, tag + "_probe.json")
+    folder = os.path.join(out, tag + "_mod")
+    return blender(args, out, tag, ["export", capture, res, folder, edits] + list(extra))
+
+
+def _prims(got):
+    return {p["path"]: p for p in ((got.get("dump") or {}).get("prims") or ())}
+
+
+def _attr(prims, path, name):
+    return ((prims.get(path) or {}).get("attrs") or {}).get(name) or {}
+
+
+def _bounds_near(got, want, tol):
+    try:
+        return all(abs(float(got[i][k]) - want[i][k]) <= tol for i in range(2) for k in range(3))
+    except (TypeError, IndexError, KeyError, ValueError):
+        return False
+
+
+def check_mod(got, E, mpu, z_up):
+    """the room's mod (the round 3 edits) read back: (checks, detail)"""
+    c = {}
+    ed = got.get("edits") or {}
+    dump = got.get("dump") or {}
+    prims = _prims(got)
+    last = got.get("last") or {}
+    K = k_matrix(mpu, z_up)
+    Kinv = cw.mat_inv_affine(K)
+    tol = PLACE_TOL / mpu   # 0.1 mm in the capture's units
+    c["exported (%s), mod.usda written" % got.get("result")] = got.get("result") == ["FINISHED"] and \
+        bool(last.get("path"))
+    c["read back with our OpenUSD, no complaint (%s)" % "; ".join(dump.get("errors") or [])[:120]] = \
+        bool(got.get("dump_ok")) and dump.get("ok") is True and not dump.get("errors")
+    c["a Remix replacement layer, its default prim RootNode, in the capture's units (%s m, %s up)" % (
+        dump.get("meters_per_unit"), dump.get("up_axis"))] = \
+        (dump.get("custom_layer_data") or {}).get("lightspeed_layer_type") == "replacement" and \
+        dump.get("default_prim") == "RootNode" and near(dump.get("meters_per_unit"), mpu, 1e-9) and \
+        dump.get("up_axis") == ("Z" if z_up else "Y")
+    # the sphere's mesh replaced by the box
+    base = "/RootNode/meshes/mesh_" + cw.SPHERE
+    box = ed.get("box") or {}
+    pts = _attr(prims, base + "/replacement", "points").get("value") or {}
+    counts = _attr(prims, base + "/replacement", "faceVertexCounts").get("value") or {}
+    st = _attr(prims, base + "/replacement", "primvars:st").get("value") or {}
+    want_b = box_bounds(box.get("half") or [0, 0, 0], Kinv)
+    c["the sphere's mesh replaced, the game's own switched off (preserveOriginalDrawCall %s)" % (
+        _attr(prims, base, "preserveOriginalDrawCall").get("value"),)] = \
+        _attr(prims, base, "preserveOriginalDrawCall").get("value") == 0 and \
+        (prims.get(base + "/replacement") or {}).get("type") == "Mesh"
+    c["  by the bevelled box: %s points, %s faces, %s UVs (want %s, %s, %s)" % (
+        pts.get("count"), counts.get("count"), st.get("count"), box.get("vertices"), box.get("polygons"),
+        box.get("loops"))] = \
+        bool(box) and (pts.get("count"), counts.get("count"), st.get("count")) == \
+        (box.get("vertices"), box.get("polygons"), box.get("loops"))
+    c["  in the capture's units and axes (bounds %s, want %s)" % (
+        pts.get("bounds"), [[round(x, 3) for x in r] for r in want_b])] = _bounds_near(pts.get("bounds"), want_b, tol)
+    # the gold
+    shader = "/RootNode/Looks/mat_%s/Shader" % cw.MAT["Sphere"]
+    gold = ed.get("gold") or {}
+    alb = _attr(prims, shader, "inputs:diffuse_color_constant")
+    want_alb = [srgb(x) for x in gold.get("albedo") or [0, 0, 0]]
+    c["the gold at the sphere's material hash: albedo %s (sRGB, want %s), metal, roughness 0.25, no glow" % (
+        alb.get("value"), [round(x, 4) for x in want_alb])] = \
+        alb.get("type") == "color3f" and near(alb.get("value"), want_alb, 1e-3) and \
+        near(_attr(prims, shader, "inputs:metallic_constant").get("value"), 1.0) and \
+        near(_attr(prims, shader, "inputs:reflection_roughness_constant").get("value"), 0.25) and \
+        _attr(prims, shader, "inputs:enable_emission").get("value") is False and \
+        (_attr(prims, shader, "info:mdl:sourceAsset").get("value") or {}).get("asset") == "AperturePBR_Opacity.mdl"
+    # the lamp and the cube under the sphere's mesh, placed relative to it
+    M = ed.get("sphere_matrix")
+
+    def placed(name, world):
+        T = from_usd((prims.get(base + "/" + name) or {}).get("local_to_world"))
+        if not T or not M or not world:
+            return (1e9, 1e9)
+        return mdiff(cw.mat_mul(cw.mat_mul(cw.mat_mul(M, K), T), Kinv), world)
+    lamp, cube = ed.get("lamp") or {}, ed.get("cube") or {}
+    lp = _prims_type(prims, base + "/" + str(lamp.get("name")))
+    lplace = placed(lamp.get("name"), lamp.get("world"))
+    inten = _attr(prims, base + "/" + str(lamp.get("name")), "inputs:intensity").get("value")
+    rad = _attr(prims, base + "/" + str(lamp.get("name")), "inputs:radius").get("value")
+    want_i = (lamp.get("energy") or 0) * (lamp.get("distance") or 0) ** 2 / max(lamp.get("radius") or 1, 1e-9) ** 2
+    c["the lamp under the sphere's mesh: a %s, where it was put (%.6f m, turn %.6f), intensity %s, radius %s "
+      "(want %.1f, %s)" % (lp, lplace[0], lplace[1], inten, rad, want_i, (lamp.get("radius") or 0) / mpu)] = \
+        lp == "SphereLight" and lplace[0] <= PLACE_TOL and lplace[1] <= PLACE_TOL and \
+        near(inten, want_i, want_i * 1e-3) and near(rad, (lamp.get("radius") or 0) / mpu, 1e-4 / mpu)
+    cplace = placed(cube.get("name"), cube.get("world"))
+    cpath = base + "/" + str(cube.get("name"))
+    cpts = _attr(prims, cpath, "points").get("value") or {}
+    h = cube.get("half") or 0.0
+    rel = ((prims.get(cpath) or {}).get("rels") or {}).get("material:binding")
+    red = "/RootNode/BGE_Remix_Looks/" + str(cube.get("material"))
+    c["the small cube under it: where it was put (%.6f m, turn %.6f), its size (bounds %s)" % (
+        cplace[0], cplace[1], cpts.get("bounds"))] = \
+        _prims_type(prims, cpath) == "Mesh" and cplace[0] <= PLACE_TOL and cplace[1] <= PLACE_TOL and \
+        _bounds_near(cpts.get("bounds"), box_bounds([h, h, h], Kinv), tol)
+    c["  bound to its own material in the mod (%s), red" % rel] = rel == [red] and \
+        near(_attr(prims, red + "/Shader", "inputs:diffuse_color_constant").get("value"), [1.0, 0.0, 0.0], 1e-4)
+    # nothing else
+    want = {"/RootNode", "/RootNode/Looks", "/RootNode/Looks/mat_" + cw.MAT["Sphere"], shader,
+            "/RootNode/BGE_Remix_Looks", red, red + "/Shader", "/RootNode/meshes", base, base + "/replacement",
+            cpath, base + "/" + str(lamp.get("name"))}
+    extra = sorted(set(p for p in prims if p.startswith("/RootNode")) - want)
+    missing = sorted(want - set(prims))
+    c["nothing else in the mod%s%s" % (": " + ", ".join(extra[:4]) if extra else "",
+                                       "; missing " + ", ".join(missing[:4]) if missing else "")] = \
+        bool(prims) and not extra and not missing
+    rep = last.get("report") or []
+    wall = ed.get("wall") or "?"
+    c["the report names the moved wall (%s), and nothing else (%d note(s))" % (wall, len(rep))] = \
+        len(rep) == 1 and wall in rep[0] and "moved" in rep[0]
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    d = {"report": rep, "counts": last.get("counts"), "error": got.get("error"), "traceback": got.get("traceback"),
+         "prims": sorted(prims), "edits": ed}
+    return c, d
+
+
+def _prims_type(prims, path):
+    return (prims.get(path) or {}).get("type")
+
+
+def _places(E):
+    by = {o["part"]: o["name"] for o in E["objects"]}
+    return [by["Sphere"], by["WallE"]]
+
+
+def t_mod(args, out, tests):
+    name = "T12.a6 The mod: edits to the room go out as a Remix mod"
+    E = write(out, "room")
+    got = export_mod(args, out, "p12a_mod", E["path"], "room", _places(E))
+    c, d = check_mod(got, E, 1.0, True)
+    tests[name] = _test(c, d)
+
+
+def t_mod_units(args, out, tests):
+    name = "T12.a7 The mod of a Y-up centimetre capture: centimetres, Y up"
+    E = write(out, "room_cm_yup")
+    got = export_mod(args, out, "p12a_mod_cm_yup", E["path"], "room", _places(E))
+    c, d = check_mod(got, E, 0.01, False)
+    tests[name] = _test(c, d)
+
+
+def t_mod_edges(args, out, tests):
+    name = "T12.a8 The mod's edge cases"
+    E = write(out, "room")
+    c, d, runs = {}, {}, []
+    g = export_mod(args, out, "p12a_mod_none", E["path"], "none")
+    runs.append(g)
+    last = g.get("last") or {}
+    c["nothing changed: it says so (%s) and writes nothing" % (g.get("log") or ["-"])[-1:]] = \
+        g.get("result") == ["FINISHED"] and not last.get("path") and not g.get("folder_exists") and \
+        any("nothing changed" in l for l in g.get("log") or [])
+    c["  no note: every fingerprint as it came in (%d note(s))" % len(last.get("report") or [])] = \
+        not last.get("report")
+    d["nothing_changed"] = {"report": last.get("report"), "log": g.get("log"), "traceback": g.get("traceback")}
+    g = export_mod(args, out, "p12a_mod_plain", E["path"], "plain")
+    runs.append(g)
+    c["a scene not from a capture: refused with a message (%s)" % (g.get("error") or "")[:90]] = \
+        g.get("result") == ["CANCELLED"] and "did not come from an RTX Remix capture" in (g.get("error") or "") and \
+        not g.get("folder_exists")
+    d["plain"] = g.get("error")
+    g = export_mod(args, out, "p12a_mod_texture", E["path"], "texture")
+    runs.append(g)
+    prims = _prims(g)
+    shader = "/RootNode/Looks/mat_%s/Shader" % cw.MAT["Box"]
+    tex = (_attr(prims, shader, "inputs:diffuse_texture").get("value") or {})
+    files = g.get("textures") or {}
+    one = list(files.values())[0] if len(files) == 1 else {}
+    size = one.get("size") or [0, 0]
+
+    def row_is(row, colour):
+        return bool(row) and all(all(abs(p[k] - colour[k]) <= 12 for k in range(3)) for p in row)
+    c["a painted texture: the box's material replaced, its picture a DDS in the mod (%s)" % tex.get("asset")] = \
+        g.get("result") == ["FINISHED"] and bool(tex.get("resolved")) and \
+        str(tex.get("asset", "")).startswith("./textures/") and str(tex.get("asset", "")).endswith(".dds") and \
+        len(files) == 1 and bool(one.get("ok"))
+    c["  it reads back as painted, the right way up (%s: top red, bottom blue)" % (size,)] = \
+        size == (g.get("edits") or {}).get("size") and row_is(one.get("top"), (255, 0, 0)) and \
+        row_is(one.get("bottom"), (0, 0, 255))
+    others = sorted(p for p in prims if p.startswith("/RootNode/") and not p.startswith("/RootNode/Looks"))
+    c["  nothing else in the mod%s" % (": " + ", ".join(others[:4]) if others else "")] = bool(prims) and not others
+    d["texture"] = {"files": {k: {x: v.get(x) for x in ("ok", "error", "size")} for k, v in files.items()},
+                    "report": (g.get("last") or {}).get("report"), "error": g.get("error"),
+                    "traceback": g.get("traceback")}
+    c["no crash"] = all(x.get("exit") == 0 and "traceback" not in x for x in runs)
+    tests[name] = _test(c, d)
+
+
 def normal(args, out, scenes, E, tests, sheets):
     only = _only()
     for key, fn in (("selftest", t_selftest), ("room", t_room), ("units", t_units), ("broken", t_broken),
-                    ("plays", t_plays)):
+                    ("plays", t_plays), ("mod", t_mod), ("modunits", t_mod_units), ("modedges", t_mod_edges)):
         if not only or key in only:
             try:
                 fn(args, out, tests)

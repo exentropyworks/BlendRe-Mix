@@ -954,6 +954,89 @@ static PyObject *brmx_dds_to_png(PyObject *UNUSED_self, PyObject *args)
 	return Py_BuildValue("(Os)", ok ? Py_True : Py_False, err);
 }
 
+PyDoc_STRVAR(brmx_usd_dump_doc,
+".. function:: usd_dump(path, json_path)\n"
+"\n"
+"   BGE-Remix P12: the USD stage at path as the bridge's OpenUSD composes it,\n"
+"   written as JSON to json_path (every prim, its attributes and their values;\n"
+"   arrays as their count and first values).\n"
+"\n"
+"   :return: (ok, error)\n");
+static PyObject *brmx_usd_dump(PyObject *UNUSED_self, PyObject *args)
+{
+	const char *path, *json;
+	char err[1024] = "";
+	int ok;
+
+	if (!PyArg_ParseTuple(args, "ss:usd_dump", &path, &json)) {
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		return Py_BuildValue("(Os)", Py_False, BRMX_bridge_error());
+	}
+	Py_BEGIN_ALLOW_THREADS
+	ok = B->usd_stage_dump(path, json, err, (int)sizeof(err));
+	Py_END_ALLOW_THREADS
+	return Py_BuildValue("(Os)", ok ? Py_True : Py_False, err);
+}
+
+PyDoc_STRVAR(brmx_dds_write_doc,
+".. function:: dds_write(path, width, height, rgba, kind, top_first)\n"
+"\n"
+"   BGE-Remix P12: write a DDS texture with the bridge's encoder (what\n"
+"   Remix reads: BC7 for colour, BC5 octahedral for normal maps, BC4 for one\n"
+"   channel), with a full mip chain. rgba: width * height * 4 bytes, rows\n"
+"   from the bottom (as Blender keeps images), sRGB for colour. kind: 'COLOR',\n"
+"   'NORMAL' or 'SCALAR' (its red channel). top_first: the file's rows from\n"
+"   the picture's top (USD's coordinates, an RTX Remix mod).\n"
+"\n"
+"   :return: (ok, error)\n");
+static PyObject *brmx_dds_write(PyObject *UNUSED_self, PyObject *args)
+{
+	PyObject *path_obj;
+	const char *kind;
+	Py_buffer px;
+	int width, height, top_first;
+	wchar_t *path;
+	brb_texture_desc desc;
+	brb_texture_result res;
+	int r;
+
+	if (!PyArg_ParseTuple(args, "Uiiy*sp:dds_write", &path_obj, &width, &height, &px, &kind, &top_first)) {
+		return NULL;
+	}
+	if (width <= 0 || height <= 0 || px.len < (Py_ssize_t)width * height * 4) {
+		PyBuffer_Release(&px);
+		PyErr_SetString(PyExc_ValueError, "dds_write: the pixels do not fill width * height * 4 bytes");
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		PyBuffer_Release(&px);
+		return Py_BuildValue("(Os)", Py_False, BRMX_bridge_error());
+	}
+	path = PyUnicode_AsWideCharString(path_obj, NULL);
+	if (path == NULL) {
+		PyBuffer_Release(&px);
+		return NULL;
+	}
+	memset(&desc, 0, sizeof(desc));
+	memset(&res, 0, sizeof(res));
+	desc.path = path;
+	desc.kind = STREQ(kind, "NORMAL") ? BRB_TEXTURE_NORMAL : STREQ(kind, "SCALAR") ? BRB_TEXTURE_SCALAR :
+	                                                                                  BRB_TEXTURE_COLOR;
+	desc.width = width;
+	desc.height = height;
+	desc.rgba8 = (const unsigned char *)px.buf;
+	desc.channel = 0;
+	desc.flags = top_first ? BRB_TEXTURE_TOP_FIRST : 0;
+	Py_BEGIN_ALLOW_THREADS
+	r = B->texture_write(&desc, &res);
+	Py_END_ALLOW_THREADS
+	PyMem_Free(path);
+	PyBuffer_Release(&px);
+	return Py_BuildValue("(Os)", r == 0 ? Py_True : Py_False, r == 0 ? "" : res.error);
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -985,6 +1068,8 @@ static PyMethodDef brmx_methods[] = {
 	{"usd_selftest", (PyCFunction)brmx_usd_selftest, METH_VARARGS, brmx_usd_selftest_doc},
 	{"capture_read", (PyCFunction)brmx_capture_read, METH_VARARGS, brmx_capture_read_doc},
 	{"dds_to_png", (PyCFunction)brmx_dds_to_png, METH_VARARGS, brmx_dds_to_png_doc},
+	{"usd_dump", (PyCFunction)brmx_usd_dump, METH_VARARGS, brmx_usd_dump_doc},
+	{"dds_write", (PyCFunction)brmx_dds_write, METH_VARARGS, brmx_dds_write_doc},
 	{NULL, NULL, 0, NULL}
 };
 

@@ -54,3 +54,46 @@ message.
 Remix cannot capture BGE-Remix games: its capturer skips everything drawn
 through its API, which is how BGE-Remix draws. Captures come from D3D9
 games; BGE-Remix games are changed in their .blend.
+
+## File > Export > RTX Remix Mod
+
+After importing a capture and changing it, File > Export > RTX Remix Mod
+writes the changes as a Remix mod: a folder holding mod.usda and a textures
+folder. It suggests the game's own mods folder, rtx-remix/mods/<scene name>
+(found from the capture's path); any folder can be picked. Remix loads the
+mods in rtx-remix/mods when the game starts.
+
+Only what was changed goes in. At import, each mesh, material, lamp and
+object keeps a fingerprint of how it came in, and the export compares
+against it. With nothing changed, it says so and writes nothing. A scene
+that did not come from a capture is refused with a message.
+
+- **A mesh you edited** replaces that mesh wherever the game draws it, and
+  the game's own mesh is switched off. Each place keeps its own material.
+- **Objects and lamps parented to an imported object** are added to that
+  object's mesh, wherever the game draws it, placed relative to it. Their
+  modifiers are applied. Their materials go into the mod with them.
+- **A material you changed** replaces that material everywhere it is used.
+  Its pictures are written as DDS in the textures folder: a capture texture
+  you did not touch is copied as it is, and a new or painted picture is
+  encoded with the bridge's encoder (BC7 for colour, BC5 for normal maps,
+  BC4 for one channel). Only pictures wired straight into the RTX Remix
+  node go in.
+- **A lamp you changed** replaces that light, in its new place too.
+
+Everything goes back to the capture's own units and up axis, so the game
+sees nothing moved.
+
+### What a mod cannot carry
+
+A mod changes how things look, not where the game puts them. The export
+reports, in the Info log, what it left out: a place moved, deleted or
+copied, another material or mesh given to one place (change the material or
+the mesh itself), physics, logic and game properties, modifiers on an
+imported object (apply them first), new objects not parented to an
+imported one, a sun or hemi lamp under a mesh.
+
+### Checked before it reports success
+
+The mod is read back with BGE-Remix's own OpenUSD before the export reports
+success, so a file Remix could not open is caught at once, with the reason.

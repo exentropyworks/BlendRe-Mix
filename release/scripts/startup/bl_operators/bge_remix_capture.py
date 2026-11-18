@@ -43,8 +43,14 @@ Object and Material tabs.
 Each DDS texture is decoded once to a PNG copy beside it (<name>.dds.png),
 which Blender shows; the material keeps the DDS's path for Remix. A report
 says what came in and what was left out or missing.
+
+P12 round 3: each mesh, material, lamp and object keeps a fingerprint of how
+it came in (bge_remix_capture_fp, the fp_* functions), and each place its
+capture name (bge_remix_capture_place), so File > Export > RTX Remix Mod
+(bge_remix_mod.py) writes only what was changed.
 """
 
+import hashlib
 import math
 import os
 
@@ -54,6 +60,8 @@ from bpy.types import Operator, Panel
 from bpy_extras.io_utils import ImportHelper
 
 HASH = "bge_remix_capture_hash"
+FP = "bge_remix_capture_fp"
+PLACE = "bge_remix_capture_place"
 
 # AperturePBR's inputs and the RTX Remix node's (values; textures below)
 NODE_VALUES = {
@@ -117,6 +125,141 @@ def usd_matrix(m):
     Matrix (column vectors)"""
     from mathutils import Matrix
     return Matrix([[m[c * 4 + r] for c in range(4)] for r in range(4)])
+
+
+# ---------------------------------------------------------------------------
+# fingerprints: how a mesh, material, lamp or object came in (round 3); the
+# mod export compares them with the same functions run again
+
+def _text(v):
+    """a value as stable text (floats to 6 digits)"""
+    if isinstance(v, str):
+        return repr(v)
+    if isinstance(v, float):
+        return "%.6g" % v
+    if isinstance(v, (bool, int)) or v is None:
+        return repr(v)
+    try:
+        return "(" + ",".join(_text(x) for x in v) + ")"
+    except TypeError:
+        return repr(v)
+
+
+def _digest(parts):
+    h = hashlib.md5()
+    for p in parts:
+        h.update(p if isinstance(p, bytes) else _text(p).encode("utf-8"))
+        h.update(b"|")
+    return h.hexdigest()
+
+
+def _array(seq, attr, dtype, width):
+    import numpy as np
+    a = np.zeros(len(seq) * width, dtype=dtype)
+    if len(seq):
+        seq.foreach_get(attr, a)
+    return a.tobytes()
+
+
+def fp_mesh(me):
+    """its vertices, faces, UVs, vertex colours and sidedness"""
+    import numpy as np
+    parts = [_array(me.vertices, "co", np.float32, 3), _array(me.loops, "vertex_index", np.int32, 1),
+             _array(me.polygons, "loop_total", np.int32, 1), _array(me.polygons, "material_index", np.int32, 1),
+             bool(me.show_double_sided), len(me.materials)]
+    for layer in me.uv_layers:
+        parts += [layer.name, _array(layer.data, "uv", np.float32, 2)]
+    for layer in me.vertex_colors:
+        parts += [layer.name, _array(layer.data, "color", np.float32, 3)]
+    return _digest(parts)
+
+
+def fp_image(ima):
+    """the picture's file (and its date), or the image itself"""
+    path = bpy.path.abspath(ima.filepath) if ima.filepath else ""
+    mtime = int(os.path.getmtime(path) * 1000) if path and os.path.isfile(path) else 0
+    return [ima.name, ima.source, path, mtime, tuple(ima.size)]
+
+
+REMIX_NODE_PROPS = ("remix_type", "blend", "alpha_cutoff", "use_normal_directx", "use_thin_walled", "use_particle",
+                    "categories", "bake_size")
+
+
+def fp_material(mat):
+    """its node tree: the nodes, their inputs and options, the links, the
+    images (an image painted on since is told apart by is_dirty)"""
+    parts = [mat.use_nodes, mat.use_shadeless, mat.game_settings.alpha_blend, mat.alpha]
+    nt = mat.node_tree
+    if nt is not None:
+        for n in sorted(nt.nodes, key=lambda n: n.name):
+            parts += [n.bl_idname, n.name, n.mute]
+            for inp in n.inputs:
+                if hasattr(inp, "default_value"):
+                    parts.append(inp.identifier + "=" + _text(inp.default_value))
+            if n.bl_idname == "ShaderNodeRemixMaterial":
+                for prop in REMIX_NODE_PROPS:
+                    v = getattr(n, prop, None)
+                    parts.append(prop + "=" + _text(sorted(v) if isinstance(v, set) else v))
+            tex = getattr(n, "texture", None)
+            if tex is not None:
+                parts += [tex.name, tex.type]
+                ima = getattr(tex, "image", None)
+                if ima is not None:
+                    parts += fp_image(ima)
+        for l in nt.links:
+            parts.append((l.from_node.name, l.from_socket.identifier, l.to_node.name, l.to_socket.identifier))
+    return _digest(parts)
+
+
+def fp_lamp(ob):
+    """the lamp's settings and its place"""
+    la = ob.data
+    parts = [la.type, la.energy, tuple(la.color), la.distance, la.shadow_soft_size, la.get("bge_physical"),
+             la.get("bge_sun_angle"), _matrix(ob.matrix_world)]
+    if la.type == 'SPOT':
+        parts += [la.spot_size, la.spot_blend, la.use_halo, la.halo_intensity]
+    if la.type == 'AREA':
+        parts += [la.shape, la.size, la.size_y]
+    return _digest(parts)
+
+
+def _matrix(m):
+    return _text([tuple(row) for row in m])
+
+
+def fp_object(ob):
+    """a place's parts, each its own fingerprint (the export names which
+    changed): place, materials, mesh, physics"""
+    return {"matrix": _digest([_matrix(ob.matrix_world)]),
+            "materials": _digest([(s.link, (s.material.get(HASH) or s.material.name) if s.material else "")
+                                  for s in ob.material_slots]),
+            "mesh": ob.data.name if ob.data else "",
+            "physics": ob.game.physics_type}
+
+
+def fingerprint(scene):
+    """every mesh, material, lamp and place of an imported scene"""
+    meshes, materials = set(), set()
+    for ob in scene.objects:
+        if PLACE not in ob:
+            continue
+        if ob.type == 'LAMP':
+            ob[FP] = fp_lamp(ob)
+            continue
+        ob[FP] = fp_object(ob)
+        if ob.type != 'MESH':
+            continue
+        if ob.data.name not in meshes:
+            meshes.add(ob.data.name)
+            ob.data[FP] = fp_mesh(ob.data)
+        for s in ob.material_slots:
+            if s.material is not None and s.material.name not in materials:
+                materials.add(s.material.name)
+                s.material[FP] = fp_material(s.material)
+                for n in (s.material.node_tree.nodes if s.material.node_tree else ()):
+                    ima = getattr(getattr(n, "texture", None), "image", None)
+                    if ima is not None:
+                        ima[FP] = _digest(fp_image(ima))
 
 
 def _floats(data, width):
@@ -230,7 +373,9 @@ def build_material(mt, report, images):
     # blending (the material's game transparency)
     try:
         if inputs.get("blend_enabled"):
-            node.blend = 'ADDITIVE' if inputs.get("blend_type") in (1, 5) else 'BLENDED'
+            # the emissive blends add (kAlphaEmissive, kReverseColorEmissive,
+            # kEmissive: dxvk-remix surface_shared.h BlendType)
+            node.blend = 'ADDITIVE' if inputs.get("blend_type") in (1, 5, 6) else 'BLENDED'
         elif inputs.get("alpha_test_type") not in (None, 0, 7):
             node.blend = 'ALPHA_TEST'
             ref = inputs.get("alpha_test_reference_value")
@@ -274,10 +419,19 @@ def build_material(mt, report, images):
         if name == "diffuse_texture" and inputs.get("enable_opacity"):
             nt.links.new(tnode.outputs["Value"], node.inputs["Opacity"])
         tex["bge_remix_capture_dds"] = value["path"]
+        tex["bge_remix_capture_input"] = name
     mat[HASH] = mt["hash"]
     mat["bge_remix_capture_mdl"] = mt.get("mdl") or ""
     if kept:
         mat["bge_remix_capture_inputs"] = kept
+    # for the mod export: the inputs the capture had, its blending options
+    # as they were and the blending they gave the node
+    # (names as a group's keys: ID properties hold no lists of text)
+    mat["bge_remix_capture_had"] = {k: 1 for k in inputs}
+    options = {k: inputs[k] for k in NODE_OPTIONS if k in inputs and isinstance(inputs[k], (bool, int, float))}
+    if options:
+        mat["bge_remix_capture_options"] = {k: (int(v) if isinstance(v, bool) else v) for k, v in options.items()}
+    mat["bge_remix_capture_blend"] = {"blend": node.blend, "cutoff": float(node.alpha_cutoff)}
     return mat
 
 
@@ -359,6 +513,7 @@ def import_capture(context, path, report):
         scene.objects.link(ob)
         ob.matrix_world = K * usd_matrix(inst["matrix"]) * Kinv
         ob[HASH] = inst["hash"]
+        ob[PLACE] = inst["name"]
         ob["bge_remix_capture_mesh"] = data["meshes"][inst["mesh"]]["hash"]
         # the material on the object: places of one mesh may have others
         # (the game converts a shared mesh once for each set, P12)
@@ -384,6 +539,7 @@ def import_capture(context, path, report):
         from mathutils import Matrix
         ob.matrix_world = Matrix.Translation(loc) * rot.to_matrix().to_4x4()
         ob[HASH] = l["hash"]
+        ob[PLACE] = l["name"]
         lamps += 1
     cam = data["camera"]
     if cam:
@@ -407,6 +563,9 @@ def import_capture(context, path, report):
     scene["bge_remix_capture_counts"] = {"meshes": len(meshes), "objects": len(data["instances"]),
                                          "materials": len(materials), "lamps": lamps, "camera": int(bool(cam))}
     scene.update()
+    # what came in, for the mod export (round 3)
+    scene["bge_remix_capture_places"] = {ob[PLACE]: 1 for ob in scene.objects if PLACE in ob}
+    fingerprint(scene)
     return scene
 
 

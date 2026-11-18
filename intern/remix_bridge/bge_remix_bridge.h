@@ -63,8 +63,9 @@ extern "C" {
  * 12: P10.4 (a material's sprite sheet; textures with their own mipmaps).
  * 13: P12 (the bridge's OpenUSD: brb_usd_*).
  * 14: P12 round 2 (RTX Remix captures read: brb_usd_capture_api,
- *     brb_usd_plugin_dir; brb_dds_to_png). */
-#define BRB_ABI_VERSION 14
+ *     brb_usd_plugin_dir; brb_dds_to_png).
+ * 15: P12 round 3 (any stage written out as JSON: brb_usd_stage_dump). */
+#define BRB_ABI_VERSION 15
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -563,6 +564,11 @@ BRB_API const char *brb_usd_plugin_dir(void);
  * first mip level) written as a PNG, rows as in the file. Returns 1, or 0
  * with the reason in r_error. */
 BRB_API int brb_dds_to_png(const wchar_t *dds, const wchar_t *png, char *r_error, int max_bytes);
+
+/* Interface version 15 (P12 round 3): the USD stage at path (UTF-8) as
+ * OpenUSD composes it, written as JSON to json_path (usd/bge_remix_usd.h
+ * bru_stage_dump). Returns 1, or 0 with the reason in r_error. */
+BRB_API int brb_usd_stage_dump(const char *path, const char *json_path, char *r_error, int max_bytes);
 
 #ifdef __cplusplus
 }

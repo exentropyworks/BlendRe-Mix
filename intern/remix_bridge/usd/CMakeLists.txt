@@ -27,6 +27,7 @@ add_library(bge_remix_usd SHARED
 	usd_capture.cpp
 	usd_core.cpp
 	usd_dll.cpp
+	usd_dump.cpp
 
 	bge_remix_usd.h
 	usd_core.h
