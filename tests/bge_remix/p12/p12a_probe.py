@@ -30,6 +30,15 @@ argv (after --):
         room     the box and the sphere selected, the sphere's material gold
         leftout  the box, a lamp and an Empty selected
         nothing  nothing selected
+  viewfile <capture> <out.json> <blend> <case> [<sphere place> <wall place> <box place>]
+      (round 5) the capture imported, edited by script, then exported as a
+      mod (beside the .blend, <blend>_mod) and saved alone to <blend> with
+      its 3D view a Remix View (Check mode), for the Remix View's own run
+      (p12a_view_probe.py); written out: the edits, the export's report,
+      the mod read back and the engine's capture check. case:
+        room     round 3's edits, a small cube with a Classic material under
+                 the box, and a cone on its own (not parented)
+        none     nothing changed
 """
 
 import json
@@ -395,6 +404,88 @@ def asset(argv, out):
             out["fbx_error"] = str(e)
 
 
+def edit_view(scene, sphere_place, wall_place, box_place):
+    """round 3's edits, a Classic cube under the box, a cone on its own"""
+    import bmesh
+    from mathutils import Matrix
+    info = edit_room(scene, sphere_place, wall_place)
+    places = {ob.get("bge_remix_capture_place"): ob for ob in scene.objects}
+    box = places[box_place]
+    me = bpy.data.meshes.new("ModClassicCube")
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=0.1)
+    bm.to_mesh(me)
+    bm.free()
+    classic = bpy.data.materials.new("P12Classic")
+    classic.diffuse_color = (0.2, 0.6, 0.9)
+    me.materials.append(classic)
+    cube = bpy.data.objects.new("ModClassicCube", me)
+    scene.objects.link(cube)
+    _parent(cube, box, box.matrix_world * Matrix.Translation((0.0, 0.0, 0.6)))
+    cme = bpy.data.meshes.new("ModCone")
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=12, diameter1=0.2, diameter2=0.0, depth=0.4)
+    bm.to_mesh(cme)
+    bm.free()
+    cone = bpy.data.objects.new("ModCone", cme)
+    scene.objects.link(cone)
+    cone.location = (1.5, -2.0, 0.2)
+    scene.update()
+    info["classic"] = {"name": cube.name, "material": classic.name, "box": box.name}
+    info["cone"] = cone.name
+    return info
+
+
+def remix_view_file(scene, path):
+    """the scene alone, saved with its 3D view a Remix View in Check mode"""
+    for win in bpy.context.window_manager.windows:
+        win.screen.scene = scene
+    for sc in list(bpy.data.scenes):
+        if sc != scene:
+            bpy.data.scenes.remove(sc, do_unlink=True)
+    made = 0
+    for screen in bpy.data.screens:
+        areas = sorted((a for a in screen.areas if a.type == 'VIEW_3D'), key=lambda a: -a.width * a.height)
+        for area in areas[:1]:
+            space = area.spaces.active
+            space.is_game_view = True
+            space.game_view_mode = 'CHECK'
+            made += 1
+    scene.update()
+    bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
+    return made
+
+
+def viewfile(argv, out):
+    import _bge_remix
+    from bl_operators import bge_remix_mod
+    capture, path, case = argv[1], argv[3], argv[4]
+    before = set(bpy.data.scenes.keys())
+    bpy.ops.import_scene.bge_remix_capture(filepath=capture)
+    scene = [bpy.data.scenes[n] for n in bpy.data.scenes.keys() if n not in before][0]
+    if case == "room":
+        out["edits"] = edit_view(scene, argv[5], argv[6], argv[7])
+    out["check"] = _bge_remix.capture_check(scene.name)
+    folder = os.path.splitext(path)[0] + "_mod"
+    shutil.rmtree(folder, ignore_errors=True)
+    try:
+        ret = bpy.ops.export_scene.bge_remix_mod({"scene": scene}, directory=folder)
+        out["export_result"] = sorted(ret)
+    except RuntimeError as e:
+        out["export_result"] = ["CANCELLED"]
+        out["export_error"] = str(e)
+    out["export"] = {"report": list(bge_remix_mod.LAST.get("report") or []), "path": bge_remix_mod.LAST.get("path")}
+    mod = os.path.join(folder, "mod.usda")
+    if os.path.isfile(mod):
+        dump = folder + "_dump.json"
+        ok, err = _bge_remix.usd_dump(mod, dump)
+        if ok:
+            with open(dump) as f:
+                out["dump"] = json.load(f)
+    out["screens"] = remix_view_file(scene, path)
+    out["saved"] = path
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     mode = argv[0]
@@ -403,6 +494,9 @@ def main():
         if mode == "export":
             path = argv[2]
             export(argv, out)
+        elif mode == "viewfile":
+            path = argv[2]
+            viewfile(argv, out)
         elif mode == "asset":
             path = argv[2]
             asset(argv, out)

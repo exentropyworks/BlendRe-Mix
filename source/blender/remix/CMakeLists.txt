@@ -39,6 +39,7 @@ set(INC_SYS
 )
 
 set(SRC
+	intern/remix_capture.cc
 	intern/remix_light.cc
 	intern/remix_loader.c
 	intern/remix_material.cc
@@ -51,6 +52,7 @@ set(SRC
 
 	BRMX_atlas.h
 	BRMX_bake.h
+	BRMX_capture.h
 	BRMX_light.h
 	BRMX_loader.h
 	BRMX_material.h

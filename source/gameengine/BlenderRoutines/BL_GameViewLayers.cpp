@@ -113,6 +113,7 @@ extern "C" {
 
 #ifdef WITH_REMIX
 #  include "BRMX_bake.h"
+#  include "BRMX_capture.h"  /* BGE-Remix P12 round 5 */
 #  include "BRMX_loader.h"
 #  include "BRMX_material.h"
 #  include "BRMX_session.h"  /* BGE-Remix P9.7: hash collisions */
@@ -2832,6 +2833,13 @@ void GVBuilder::Scenes()
 /* ------------------------------------------------------------------------- */
 /* Gate: Remix (what RTX Remix receives, what it cannot show) */
 
+/* P12 round 5: a scene imported from an RTX Remix capture */
+static bool capture_scene(const Scene *scene)
+{
+	return scene && scene->id.properties &&
+	       IDP_GetPropertyFromGroup(scene->id.properties, "bge_remix_capture") != NULL;
+}
+
 void GVBuilder::Remix()
 {
 #ifdef WITH_REMIX
@@ -2839,14 +2847,23 @@ void GVBuilder::Remix()
 #else
 	const bool runtime = false;
 #endif
+#ifdef WITH_REMIX
+	/* BGE-Remix P12 round 5: a scene imported from an RTX Remix capture,
+	 * checked against how it came in (the mod export's own check): each
+	 * capture object's hash and what the mod does with it, and the notes on
+	 * what a mod cannot carry */
+	BRMX_CaptureCheck *capture = BRMX_capture_check(m_main, m_scene);
+#endif
 	const int el = Add("remix:RUNTIME", "RTX Remix", NULL,
-	                   fmt("%s; runtime %s", m_remix ? "the scene uses RTX Remix" : "the scene does not use RTX Remix",
+	                   fmt("%s; runtime %s", m_remix ? "the scene uses RTX Remix" :
+	                       (capture_scene(m_scene) ? "a scene from an RTX Remix capture" :
+	                        "the scene does not use RTX Remix"),
 	                       runtime ? "installed" : "not found").c_str());
-	if (!m_remix) {
+	if (!m_remix && !capture_scene(m_scene)) {
 		elements[el].state = GV_STATE_WHITE;
 		return;
 	}
-	if (!runtime) {
+	if (!runtime && m_remix) {
 		Warn(el, "RMX_NO_RUNTIME", GV_WARN_RED,
 		     "the RTX Remix runtime is not installed (Preferences > System > RTX Remix)", true);
 	}
@@ -2884,6 +2901,9 @@ void GVBuilder::Remix()
 		if (!game_type(ob->type) || !InGame(ob)) continue;
 		if (ob->type == OB_LAMP) {
 			const int lel = Add("remix:LIGHT", name_of(ob), ob, "a Remix light");
+#ifdef WITH_REMIX
+			CaptureInfo(capture, lel, ob, "light");
+#endif
 			lamps++;
 			/* P8.22: what Remix's API cannot take, marked "not in Remix" */
 			const Lamp *la = (const Lamp *)ob->data;
@@ -2902,6 +2922,9 @@ void GVBuilder::Remix()
 		}
 		if (ob->type != OB_MESH) continue;
 		const int me = Add("remix:MESH", name_of(ob), ob, fmt("%d triangles", ob_triangles(ob)).c_str());
+#ifdef WITH_REMIX
+		CaptureInfo(capture, me, ob, "mesh");
+#endif
 		/* a mesh that changes its shape: replacements made for it do not stay */
 		bool deform = (ob->parent && ob->parent->type == OB_ARMATURE) || physics_type(ob) == OB_BODY_TYPE_SOFT;
 		if (ob->data && ((Mesh *)ob->data)->key) deform = true;
@@ -2919,6 +2942,15 @@ void GVBuilder::Remix()
 			brmx::MaterialSpec spec;
 			brmx::translate_material(ma, spec);
 			const int mel = Add("remix:MATERIAL", ma->id.name + 2, ob, fmt("%d notes from the translator", (int)spec.notes.size()).c_str());
+			if (capture) {
+				const int mod = BRMX_capture_material_mod(capture, ma);
+				IDProperty *hp = ma->id.properties ? IDP_GetPropertyFromGroup(ma->id.properties, "bge_remix_capture_hash") : NULL;
+				if (mod != BRMX_MOD_NONE && hp && hp->type == IDP_STRING) {
+					BLI_snprintf(elements[mel].info, sizeof(elements[mel].info), "%s; capture material %s: %s",
+					             fmt("%d notes from the translator", (int)spec.notes.size()).c_str(),
+					             IDP_String(hp), mod == BRMX_MOD_REPLACED ? "the mod replaces it" : "the game's own");
+				}
+			}
 			if (ma->material_type == MA_TYPE_VOLUME)
 				Warn(mel, "RMX_NOT_VOLUME", GV_WARN_NOTE,
 				     "not in Remix: a volume of its own (Remix uses the camera's fog while the camera is inside)", true);
@@ -2958,7 +2990,67 @@ void GVBuilder::Remix()
 		Warn(el, "RMX_LIGHTS", GV_WARN_NOTE, fmt("%d lights: more than the target's %d", lamps, m_targets.lights).c_str(),
 		     false, true);
 	}
+#ifdef WITH_REMIX
+	if (capture) {
+		/* each note on its object's Remix element (its mesh or light), else
+		 * on RTX Remix's own */
+		for (int i = 0; i < BRMX_capture_note_count(capture); i++) {
+			const char *code = "", *object = "";
+			const char *text = BRMX_capture_note(capture, i, &code, &object);
+			int at = el;
+			for (size_t k = 0; object[0] && k < elements.size(); k++) {
+				if (STREQ(elements[k].owner, object) &&
+				    (STREQ(elements[k].kind, "remix:MESH") || STREQ(elements[k].kind, "remix:LIGHT")))
+				{
+					at = (int)k;
+					break;
+				}
+			}
+			Warn(at, code, GV_WARN_NOTE, text, true);
+		}
+		BRMX_capture_check_free(capture);
+	}
+#endif
 }
+
+#ifdef WITH_REMIX
+/* P12 round 5: a capture object's hash and what the mod does with it, on its
+ * Remix element's line */
+void GVBuilder::CaptureInfo(BRMX_CaptureCheck *capture, int el, Object *ob, const char *what)
+{
+	if (!capture || el < 0) {
+		return;
+	}
+	int count = 0;
+	const char *hash = "";
+	const int mod = BRMX_capture_object_mod(capture, ob, &count, &hash);
+	std::string text;
+	switch (mod) {
+		case BRMX_MOD_OWN:
+			text = fmt("capture %s %s: the game's own", what, hash);
+			break;
+		case BRMX_MOD_REPLACED:
+			text = count > 0 ? fmt("capture %s %s: the mod replaces it and adds %d object%s to it", what, hash, count,
+			                       count == 1 ? "" : "s") :
+			                   fmt("capture %s %s: the mod replaces it", what, hash);
+			break;
+		case BRMX_MOD_ADDS:
+			text = fmt("capture %s %s: the mod adds %d object%s to it", what, hash, count, count == 1 ? "" : "s");
+			break;
+		case BRMX_MOD_ADDED:
+			text = fmt("added to mesh %s by the mod", hash);
+			break;
+		case BRMX_MOD_LEFT_OUT:
+			text = "left out of the mod (see its note)";
+			break;
+		default:
+			return;
+	}
+	char buf[sizeof(elements[el].info)];
+	BLI_snprintf(buf, sizeof(buf), "%s; %s", elements[el].info, text.c_str());
+	BLI_strncpy(elements[el].info, buf, sizeof(elements[el].info));
+}
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* Gate: Performance (estimated from the file; live in P8) */

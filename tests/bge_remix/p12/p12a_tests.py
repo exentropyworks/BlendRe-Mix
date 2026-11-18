@@ -43,6 +43,17 @@ normal(...)
           gold's albedo; the read-me names both materials and their pictures
   T12.b2  what an asset leaves out: a lamp and an Empty in the selection are
           named in the report; nothing selected gives a message
+  T12.c1  (round 5) the Remix View's Remix layer of a capture scene: the
+          room imported and edited (round 3's edits, a small cube with a
+          Classic material under the box, a cone on its own), its Remix View
+          built in a window: every imported object, material and lamp shows
+          its capture hash and what the mod does with it; the added ones
+          "added to mesh ..."; three notes (the moved wall, the cone not
+          parented, the Classic material left out) and no other; the room as
+          it came in: every hash, nothing replaced, no notes
+  T12.c2  the view and the export agree: the same scene exported as a mod;
+          what the view says is replaced or added is what the mod holds, and
+          the view's notes are the export's report, line for line
 rtx(...)
   S12.a1  the room and the imported room in Remix, a picture pair
   S12.b1  the blend check: an orange quad with Add blending over a dark wall
@@ -50,7 +61,8 @@ rtx(...)
           (Remix getting blend type 8 would darken it: an engine problem)
 
 BGE_REMIX_P12A_ONLY (comma separated: selftest, room, units, broken, plays,
-mod, modunits, modedges, asset, assetedges; for the RTX run: room, blend)
+mod, modunits, modedges, asset, assetedges, view; for the RTX run: room,
+blend)
 runs only those (a fix round's reruns).
 """
 
@@ -719,11 +731,145 @@ def t_asset_edges(args, out, tests):
     tests[name] = _test(c, {"report": rep, "error": g2.get("error"), "tracebacks": [x.get("traceback") for x in runs]})
 
 
+# ---------------------------------------------------------------------------
+# round 5: the Remix View of a capture scene
+
+VIEW_PROBE = os.path.join(HERE, "p12a_view_probe.py")
+
+
+def view_run(args, out, tag, blend):
+    """our Blender with its window on blend: the Remix layer, built"""
+    res = os.path.join(out, tag + "_view.json")
+    if os.path.isfile(res):
+        os.remove(res)
+    e = p2.base_env(out, tag)
+    e.update(p8.GL_ENV)
+    e["BGE_REMIX_P12V_OUT"] = res
+    code, text, secs = p2.run([p2.exe(args.ours, "blender"), "--disable-crash-handler"] + p8.WINDOW +
+                              [blend, "--python", VIEW_PROBE], e, os.path.join(out, tag + ".log"), timeout=600,
+                              cwd=out)
+    r = p2.read_json(res) or {}
+    r.update({"exit": code, "seconds": round(secs, 1)})
+    r["ran"] = code == 0 and bool(r.get("finished"))
+    if not r["ran"]:
+        r["console tail"] = (text or "").splitlines()[-25:]
+    return r
+
+
+def view_file(args, out, tag, E, case):
+    blend = os.path.join(out, tag + ".blend")
+    if os.path.isfile(blend):
+        os.remove(blend)
+    by = {o["part"]: o["name"] for o in E["objects"]}
+    res = os.path.join(out, tag + "_probe.json")
+    got = blender(args, out, tag + "_make", ["viewfile", E["path"], res, blend, case, by["Sphere"], by["WallE"],
+                                             by["Box"]])
+    return got, (blend if os.path.isfile(blend) else None)
+
+
+def _infos(view):
+    """element kind -> owner -> [info lines] (the Remix layer)"""
+    out = {}
+    for e in ((view.get("steps") or {}).get("build") or {}).get("elements") or []:
+        out.setdefault(e.get("kind"), {}).setdefault(e.get("owner"), []).append(e.get("info") or "")
+    return out
+
+
+def _mod_notes(view):
+    return [w for w in ((view.get("steps") or {}).get("build") or {}).get("warnings") or []
+            if (w.get("code") or "").startswith("RMX_MOD_")]
+
+
+def t_view(args, out, tests):
+    name = "T12.c1 The Remix View of a capture scene"
+    name2 = "T12.c2 The Remix View and the mod export agree"
+    E = write(out, "room")
+    c, d = {}, {}
+    got, blend = view_file(args, out, "p12a_view_room", E, "room")
+    ed = got.get("edits") or {}
+    c["the edited room imported, exported and saved with a Remix View (%s screen(s))" % got.get("screens")] = \
+        bool(blend) and bool(got.get("screens")) and "traceback" not in got
+    view = view_run(args, out, "p12a_view_room_run", blend) if blend else {}
+    infos = _infos(view)
+    meshes, mats, lights = infos.get("remix:MESH") or {}, infos.get("remix:MATERIAL") or {}, \
+        infos.get("remix:LIGHT") or {}
+    c["the Remix View was built in the window"] = bool(view.get("ran")) and bool(meshes)
+    by = {o["part"]: o for o in E["objects"]}
+
+    def says(table, owner, text):
+        return any(text in line for line in table.get(owner) or [])
+    sphere, box = by["Sphere"], by["Box"]
+    c["the sphere's mesh: its hash, the mod replaces it"] = \
+        says(meshes, sphere["name"], "capture mesh %s: the mod replaces it" % cw.SPHERE)
+    c["the box's mesh: its hash, the mod adds 1 object to it (the Classic cube)"] = \
+        says(meshes, box["name"], "capture mesh %s: the mod adds 1 object to it" % cw.CUBE)
+    own = [o for o in E["objects"] if o["part"] not in ("Sphere", "Box")]
+    bad = [o["part"] for o in own if not says(meshes, o["name"], "capture mesh %s: the game's own" % o["mesh"])]
+    c["every other place: its hash, the game's own%s" % (": not " + ", ".join(bad) if bad else "")] = not bad
+    gold = "mat_" + cw.MAT["Sphere"]
+    c["the gold material: its hash, the mod replaces it"] = \
+        says(mats, sphere["name"], "capture material %s: the mod replaces it" % cw.MAT["Sphere"])
+    c["the room's material: its hash, the game's own"] = \
+        says(mats, by["WallN"]["name"], "capture material %s: the game's own" % cw.MAT["Room"])
+    lamp, cube, classic = ed.get("lamp") or {}, ed.get("cube") or {}, ed.get("classic") or {}
+    c["the lamp and the two small cubes: added to their meshes by the mod"] = \
+        says(lights, lamp.get("name"), "added to mesh %s by the mod" % cw.SPHERE) and \
+        says(meshes, cube.get("name"), "added to mesh %s by the mod" % cw.SPHERE) and \
+        says(meshes, classic.get("name"), "added to mesh %s by the mod" % cw.CUBE)
+    c["the capture's lamps: their hashes, the game's own"] = all(
+        says(lights, "light_" + l["hash"], "capture light %s: the game's own" % l["hash"]) for l in E["lamps"])
+    notes = _mod_notes(view)
+    texts = sorted(n["text"] for n in notes)
+    want = {"moved": ed.get("wall"), "parented": ed.get("cone"), "not an RTX Remix material": classic.get("material")}
+    found = {k: any(k in t and str(v) in t for t in texts) for k, v in want.items()}
+    c["three notes: the moved wall, the cone not parented, the Classic material (%d note(s))" % len(notes)] = \
+        len(notes) == 3 and all(found.values())
+    d["room"] = {"notes": texts, "meshes": meshes, "materials": mats, "lights": lights, "edits": ed,
+                 "errors": view.get("errors"), "console tail": view.get("console tail")}
+    # T12.c2: the same scene's export
+    c2 = {}
+    rep = sorted((got.get("export") or {}).get("report") or [])
+    c2["the scene exported (%s)" % got.get("export_result")] = got.get("export_result") == ["FINISHED"]
+    c2["the view's notes are the export's report, line for line (%d, %d)" % (len(texts), len(rep))] = \
+        bool(texts) and texts == rep
+    prims = {p["path"]: p.get("type") for p in ((got.get("dump") or {}).get("prims") or [])}
+    added = {"/RootNode/meshes/mesh_%s/%s" % (cw.SPHERE, lamp.get("name")): "SphereLight",
+             "/RootNode/meshes/mesh_%s/%s" % (cw.SPHERE, cube.get("name")): "Mesh",
+             "/RootNode/meshes/mesh_%s/%s" % (cw.CUBE, classic.get("name")): "Mesh",
+             "/RootNode/meshes/mesh_%s/replacement" % cw.SPHERE: "Mesh",
+             "/RootNode/Looks/%s" % gold: "Material"}
+    missing = [p for p, t in added.items() if prims.get(p) != t]
+    replaced = sorted(p for p in prims if p.endswith("/replacement"))
+    c2["what the view says is replaced or added is in the mod%s" % (
+        ": missing " + ", ".join(missing) if missing else "")] = bool(prims) and not missing
+    c2["  and nothing else is replaced (%s)" % ", ".join(replaced)] = \
+        replaced == ["/RootNode/meshes/mesh_%s/replacement" % cw.SPHERE] and \
+        sorted(p for p in prims if p.startswith("/RootNode/Looks/") and p.count("/") == 3) == ["/RootNode/Looks/" + gold]
+    c2["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    # the room as it came in
+    got0, blend0 = view_file(args, out, "p12a_view_none", E, "none")
+    view0 = view_run(args, out, "p12a_view_none_run", blend0) if blend0 else {}
+    infos0 = _infos(view0)
+    m0 = infos0.get("remix:MESH") or {}
+    bad0 = [o["part"] for o in E["objects"] if not says(m0, o["name"], "capture mesh %s: the game's own" % o["mesh"])]
+    notes0 = _mod_notes(view0)
+    c["the room as it came in: every hash, nothing replaced%s" % (": not " + ", ".join(bad0) if bad0 else "")] = \
+        bool(view0.get("ran")) and not bad0 and \
+        not any("the mod replaces" in l for owner in (infos0.get("remix:MATERIAL") or {}).values() for l in owner)
+    c["  no notes (%d)" % len(notes0)] = bool(view0.get("ran")) and not notes0
+    c["no crash"] = got.get("exit") == 0 and bool(view.get("ran")) and got0.get("exit") == 0 and \
+        bool(view0.get("ran"))
+    d["none"] = {"notes": [n["text"] for n in notes0], "errors": view0.get("errors"),
+                 "console tail": view0.get("console tail")}
+    tests[name] = _test(c, d)
+    tests[name2] = _test(c2, {"view": texts, "export": rep, "prims": sorted(prims), "error": got.get("export_error")})
+
+
 def normal(args, out, scenes, E, tests, sheets):
     only = _only()
     for key, fn in (("selftest", t_selftest), ("room", t_room), ("units", t_units), ("broken", t_broken),
                     ("plays", t_plays), ("mod", t_mod), ("modunits", t_mod_units), ("modedges", t_mod_edges),
-                    ("asset", t_asset), ("assetedges", t_asset_edges)):
+                    ("asset", t_asset), ("assetedges", t_asset_edges), ("view", t_view)):
         if not only or key in only:
             try:
                 fn(args, out, tests)

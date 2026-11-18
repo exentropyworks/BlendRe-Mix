@@ -32,6 +32,7 @@
 
 #include "BL_GameView.h"
 
+struct BRMX_CaptureCheck;
 struct ID;
 struct Main;
 struct Object;
@@ -149,6 +150,8 @@ private:
 	void Input();
 	void Scenes();
 	void Remix();
+	/* P12 round 5: a capture object's hash and what the mod does with it */
+	void CaptureInfo(struct BRMX_CaptureCheck *capture, int el, Object *ob, const char *what);
 	void Performance();
 	void Time();
 	void LeftOut();

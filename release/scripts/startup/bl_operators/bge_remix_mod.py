@@ -56,8 +56,7 @@ from bpy.props import BoolProperty, StringProperty
 from bpy.types import Operator
 
 from . import bge_remix_mod_text as mt
-from .bge_remix_capture import (FP, HASH, NODE_TEXTURES, PLACE, _digest, capture_space, fp_image, fp_lamp,
-                                fp_material, fp_mesh, fp_object)
+from .bge_remix_capture import FP, HASH, NODE_TEXTURES, capture_space
 
 # what the last export did (the tests read it): folder, report, counts
 LAST = {}
@@ -118,24 +117,6 @@ def default_folder(scene):
     return os.path.join(here, "mods", name)
 
 
-def _descendants(ob):
-    out = []
-    for c in ob.children:
-        out.append(c)
-        out.extend(_descendants(c))
-    return out
-
-
-def _place_of(ob, places):
-    """the imported place ob hangs under (itself not one), or None"""
-    p = ob.parent
-    while p is not None:
-        if PLACE in p:
-            return p
-        p = p.parent
-    return None
-
-
 class Export:
     """one export: the scene's changes gathered, then written"""
 
@@ -167,104 +148,23 @@ class Export:
     # -- what changed -------------------------------------------------------
 
     def gather(self):
-        scene = self.scene
-        places = {}
-        for ob in scene.objects:
-            if PLACE not in ob:
-                continue
-            key = ob[PLACE]
-            if key in places:
-                self.note("%s is a copy of %s: a mod cannot add places the game draws, left out" %
-                          (ob.name, places[key].name))
-                continue
-            places[key] = ob
-        for key in sorted((scene.get("bge_remix_capture_places") or {}).keys()):
-            if key not in places:
-                self.note("%s was deleted: a mod cannot remove what the game draws" % key)
-        self.places = places
-        self.meshes = {}         # mesh hash -> edited mesh
-        self.materials = {}      # material name -> material (capture materials in use)
-        self.lamps = []          # changed capture lamps
-        self.children = {}       # mesh hash -> (place, [objects under it])
-        for key in sorted(places):
-            ob = places[key]
-            if ob.type == 'LAMP':
-                if ob.get(FP) != fp_lamp(ob):
-                    self.lamps.append(ob)
-                for c in _descendants(ob):
-                    self.note("%s hangs under the lamp %s: only objects under an imported mesh object go into "
-                              "a mod, left out" % (c.name, ob.name))
-                continue
-            if ob.type != 'MESH':
-                continue
-            self.check_place(ob)
-            me = ob.data
-            h = me.get(HASH)
-            if h and h == ob.get("bge_remix_capture_mesh") and me.get(FP) != fp_mesh(me):
-                if h in self.meshes and self.meshes[h] != me:
-                    self.note("%s and %s both carry the capture mesh %s: only %s goes in" %
-                              (self.meshes[h].name, me.name, h, self.meshes[h].name))
-                else:
-                    self.meshes[h] = me
-            for s in ob.material_slots:
-                if s.material is not None and s.material.get(HASH):
-                    self.materials[s.material.name] = s.material
-            added = [c for c in _descendants(ob) if PLACE not in c]
-            if added:
-                mh = ob.get("bge_remix_capture_mesh")
-                if mh in self.children:
-                    first = self.children[mh][0]
-                    self.note("the objects under %s are left out: those under %s already go in, and Remix adds "
-                              "them wherever the game draws mesh %s, %s included" % (ob.name, first.name, mh,
-                                                                                     ob.name))
-                else:
-                    self.children[mh] = (ob, added)
-        # new objects not under an imported one
-        for ob in scene.objects:
-            if PLACE in ob or ob.type == 'CAMERA' or _place_of(ob, places) is not None:
-                continue
-            self.note("%s is not parented to an imported object: a mod only adds to what the game draws, "
-                      "left out" % ob.name)
-        # capture materials the added objects use, changed or not
-        for mh, (place, added) in self.children.items():
-            for c in added:
-                for s in getattr(c, "material_slots", ()):
-                    if s.material is not None and s.material.get(HASH):
-                        self.materials[s.material.name] = s.material
-        self.changed_materials = [m for name, m in sorted(self.materials.items()) if self.material_changed(m)]
+        """what changed and what a mod cannot carry: the engine's capture
+        check (remix_capture.cc), the one the Remix View shows"""
+        import _bge_remix
+        check = _bge_remix.capture_check(self.scene.name)
+        if check is None:
+            raise ModError("this scene did not come from an RTX Remix capture (File > Import > RTX Remix "
+                           "Capture makes one)")
+        for _code, _ob, text in check["notes"]:
+            self.note(text)
+        objects, meshes, materials = bpy.data.objects, bpy.data.meshes, bpy.data.materials
+        self.meshes = {h: meshes[name] for h, name in check["meshes"]}
+        self.children = {h: (objects[place], [objects[n] for n in names])
+                         for h, place, names in check["groups"]}
+        self.lamps = [objects[n] for n in check["lamps"]]
+        self.changed_materials = [materials[n] for n in check["materials"]]
+        self.objects = check["objects"]
         return bool(self.meshes or self.children or self.lamps or self.changed_materials)
-
-    def check_place(self, ob):
-        """what a mod cannot carry about one place"""
-        old = ob.get(FP)
-        old = old.to_dict() if hasattr(old, "to_dict") else (old or {})
-        now = fp_object(ob)
-        if old.get("matrix") and old["matrix"] != now["matrix"]:
-            self.note("%s was moved: a mod cannot move what the game draws (the game places it)" % ob.name)
-        if old.get("materials") and old["materials"] != now["materials"]:
-            self.note("%s was given another material: a mod changes a material wherever it is used, not one "
-                      "place's; change the material itself" % ob.name)
-        me = ob.data
-        if me.get(HASH) != ob.get("bge_remix_capture_mesh"):
-            self.note("%s shows another mesh: a mod replaces a mesh wherever the game draws it; edit the mesh "
-                      "itself" % ob.name)
-        if old.get("physics") and old["physics"] != now["physics"]:
-            self.note("%s: physics is not part of a mod (the game runs its own)" % ob.name)
-        g = ob.game
-        if len(g.sensors) or len(g.controllers) or len(g.actuators) or len(g.properties):
-            self.note("%s: logic and game properties are not part of a mod" % ob.name)
-        if len(ob.modifiers):
-            self.note("%s: its modifiers are not in the mod (apply them to the mesh first)" % ob.name)
-
-    def material_changed(self, mat):
-        if mat.get(FP) != fp_material(mat):
-            return True
-        nt = mat.node_tree
-        for n in (nt.nodes if nt else ()):
-            ima = getattr(getattr(n, "texture", None), "image", None)
-            if ima is not None and (ima.is_dirty or ima.get(FP) != _digest(fp_image(ima))):
-                return True
-        return False
 
     # -- writing --------------------------------------------------------------
 
@@ -288,6 +188,10 @@ class Export:
             mod["meshes"]["mesh_" + h] = {"preserve": 0, "meshes": {"replacement": data}, "lights": {}}
             self.counts["meshes"] += 1
         for mh, (place, added) in sorted(self.children.items()):
+            # (the check said which go in; the others are in its notes)
+            added = [c for c in added if self.objects.get(c.name, ("NONE",))[0] == "ADDED"]
+            if not added:
+                continue
             entry = mod["meshes"].setdefault("mesh_" + mh, {"preserve": 1, "meshes": {}, "lights": {}})
             used = {"replacement", "mesh"}
             Pinv = place.matrix_world.inverted()
@@ -304,8 +208,6 @@ class Export:
                     if data is not None:
                         entry["meshes"][name] = data
                         self.counts["added"] += 1
-                elif c.type != 'EMPTY':
-                    self.note("%s: a %s cannot go into a mod, left out" % (c.name, c.type.lower()))
         for ob in self.lamps:
             light = self.light(ob, self.Kinv * rigid(ob.matrix_world) * self.K, under_mesh=False)
             if light is not None:
@@ -576,7 +478,9 @@ class Export:
             return self.textures[key]
         kind = TEXTURE_KIND[name]
         dds = tex.get("bge_remix_capture_dds")
-        untouched = (not ima.is_dirty) and ima.get(FP) is not None and ima.get(FP) == _digest(fp_image(ima))
+        import _bge_remix
+        untouched = (not ima.is_dirty) and ima.get(FP) is not None and \
+            ima.get(FP) == _bge_remix.capture_fp("IMAGE", ima.name)
         rel = None
         if dds and untouched and tex.get("bge_remix_capture_input") == name and output == "Color" and \
                 os.path.isfile(dds):

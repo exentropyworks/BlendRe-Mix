@@ -37,6 +37,19 @@
 
 #include "BLI_utildefines.h"
 
+#include "BLI_listbase.h"
+
+#include "DNA_ID.h"
+#include "DNA_image_types.h"
+#include "DNA_material_types.h"
+#include "DNA_mesh_types.h"
+#include "DNA_object_types.h"
+#include "DNA_scene_types.h"
+
+#include "BKE_global.h"
+#include "BKE_main.h"
+
+#include "BRMX_capture.h"
 #include "BRMX_loader.h"
 #include "BRMX_remaster.h"
 #include "BRMX_remix.h"
@@ -1037,6 +1050,183 @@ static PyObject *brmx_dds_write(PyObject *UNUSED_self, PyObject *args)
 	return Py_BuildValue("(Os)", r == 0 ? Py_True : Py_False, r == 0 ? "" : res.error);
 }
 
+/* BGE-Remix P12 round 5: the capture checks (BRMX_capture.h) */
+
+static ID *find_id(ListBase *lb, const char *name)
+{
+	return (ID *)BLI_findstring(lb, name, offsetof(ID, name) + 2);
+}
+
+PyDoc_STRVAR(brmx_capture_fp_doc,
+".. function:: capture_fp(kind, name)\n"
+"\n"
+"   BGE-Remix P12: the fingerprint of a datablock as a capture import keeps\n"
+"   it (bge_remix_capture_fp). kind: 'MESH', 'MATERIAL', 'IMAGE' (by the\n"
+"   datablock's name), 'LAMP' (a lamp object: its lamp's settings),\n"
+"   'OBJECT' (a place: a dict of its parts matrix, materials, physics) or\n"
+"   'MATRIX' (a place or lamp: where it is, a list of 16 numbers).\n"
+"\n"
+"   :return: the fingerprint, or None when there is no such datablock\n");
+static PyObject *brmx_capture_fp(PyObject *UNUSED_self, PyObject *args)
+{
+	const char *kind, *name;
+	char fp[33], fp2[33], fp3[33];
+	Main *bmain = G.main;
+	if (!PyArg_ParseTuple(args, "ss:capture_fp", &kind, &name)) {
+		return NULL;
+	}
+	if (STREQ(kind, "MESH")) {
+		Mesh *me = (Mesh *)find_id(&bmain->mesh, name);
+		if (!me) Py_RETURN_NONE;
+		BRMX_capture_fp_mesh(me, fp);
+	}
+	else if (STREQ(kind, "MATERIAL")) {
+		Material *ma = (Material *)find_id(&bmain->mat, name);
+		if (!ma) Py_RETURN_NONE;
+		BRMX_capture_fp_material(bmain, ma, fp);
+	}
+	else if (STREQ(kind, "IMAGE")) {
+		Image *ima = (Image *)find_id(&bmain->image, name);
+		if (!ima) Py_RETURN_NONE;
+		BRMX_capture_fp_image(bmain, ima, fp);
+	}
+	else if (STREQ(kind, "LAMP")) {
+		Object *ob = (Object *)find_id(&bmain->object, name);
+		if (!ob || ob->type != OB_LAMP) Py_RETURN_NONE;
+		BRMX_capture_fp_lamp(ob, fp);
+	}
+	else if (STREQ(kind, "MATRIX")) {
+		/* where a place or lamp is: obmat's 16 numbers, as kept at import */
+		Object *ob = (Object *)find_id(&bmain->object, name);
+		if (!ob) Py_RETURN_NONE;
+		PyObject *l = PyList_New(16);
+		for (int i = 0; i < 16; i++) {
+			PyList_SET_ITEM(l, i, PyFloat_FromDouble((double)(&ob->obmat[0][0])[i]));
+		}
+		return l;
+	}
+	else if (STREQ(kind, "OBJECT")) {
+		Object *ob = (Object *)find_id(&bmain->object, name);
+		if (!ob) Py_RETURN_NONE;
+		BRMX_capture_fp_object(ob, fp, fp2, fp3);
+		return Py_BuildValue("{s:s,s:s,s:s}", "matrix", fp, "materials", fp2, "physics", fp3);
+	}
+	else {
+		PyErr_Format(PyExc_ValueError, "capture_fp: no kind %s", kind);
+		return NULL;
+	}
+	return PyUnicode_FromString(fp);
+}
+
+static void dict_take(PyObject *d, const char *key, PyObject *value)
+{
+	PyDict_SetItemString(d, key, value);
+	Py_DECREF(value);
+}
+
+static PyObject *id_list(int count, ID *(*get)(const BRMX_CaptureCheck *, int), const BRMX_CaptureCheck *c)
+{
+	PyObject *l = PyList_New(0);
+	for (int i = 0; i < count; i++) {
+		ID *id = get(c, i);
+		PyObject *n = PyUnicode_FromString(id ? id->name + 2 : "");
+		PyList_Append(l, n);
+		Py_DECREF(n);
+	}
+	return l;
+}
+
+static ID *get_lamp(const BRMX_CaptureCheck *c, int i)
+{
+	return (ID *)BRMX_capture_lamp(c, i);
+}
+
+static ID *get_material(const BRMX_CaptureCheck *c, int i)
+{
+	return (ID *)BRMX_capture_material(c, i);
+}
+
+PyDoc_STRVAR(brmx_capture_check_doc,
+".. function:: capture_check(scene)\n"
+"\n"
+"   BGE-Remix P12: a scene imported from an RTX Remix capture checked against\n"
+"   how it came in, as the Remix View shows it and the mod export writes it.\n"
+"\n"
+"   :return: None for a scene not from a capture, else a dict: notes (a list\n"
+"      of (code, object name, text): what a mod cannot carry), meshes (the\n"
+"      replaced: a list of (hash, mesh name)), groups (the added: a list of\n"
+"      (mesh hash, place object name, [object names])), lamps and materials\n"
+"      (the replaced, by name), objects (object name: (mod, hash, count);\n"
+"      mod: 'NONE', 'OWN', 'REPLACED', 'ADDS', 'ADDED', 'LEFT_OUT')\n");
+static PyObject *brmx_capture_check(PyObject *UNUSED_self, PyObject *args)
+{
+	static const char *mods[] = {"NONE", "OWN", "REPLACED", "ADDS", "ADDED", "LEFT_OUT"};
+	const char *scene_name;
+	Main *bmain = G.main;
+	if (!PyArg_ParseTuple(args, "s:capture_check", &scene_name)) {
+		return NULL;
+	}
+	Scene *scene = (Scene *)find_id(&bmain->scene, scene_name);
+	if (!scene) {
+		PyErr_Format(PyExc_ValueError, "capture_check: no scene %s", scene_name);
+		return NULL;
+	}
+	BRMX_CaptureCheck *c = BRMX_capture_check(bmain, scene);
+	if (!c) {
+		Py_RETURN_NONE;
+	}
+	PyObject *d = PyDict_New();
+	PyObject *notes = PyList_New(0);
+	for (int i = 0; i < BRMX_capture_note_count(c); i++) {
+		const char *code = "", *object = "";
+		const char *text = BRMX_capture_note(c, i, &code, &object);
+		PyObject *t = Py_BuildValue("(sss)", code, object, text);
+		PyList_Append(notes, t);
+		Py_DECREF(t);
+	}
+	dict_take(d, "notes", notes);
+	PyObject *meshes = PyList_New(0);
+	for (int i = 0; i < BRMX_capture_mesh_count(c); i++) {
+		const char *hash = "";
+		Mesh *me = BRMX_capture_mesh(c, i, &hash);
+		PyObject *t = Py_BuildValue("(ss)", hash, me ? me->id.name + 2 : "");
+		PyList_Append(meshes, t);
+		Py_DECREF(t);
+	}
+	dict_take(d, "meshes", meshes);
+	PyObject *groups = PyList_New(0);
+	for (int i = 0; i < BRMX_capture_group_count(c); i++) {
+		const char *hash = "";
+		int count = 0;
+		Object *place = BRMX_capture_group(c, i, &hash, &count);
+		PyObject *names = PyList_New(0);
+		for (int j = 0; j < count; j++) {
+			Object *ob = BRMX_capture_group_object(c, i, j);
+			PyObject *n = PyUnicode_FromString(ob ? ob->id.name + 2 : "");
+			PyList_Append(names, n);
+			Py_DECREF(n);
+		}
+		PyObject *t = Py_BuildValue("(ssN)", hash, place ? place->id.name + 2 : "", names);
+		PyList_Append(groups, t);
+		Py_DECREF(t);
+	}
+	dict_take(d, "groups", groups);
+	dict_take(d, "lamps", id_list(BRMX_capture_lamp_count(c), get_lamp, c));
+	dict_take(d, "materials", id_list(BRMX_capture_material_count(c), get_material, c));
+	PyObject *objects = PyDict_New();
+	for (Base *b = (Base *)scene->base.first; b; b = b->next) {
+		int count = 0;
+		const char *hash = "";
+		const int mod = BRMX_capture_object_mod(c, b->object, &count, &hash);
+		PyObject *t = Py_BuildValue("(ssi)", mods[mod], hash, count);
+		PyDict_SetItemString(objects, b->object->id.name + 2, t);
+		Py_DECREF(t);
+	}
+	dict_take(d, "objects", objects);
+	BRMX_capture_check_free(c);
+	return d;
+}
+
 static PyMethodDef brmx_methods[] = {
 	{"bridge_info", (PyCFunction)brmx_bridge_info, METH_NOARGS, brmx_bridge_info_doc},
 	{"status", (PyCFunction)brmx_status, METH_NOARGS, brmx_status_doc},
@@ -1070,6 +1260,9 @@ static PyMethodDef brmx_methods[] = {
 	{"dds_to_png", (PyCFunction)brmx_dds_to_png, METH_VARARGS, brmx_dds_to_png_doc},
 	{"usd_dump", (PyCFunction)brmx_usd_dump, METH_VARARGS, brmx_usd_dump_doc},
 	{"dds_write", (PyCFunction)brmx_dds_write, METH_VARARGS, brmx_dds_write_doc},
+	/* BGE-Remix P12 round 5 */
+	{"capture_fp", (PyCFunction)brmx_capture_fp, METH_VARARGS, brmx_capture_fp_doc},
+	{"capture_check", (PyCFunction)brmx_capture_check, METH_VARARGS, brmx_capture_check_doc},
 	{NULL, NULL, 0, NULL}
 };
 

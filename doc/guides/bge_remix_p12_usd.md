@@ -98,6 +98,23 @@ imported one, a sun or hemi lamp under a mesh.
 The mod is read back with BGE-Remix's own OpenUSD before the export reports
 success, so a file Remix could not open is caught at once, with the reason.
 
+### In the Remix View
+
+In a scene imported from a capture, the Remix View's Remix layer (Check
+mode) shows the mod as the export will write it, as you edit:
+
+- each imported mesh, material and lamp has its capture hash on its line in
+  the N panel, with what the mod does with it: the game's own (unchanged),
+  the mod replaces it, or the mod adds objects to it;
+- each object or lamp parented to an imported object says "added to mesh
+  ... by the mod";
+- what a mod cannot carry shows as notes, worded as the export's report
+  words them (the same checks make both). Notes do not change the objects'
+  colours: the game itself is fine.
+
+A scene imported before this version (P12 round 5) shows everything as
+changed: import its capture again.
+
 ## File > Export > RTX Remix Asset (for the Toolkit)
 
 The RTX Remix Toolkit takes models in as FBX, OBJ, glTF or LXO and converts
