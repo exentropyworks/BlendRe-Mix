@@ -25,7 +25,9 @@ TRACKS = ("p12a",)
 def main():
     import importlib
     argv = sys.argv[sys.argv.index("--") + 1:]
-    folder = argv[0]
+    # (absolute: Blender saves an image given a relative path from the
+    # drive's root; the GitHub pre-flight passes preflight/p12)
+    folder = os.path.abspath(argv[0])
     os.makedirs(folder, exist_ok=True)
     E = {"failed": {}}
     for track in TRACKS:
