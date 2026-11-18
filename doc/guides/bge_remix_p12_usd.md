@@ -97,3 +97,26 @@ imported one, a sun or hemi lamp under a mesh.
 
 The mod is read back with BGE-Remix's own OpenUSD before the export reports
 success, so a file Remix could not open is caught at once, with the reason.
+
+## File > Export > RTX Remix Asset (for the Toolkit)
+
+The RTX Remix Toolkit takes models in as FBX, OBJ, glTF or LXO and converts
+them itself (its ingestion); it uses only assets it has ingested. This
+export writes the selected meshes, from any scene, in a form it ingests,
+into one folder (it suggests rtx_remix_assets/<name> beside the .blend):
+
+- **<name>.fbx**: the meshes, through Blender's own FBX exporter, with
+  their modifiers applied, in metres, placed relative to the world origin.
+- **<material>_albedo.png, _normal, _roughness, _metallic, _emissive,
+  _height**: each RTX Remix material's pictures, named by what they are.
+  A value with no picture (a plain roughness of 0.4, say) is written as a
+  small one-colour picture, since the Toolkit builds its materials from
+  pictures. Normal maps are OpenGL style (Blender's): pick "Normal - OpenGL"
+  in the Toolkit.
+- **<name>_readme.txt**: each material, its pictures and the Toolkit's
+  texture type for each, so the texture sets are assigned in one pass.
+
+Lamps (the Toolkit adds its own lights), cameras, empties and other objects
+that are not meshes, logic and physics, and materials that are not RTX
+Remix materials are named in the Info log as left out. With no mesh
+selected the export says so.

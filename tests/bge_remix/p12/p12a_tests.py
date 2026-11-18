@@ -35,11 +35,23 @@ normal(...)
   T12.a8  edge cases: nothing changed says so and writes nothing; a scene
           not from a capture is refused with a message; a painted texture
           is written as DDS and reads back
+  T12.b1  (round 4) the asset for the Remix Toolkit: the room's box and
+          sphere (its material gold) exported: the FBX holds the two meshes
+          (vertices, size, read back with Blender's FBX importer); each
+          material's pictures as named PNGs: the box's picture as it was,
+          one-colour roughness and metallic pictures of the right grey, the
+          gold's albedo; the read-me names both materials and their pictures
+  T12.b2  what an asset leaves out: a lamp and an Empty in the selection are
+          named in the report; nothing selected gives a message
 rtx(...)
   S12.a1  the room and the imported room in Remix, a picture pair
+  S12.b1  the blend check: an orange quad with Add blending over a dark wall
+          brightens the wall behind it, in the game's OpenGL and in Remix
+          (Remix getting blend type 8 would darken it: an engine problem)
 
 BGE_REMIX_P12A_ONLY (comma separated: selftest, room, units, broken, plays,
-mod, modunits, modedges) runs only those (a fix round's reruns).
+mod, modunits, modedges, asset, assetedges; for the RTX run: room, blend)
+runs only those (a fix round's reruns).
 """
 
 import json
@@ -616,10 +628,102 @@ def t_mod_edges(args, out, tests):
     tests[name] = _test(c, d)
 
 
+# ---------------------------------------------------------------------------
+# round 4: File > Export > RTX Remix Asset (for the Toolkit)
+
+def export_asset(args, out, tag, capture, case, E):
+    res = os.path.join(out, tag + "_probe.json")
+    folder = os.path.join(out, tag + "_asset")
+    by = {o["part"]: o["name"] for o in E["objects"]}
+    return blender(args, out, tag, ["asset", capture, res, folder, case, by["Box"], by["Sphere"],
+                                    "light_" + cw.LIGHT_A])
+
+
+def _grey(px, v, tol=2):
+    return bool(px) and all(abs(px[k] - v) <= tol for k in range(3))
+
+
+def t_asset(args, out, tests):
+    name = "T12.b1 The asset for the Remix Toolkit"
+    E = write(out, "room")
+    got = export_asset(args, out, "p12a_asset", E["path"], "room", E)
+    c = {}
+    last = got.get("last") or {}
+    want = got.get("want") or {}
+    files = got.get("files") or []
+    pics = got.get("pictures") or {}
+    asset = last.get("name") or "?"
+    c["exported (%s): %s" % (got.get("result"), ", ".join(files))] = got.get("result") == ["FINISHED"] and \
+        (asset + ".fbx") in files and (asset + "_readme.txt") in files
+    fbx = got.get("fbx") or {}
+    meshes = [v for v in fbx.values() if v.get("type") == 'MESH']
+
+    def found(w):
+        return any(m.get("vertices") == w.get("vertices") and near(m.get("dimensions"), w.get("dimensions"), 1e-3)
+                   for m in meshes)
+    b, sp = want.get("box") or {}, want.get("sphere") or {}
+    c["the FBX holds the two meshes (%s), the box's %s and the sphere's %s vertices at their sizes" % (
+        len(meshes), b.get("vertices"), sp.get("vertices"))] = \
+        len(meshes) == 2 and bool(b) and bool(sp) and found(b) and found(sp)
+    bm, sm = b.get("material", "?"), sp.get("material", "?")
+    T = E["textures"]
+    alb = pics.get(bm + "_albedo.png") or {}
+    c["the box's albedo: its picture as it was (%s)" % (alb.get("size"),)] = \
+        alb.get("size") == [T["size"], T["size"]] and pixels_match(alb.get("top"), T["rgba"])
+    rough = (pics.get(bm + "_roughness.png") or {}).get("centre")
+    metal = (pics.get(bm + "_metallic.png") or {}).get("centre")
+    c["the box's roughness 0.55 and metallic 0 as one-colour pictures (%s, %s; want 140, 0)" % (
+        rough and rough[0], metal and metal[0])] = _grey(rough, 140) and _grey(metal, 0)
+    gold = (pics.get(sm + "_albedo.png") or {}).get("centre")
+    want_gold = [int(round(srgb(x) * 255.0)) for x in (1.0, 0.766, 0.336)]
+    grough = (pics.get(sm + "_roughness.png") or {}).get("centre")
+    gmetal = (pics.get(sm + "_metallic.png") or {}).get("centre")
+    c["the gold: albedo %s (sRGB, want %s), roughness %s (want 64), metallic %s (want 255)" % (
+        gold and gold[:3], want_gold, grough and grough[0], gmetal and gmetal[0])] = \
+        bool(gold) and all(abs(gold[k] - want_gold[k]) <= 2 for k in range(3)) and _grey(grough, 64) and \
+        _grey(gmetal, 255)
+    extra = sorted(p for p in pics if p not in (bm + "_albedo.png", bm + "_roughness.png", bm + "_metallic.png",
+                                                sm + "_albedo.png", sm + "_roughness.png", sm + "_metallic.png"))
+    c["no other pictures (no glow: no emissive one)%s" % (": " + ", ".join(extra) if extra else "")] = \
+        len(pics) == 6 and not extra
+    readme = got.get("readme") or ""
+    c["the read-me names both materials, their pictures and the Toolkit's types"] = \
+        all(x in readme for x in (bm, sm, bm + "_albedo.png", sm + "_metallic.png", "Normal - OpenGL",
+                                  "type: Roughness"))
+    c["nothing left out (%d note(s))" % len(last.get("report") or [])] = not last.get("report")
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests[name] = _test(c, {"files": files, "pictures": {k: v.get("centre") for k, v in pics.items()},
+                            "fbx": fbx, "want": want, "report": last.get("report"), "error": got.get("error"),
+                            "fbx_error": got.get("fbx_error"), "traceback": got.get("traceback")})
+
+
+def t_asset_edges(args, out, tests):
+    name = "T12.b2 What an asset leaves out"
+    E = write(out, "room")
+    c, runs = {}, []
+    g = export_asset(args, out, "p12a_asset_leftout", E["path"], "leftout", E)
+    runs.append(g)
+    rep = (g.get("last") or {}).get("report") or []
+    want = g.get("want") or {}
+    c["a lamp and an Empty selected: the box exported (%s)" % g.get("result")] = \
+        g.get("result") == ["FINISHED"] and ((g.get("last") or {}).get("counts") or {}).get("meshes") == 1
+    c["  the report names the lamp and the Empty (%d note(s))" % len(rep)] = \
+        any(want.get("lamp", "?") in l and "lamp" in l for l in rep) and \
+        any(want.get("empty", "?") in l and "empty" in l for l in rep) and len(rep) == 2
+    g2 = export_asset(args, out, "p12a_asset_nothing", E["path"], "nothing", E)
+    runs.append(g2)
+    c["nothing selected: refused with a message (%s)" % (g2.get("error") or "")[:90]] = \
+        g2.get("result") == ["CANCELLED"] and "no mesh is selected" in (g2.get("error") or "") and \
+        not g2.get("folder_exists")
+    c["no crash"] = all(x.get("exit") == 0 and "traceback" not in x for x in runs)
+    tests[name] = _test(c, {"report": rep, "error": g2.get("error"), "tracebacks": [x.get("traceback") for x in runs]})
+
+
 def normal(args, out, scenes, E, tests, sheets):
     only = _only()
     for key, fn in (("selftest", t_selftest), ("room", t_room), ("units", t_units), ("broken", t_broken),
-                    ("plays", t_plays), ("mod", t_mod), ("modunits", t_mod_units), ("modedges", t_mod_edges)):
+                    ("plays", t_plays), ("mod", t_mod), ("modunits", t_mod_units), ("modedges", t_mod_edges),
+                    ("asset", t_asset), ("assetedges", t_asset_edges)):
         if not only or key in only:
             try:
                 fn(args, out, tests)
@@ -629,6 +733,47 @@ def normal(args, out, scenes, E, tests, sheets):
 
 
 def rtx(args, out, scenes, E, tests, sheets, report):
+    only = _only()
+    for key, fn in (("room", rtx_room), ("blend", rtx_blend)):
+        if not only or key in only:
+            try:
+                fn(args, out, scenes, E, tests, sheets, report)
+            except Exception:
+                import traceback
+                tests["%s (RTX) ran" % key] = _test({"ran without an error": False}, traceback.format_exc())
+
+
+def rtx_blend(args, out, scenes, E, tests, sheets, report):
+    name = "S12.b1 The blend check: Add blending in the game and in Remix"
+    B = (E.get("p12a") or {}).get("blend")
+    if not B:
+        tests[name] = _test({"the scenes were made": False}, (E.get("failed") or {}).get("p12a_blend"))
+        return
+    shot = {"BGE_REMIX_P2_SHOT_FRAME": "300"}
+    gl = p8.play(args.ours, out, "p12a_blend_gl", os.path.join(scenes, B["files"]["gl"]), shot, frames=p8.REMIX_FRAMES)
+    rx = p8.play(args.ours, out, "p12a_blend_remix", os.path.join(scenes, B["files"]["remix"]), p8.REMIX_ENV,
+                 frames=p8.REMIX_FRAMES, gl_debug=False)
+    c, d = {}, {}
+    for tag, r, label in (("gl", gl, "the game's OpenGL"), ("remix", rx, "Remix")):
+        a = p8.picture(r.get("screenshot"))
+        means = {}
+        if a is not None:
+            for k, rect in B["rects"].items():
+                means[k] = round(float(p8.crop(a, rect).reshape(-1, 3).mean()), 1)
+        d[tag] = means
+        c["%s drew it" % label] = r.get("exit") == 0 and a is not None
+        c["%s: the wall behind the Add quad is brighter than the bare wall (%s against %s)" % (
+            label, means.get("add"), means.get("wall"))] = \
+            bool(means) and means.get("add", 0.0) > means.get("wall", 0.0) + 5.0
+    sheet = os.path.join(out, "sheet_p12a_blend.png")
+    p2.contact_sheet([("the game's OpenGL (left Add, right Alpha 50%)", gl.get("screenshot")),
+                      ("RTX Remix", rx.get("screenshot"))], sheet)
+    sheets["p12a_blend"] = sheet if os.path.isfile(sheet) else None
+    tests[name] = _test(c, d)
+    report += ["", "S12.b1: Add blending, the game's OpenGL beside Remix: %s (mean brightness: %s)" % (sheet, d)]
+
+
+def rtx_room(args, out, scenes, E, tests, sheets, report):
     name = "S12.a1 The room and the imported room in Remix (a picture pair)"
     P = (E.get("p12a") or {}).get("room")
     if not P:

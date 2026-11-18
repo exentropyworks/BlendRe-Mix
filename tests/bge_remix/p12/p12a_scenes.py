@@ -9,6 +9,13 @@ point lamp and a spot; parts of the same shape share one mesh, as in the
 capture, each with its own material on the object. All materials are RTX
 Remix materials with the capture's values.
 This is the room the imported one is set beside in the RTX run (S12.a1).
+
+P12 round 4, the blend check (S12.b1): a dark grey wall lit from the front
+by a sun, seen straight on by an orthographic camera, with two orange quads
+in front of it: the left one Add blending, the right one Alpha blending at
+half opacity. Made twice: p12_blend_gl.blend (the game's OpenGL) and
+p12_blend_remix.blend (RTX Remix). Add blending must brighten the wall
+behind its quad.
 """
 
 import math
@@ -163,5 +170,62 @@ def save(path):
     print("BGE-Remix: wrote", path)
 
 
+# the blend check: where things are in the 960 x 540 picture (left, top,
+# right, bottom), the camera showing 4 m across
+BLEND_RECTS = {"add": [200, 230, 280, 310], "alpha": [680, 230, 760, 310], "wall": [440, 450, 520, 510]}
+ORANGE = (1.0, 0.4, 0.05)
+
+
+def make_blend(folder):
+    from bl_operators.bge_remix_material import make_remix_material, _set
+    from mathutils import Euler
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    scene = p3.base_scene()
+    scene.name = "P12Blend"
+    scene.game_settings.fps = 60
+    p2.world(scene, (0.02, 0.02, 0.02))
+
+    def material(name, rgb, blend, opacity=1.0):
+        mat = bpy.data.materials.new(name)
+        node = make_remix_material(mat)
+        _set(node, "Albedo", tuple(rgb) + (1.0,))
+        _set(node, "Roughness", 0.8)
+        _set(node, "Opacity", opacity)
+        node.blend = blend
+        return mat
+    wall = material("P12BlendWall", (0.18, 0.18, 0.18), 'OPAQUE')
+    p2.plane(scene, "Wall", 6.0, (0.0, 1.0, 0.0), (math.radians(90.0), 0.0, 0.0), wall)
+    p2.plane(scene, "AddQuad", 1.0, (-1.0, 0.5, 0.0), (math.radians(90.0), 0.0, 0.0),
+             material("P12BlendAdd", ORANGE, 'ADDITIVE'))
+    p2.plane(scene, "AlphaQuad", 1.0, (1.0, 0.5, 0.0), (math.radians(90.0), 0.0, 0.0),
+             material("P12BlendAlpha", ORANGE, 'BLENDED', 0.5))
+    sun = bpy.data.lamps.new("Sun", 'SUN')
+    sun.energy = 1.0
+    sob = bpy.data.objects.new("Sun", sun)
+    scene.objects.link(sob)
+    sob.rotation_euler = Euler((math.radians(90.0), 0.0, 0.0))  # shining along +Y, at the wall
+    cd = bpy.data.cameras.new("Camera")
+    cd.type = 'ORTHO'
+    cd.ortho_scale = 4.0
+    cam = bpy.data.objects.new("Camera", cd)
+    scene.objects.link(cam)
+    cam.location = (0.0, -5.0, 0.0)
+    cam.rotation_euler = Euler((math.radians(90.0), 0.0, 0.0))
+    scene.camera = cam
+    p2.add_probe(scene)
+    files = {}
+    for key, remix in (("gl", 0), ("remix", 1)):
+        scene["bge_remix"] = remix
+        scene.update()
+        files[key] = "p12_blend_%s.blend" % key
+        save(os.path.join(folder, files[key]))
+    return {"files": files, "rects": BLEND_RECTS, "orange": list(ORANGE)}
+
+
 def make(folder, E):
     E["p12a"] = {"room": make_room(folder)}
+    try:
+        E["p12a"]["blend"] = make_blend(folder)
+    except Exception:
+        import traceback
+        E["failed"]["p12a_blend"] = traceback.format_exc()

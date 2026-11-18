@@ -21,6 +21,15 @@ argv (after --):
         none     nothing changed
         texture  the box's picture painted (top half red, bottom half blue)
         plain    no import: a scene of its own, not from a capture
+  asset <capture> <out.json> <asset folder> <case> <box place> <sphere place> <lamp place>
+      (round 4) the capture imported, then File > Export > RTX Remix Asset
+      (the operator) into <asset folder>; written out: the result, the
+      export's report, counts and pictures, each PNG (its size and pixels
+      at its top row and centre), the read-me, and the FBX imported back
+      (its meshes: vertices, size). case:
+        room     the box and the sphere selected, the sphere's material gold
+        leftout  the box, a lamp and an Empty selected
+        nothing  nothing selected
 """
 
 import json
@@ -301,6 +310,80 @@ def export(argv, out):
         out["textures"] = decoded(folder)
 
 
+def asset(argv, out):
+    from bl_operators import bge_remix_asset
+    capture, folder, case = argv[1], argv[3], argv[4]
+    box_place, sphere_place, lamp_place = argv[5], argv[6], argv[7]
+    shutil.rmtree(folder, ignore_errors=True)
+    before = set(bpy.data.scenes.keys())
+    bpy.ops.import_scene.bge_remix_capture(filepath=capture)
+    scene = [bpy.data.scenes[n] for n in bpy.data.scenes.keys() if n not in before][0]
+    places = {ob.get("bge_remix_capture_place"): ob for ob in scene.objects}
+    for ob in scene.objects:
+        ob.select = False
+    box = places[box_place]
+    picked = []
+    if case == "room":
+        from bl_operators.bge_remix_material import remix_node
+        sphere = places[sphere_place]
+        node = remix_node(sphere.material_slots[0].material)
+        node.inputs["Albedo"].default_value = (1.0, 0.766, 0.336, 1.0)
+        node.inputs["Metallic"].default_value = 1.0
+        node.inputs["Roughness"].default_value = 0.25
+        node.inputs["Emissive Intensity"].default_value = 0.0
+        picked = [box, sphere]
+        out["want"] = {"box": {"name": box.name, "vertices": len(box.data.vertices),
+                               "dimensions": list(box.dimensions),
+                               "material": box.material_slots[0].material.name},
+                       "sphere": {"name": sphere.name, "vertices": len(sphere.data.vertices),
+                                  "dimensions": list(sphere.dimensions),
+                                  "material": sphere.material_slots[0].material.name}}
+    elif case == "leftout":
+        marker = bpy.data.objects.new("Marker", None)
+        scene.objects.link(marker)
+        picked = [box, places[lamp_place], marker]
+        out["want"] = {"lamp": places[lamp_place].name, "empty": marker.name}
+    for ob in picked:
+        ob.select = True
+    if picked:
+        scene.objects.active = picked[0]
+    scene.update()
+    try:
+        ret = bpy.ops.export_scene.bge_remix_asset({"scene": scene}, directory=folder)
+        out["result"] = sorted(ret)
+    except RuntimeError as e:
+        out["result"] = ["CANCELLED"]
+        out["error"] = str(e)
+    last = bge_remix_asset.LAST
+    out["last"] = {"report": list(last.get("report") or []), "path": last.get("path"), "counts": last.get("counts"),
+                   "materials": last.get("materials"), "name": last.get("name")}
+    out["folder_exists"] = os.path.isdir(folder)
+    out["files"] = sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+    out["pictures"] = {}
+    for name in out["files"]:
+        if not name.lower().endswith(".png"):
+            continue
+        ima = bpy.data.images.load(os.path.join(folder, name))
+        w, h = ima.size
+        px = list(ima.pixels)
+        i = ((h // 2) * w + w // 2) * 4
+        out["pictures"][name] = {"size": [w, h], "centre": [int(round(c * 255.0)) for c in px[i:i + 4]],
+                                 "top": top_rows(ima, 2)}
+    readme = last.get("readme")
+    if readme and os.path.isfile(readme):
+        with open(readme, encoding="utf-8") as f:
+            out["readme"] = f.read()
+    fbx = last.get("path")
+    if fbx and os.path.isfile(fbx):
+        back = bpy.data.scenes.new("FBXBack")
+        try:
+            bpy.ops.import_scene.fbx({"scene": back}, filepath=fbx)
+            out["fbx"] = {ob.name: {"type": ob.type, "vertices": len(ob.data.vertices) if ob.type == 'MESH' else None,
+                                    "dimensions": list(ob.dimensions)} for ob in back.objects}
+        except RuntimeError as e:
+            out["fbx_error"] = str(e)
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     mode = argv[0]
@@ -309,6 +392,9 @@ def main():
         if mode == "export":
             path = argv[2]
             export(argv, out)
+        elif mode == "asset":
+            path = argv[2]
+            asset(argv, out)
         elif mode == "selftest":
             import _bge_remix
             os.makedirs(argv[1], exist_ok=True)

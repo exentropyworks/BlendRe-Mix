@@ -187,6 +187,8 @@ class INFO_MT_file_export(Menu):
             self.layout.operator("wm.alembic_export", text="Alembic (.abc)")
         # BGE-Remix P12 (A3): a scene imported from a capture, as a Remix mod
         self.layout.operator("export_scene.bge_remix_mod", text="RTX Remix Mod (.usda)")
+        # (A4): the selected meshes for the RTX Remix Toolkit to ingest
+        self.layout.operator("export_scene.bge_remix_asset", text="RTX Remix Asset (for the Toolkit)")
 
 
 class INFO_MT_file_external_data(Menu):
