@@ -445,10 +445,13 @@ BRB_API int brb_material_create(const brb_material_desc *d)
 		opaque.displaceOut = std::max(d->displace_out, 0.0f);
 		if (d->additive) {
 			/* P8.8: Blender's Add blending is Remix's emissive blending (one,
-			 * one: dxvk-remix BlendType::kEmissive) */
+			 * one: dxvk-remix BlendType::kEmissive, 6, as Remix itself turns
+			 * a game's one-one blending; P12 round 4 fix: 8 was sent, Remix's
+			 * kDoubleMultiplicative, which drew a mid-bright colour nearly
+			 * see-through) */
 			opaque.useDrawCallAlphaState = FALSE;
 			opaque.blendType_hasvalue = TRUE;
-			opaque.blendType_value = 8;
+			opaque.blendType_value = 6;
 		}
 		else if (d->alpha_blend) {
 			/* blend by opacity (and the albedo texture's alpha), not by the

@@ -504,7 +504,8 @@ def make_classic_remix(folder, E):
     items.append(("ztransp", ztransp, {"type": "opaque", "blend": 1, "opacity": 0.4}))
     add = classic("C_add", (1.0, 0.6, 0.2), spec=0.0)
     add.game_settings.alpha_blend = 'ADD'
-    items.append(("add", add, {"type": "opaque", "blendtype": 8}))
+    # (Remix's emissive blending, kEmissive 6: P12 round 4 fix; 8 before)
+    items.append(("add", add, {"type": "opaque", "blendtype": 6}))
     invisible = classic("C_invisible", (1.0, 0.0, 1.0))
     invisible.game_settings.invisible = True
     items.append(("invisible", invisible, {"absent": True}))

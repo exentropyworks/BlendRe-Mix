@@ -1949,7 +1949,7 @@ void apply_remix_block(const Material *ma, MaterialSpec &s)
 	switch (b.i("blend")) {
 		case 1: d.blend_type = -1; d.alpha_blend = 0; d.additive = 0; break;
 		case 2: d.blend_type = 1; d.alpha_blend = 1; d.additive = 0; break;
-		case 3: d.blend_type = 9; d.alpha_blend = 1; d.additive = 1; break; /* as P8.8's emissive blending (8) */
+		case 3: d.blend_type = 7; d.alpha_blend = 1; d.additive = 1; break; /* Remix's emissive blending (6), as P8.8's */
 	}
 	d.inverted_blend = b.i("inverted_blend");
 	/* alpha test: 0 automatic, else Remix's AlphaTestType + 1 */
