@@ -378,8 +378,12 @@ def asset(argv, out):
         back = bpy.data.scenes.new("FBXBack")
         try:
             bpy.ops.import_scene.fbx({"scene": back}, filepath=fbx)
+            # (the objects' matrices, which their dimensions are read from,
+            # are made when their scene updates: this one is not shown)
+            back.update()
             out["fbx"] = {ob.name: {"type": ob.type, "vertices": len(ob.data.vertices) if ob.type == 'MESH' else None,
-                                    "dimensions": list(ob.dimensions)} for ob in back.objects}
+                                    "dimensions": list(ob.dimensions), "scale": list(ob.matrix_basis.to_scale())}
+                          for ob in back.objects}
         except RuntimeError as e:
             out["fbx_error"] = str(e)
 
