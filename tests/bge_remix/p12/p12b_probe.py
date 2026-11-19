@@ -91,7 +91,9 @@ def _box(name, sx, sy, sz):
 
     def make(bm):
         import bmesh
-        bmesh.ops.create_cube(bm, size=1.0, matrix=Matrix.Diagonal((sx, sy, sz, 1.0)))
+        # (2.79's mathutils has no Matrix.Diagonal)
+        bmesh.ops.create_cube(bm, size=1.0, matrix=Matrix(((sx, 0.0, 0.0, 0.0), (0.0, sy, 0.0, 0.0),
+                                                           (0.0, 0.0, sz, 0.0), (0.0, 0.0, 0.0, 1.0))))
     return _mesh(name, make)
 
 

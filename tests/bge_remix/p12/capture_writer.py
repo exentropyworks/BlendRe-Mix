@@ -145,15 +145,16 @@ def mat_inv_affine(m):
     return out + [[0.0, 0.0, 0.0, 1.0]]
 
 
-def look_at(loc, target, forward_neg_z=True):
-    """an object at loc whose -Z points at target, its Y up as far as it goes"""
+def look_at(loc, target, forward_neg_z=True, up=(0.0, 0.0, 1.0), fallback=(0.0, 1.0, 0.0)):
+    """an object at loc whose -Z points at target, its Y towards up as far
+    as it goes (towards fallback when it looks straight along up)"""
     f = [target[i] - loc[i] for i in range(3)]
     n = math.sqrt(sum(x * x for x in f))
     f = [x / n for x in f]
     z = [-x for x in f]                       # its +Z points away
-    up = [0.0, 0.0, 1.0]
+    up = list(up)
     if abs(sum(up[i] * z[i] for i in range(3))) > 0.999:
-        up = [0.0, 1.0, 0.0]
+        up = list(fallback)
     x = [up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]]
     n = math.sqrt(sum(v * v for v in x))
     x = [v / n for v in x]
@@ -342,6 +343,23 @@ class Space:
     def matrix(self, m):
         return mat_mul(mat_mul(self.K, m), self.Kinv)
 
+    def frame(self, m):
+        """a light's or camera's matrix (P12 round 6 fix 1): USD's rule is
+        that a light shines and a camera looks along its own -Z whatever the
+        stage's up axis, so its axes turn with the space but are not
+        re-mapped as a mesh's points are: K M S^-1 (S the scale of K). In a
+        Z-up capture this is K M K^-1. Checked against an object aimed the
+        same way built in the capture's own space (look_at there, its up the
+        capture's up)."""
+        s = 1.0 / self.mpu
+        Sinv = [[1.0 / s, 0, 0, 0], [0, 1.0 / s, 0, 0], [0, 0, 1.0 / s, 0], [0, 0, 0, 1.0]]
+        return mat_mul(mat_mul(self.K, m), Sinv)
+
+    def aimed(self, loc, target):
+        """look_at in the capture's own space (the check of frame)"""
+        return look_at(self.point(loc), self.point(target), up=self.direction([0.0, 0.0, 1.0]),
+                       fallback=self.direction([0.0, 1.0, 0.0]))
+
 
 def write_mesh(folder, h, mesh, mat_hash, sp):
     pts = [sp.point(p) for p in mesh["points"]]
@@ -433,7 +451,7 @@ def write_light(folder, lamp, sp):
         text += '    float inputs:shaping:focus = 0\n'
     else:
         text += '    float inputs:shaping:cone:angle = 180\n'
-    text += '    matrix4d xformOp:transform = %s\n' % matrix_usda(sp.matrix(lamp_matrix(lamp)))
+    text += '    matrix4d xformOp:transform = %s\n' % matrix_usda(_framed(sp, lamp_matrix(lamp), loc, aim))
     text += '    uniform token[] xformOpOrder = ["xformOp:transform"]\n}\n'
     os.makedirs(os.path.join(folder, "lights"), exist_ok=True)
     with open(os.path.join(folder, "lights", "light_%s.usda" % h), "w") as f:
@@ -442,6 +460,18 @@ def write_light(folder, lamp, sp):
 
 def camera_matrix():
     return look_at(CAMERA["location"], CAMERA["target"])
+
+
+def _framed(sp, m, loc, aim):
+    """a light's or camera's matrix in the capture (Space.frame), checked
+    against the same aim built in the capture's own space"""
+    f = sp.frame(m)
+    if aim is not None:
+        a = sp.aimed(loc, aim)
+        worst = max(abs(f[r][c] - a[r][c]) for r in range(3) for c in range(4))
+        if worst > 1e-6 * max(1.0, 1.0 / sp.mpu):
+            raise AssertionError("the capture writer's frame is not the aim built in the capture (%.3g)" % worst)
+    return f
 
 
 def write_capture(folder, name, meters_per_unit=1.0, z_up=True, parts=None, skip_textures=(), cut_mesh=None):
@@ -517,7 +547,7 @@ def write_capture(folder, name, meters_per_unit=1.0, z_up=True, parts=None, skip
         text += '        def SphereLight "light_%s" (\n' % lamp[1]
         text += '            prepend references = @./lights//light_%s.usda@\n        )\n        {\n        }\n' % lamp[1]
     text += '    }\n\n    def Xform "cameras"\n    {\n'
-    cam_sp = sp.matrix(camera_matrix())
+    cam_sp = _framed(sp, camera_matrix(), CAMERA["location"], CAMERA["target"])
     text += '        def Camera "Camera"\n        {\n'
     text += '            float2 clippingRange = (%s, %s)\n' % (fmt(CAMERA["near"] / meters_per_unit),
                                                              fmt(CAMERA["far"] / meters_per_unit))

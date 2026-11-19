@@ -480,6 +480,7 @@ def check_mod(got, E, mpu, z_up):
     last = got.get("last") or {}
     K = k_matrix(mpu, z_up)
     Kinv = cw.mat_inv_affine(K)
+    Sinv = [[1.0 / mpu, 0, 0, 0], [0, 1.0 / mpu, 0, 0], [0, 0, 1.0 / mpu, 0], [0, 0, 0, 1.0]]
     tol = PLACE_TOL / mpu   # 0.1 mm in the capture's units
     c["exported (%s), mod.usda written" % got.get("result")] = got.get("result") == ["FINISHED"] and \
         bool(last.get("path"))
@@ -527,7 +528,10 @@ def check_mod(got, E, mpu, z_up):
         T = from_usd((prims.get(base + "/" + name) or {}).get("local_to_world"))
         if not T or not M or not world:
             return (1e9, 1e9)
-        return mdiff(cw.mat_mul(cw.mat_mul(cw.mat_mul(M, K), T), Kinv), world)
+        # a mesh's place: M K T K^-1; a lamp's (USD's rule: its axes turn
+        # with the space, round 6 fix 1): M K T S^-1
+        last = Sinv if name == lamp.get("name") else Kinv
+        return mdiff(cw.mat_mul(cw.mat_mul(cw.mat_mul(M, K), T), last), world)
     lamp, cube = ed.get("lamp") or {}, ed.get("cube") or {}
     lp = _prims_type(prims, base + "/" + str(lamp.get("name")))
     lplace = placed(lamp.get("name"), lamp.get("world"))
