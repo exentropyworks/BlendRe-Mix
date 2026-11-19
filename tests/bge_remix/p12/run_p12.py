@@ -5,7 +5,9 @@
 --rtx (the real RTX Remix runtime): the tracks' pictures in Remix
 
 The tracks (each its own scene module and test module):
-  p12a  Part A: Remix modding (round 2: File > Import > RTX Remix Capture)
+  p12a  Part A: Remix modding (captures in, mods out)
+  p12b  Part B: USD exchange with other tools (round 6: File > Export and
+        File > Import > Universal Scene Description)
 
 BGE_REMIX_P12_TRACKS (comma separated) runs only those tracks.
 """
@@ -25,7 +27,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "p2"))
 import run_p2 as p2  # noqa: E402  (running Blender, contact sheets)
 import run_p8 as p8  # noqa: E402  (the player, pictures, the fake runtime)
 
-TRACKS = ("p12a",)
+TRACKS = ("p12a", "p12b")
 
 
 def make_scenes(ours, out):

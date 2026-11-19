@@ -137,3 +137,58 @@ Lamps (the Toolkit adds its own lights), cameras, empties and other objects
 that are not meshes, logic and physics, and materials that are not RTX
 Remix materials are named in the Info log as left out. With no mesh
 selected the export says so.
+
+## File > Export > Universal Scene Description (.usd, .usda, .usdc)
+
+For other tools (Omniverse, Houdini, Maya, Blender 2.8 and later, any USD
+viewer). It writes the whole scene, or with Selected Objects Only the
+selected objects, in metres and Z up, as text (.usda) or USD's binary form
+(.usdc, or .usd):
+
+- **Meshes**, with their modifiers applied: faces, normals, UVs and vertex
+  colours. A mesh with several materials is split by material (GeomSubsets).
+  Curves, surfaces and text go out as the meshes they make.
+- **Hierarchy**: each object's transform relative to its parent; empties
+  as plain transforms. Names USD does not take (Leg.001) are kept as the
+  prims' display names, so they come back as they were.
+- **Materials**: every material as a UsdPreviewSurface, which any tool
+  reads: colour, roughness, metallic, emission, opacity, normal map and IOR,
+  with their pictures. RTX Remix materials also carry Remix's AperturePBR,
+  so BGE-Remix and Remix get them exactly. Classic materials go out as their
+  nearest preview surface: colour (times its intensity), opacity, roughness
+  from the specular hardness, glow, their first colour picture and normal
+  map. Pictures are copied into a textures folder beside the file (a
+  picture made in Blender, or one that needs changing for other tools, such
+  as a DirectX normal map, as a PNG).
+- **Lamps** as UsdLux lights, by the mod export's rules: point and spot as
+  sphere lights (the spot with its cone; a physical spot as a disk light),
+  sun as a distant light, area as a rectangle light. A hemi lamp is listed
+  as left out.
+- **Cameras**: lens, sensor, clipping, perspective or orthographic.
+
+Before it reports success the file is read back the way the import reads
+it; if anything differs from what was written, the export says what.
+
+## File > Import > Universal Scene Description
+
+Any tool's .usd, .usda or .usdc comes in as a new scene, named after the
+file, read through BGE-Remix's own OpenUSD (references, payloads and
+instancing included):
+
+- meshes, with every way USD stores normals, UVs and colours (per vertex,
+  per corner, per face, indexed); an instanced reference's copies share one
+  mesh (linked copies), each keeping its own materials;
+- the hierarchy: transforms become empties; a transform holding only a
+  mesh (or a camera or light where it is) becomes that one object, as most
+  tools write them;
+- materials as RTX Remix materials: from Remix's AperturePBR when the file
+  has it, otherwise from its UsdPreviewSurface (colour, roughness, metallic,
+  emission, opacity, normal map, IOR and their pictures);
+- lamps (by the capture import's rules: the reverse of how lamps are sent to
+  Remix) and cameras;
+- a Y-up or centimetre file comes in Z up and in metres.
+
+Anything it cannot take is named in the Info log, never dropped silently:
+a shader network that is neither a preview surface nor AperturePBR (the
+material comes in plain), curves, points, point instancers, volumes and
+USD's own shapes (cube, sphere), dome lights.

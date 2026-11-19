@@ -103,6 +103,9 @@ typedef struct BRMX_Bridge {
 	int (*dds_to_png)(const wchar_t *dds, const wchar_t *png, char *r_error, int max_bytes);
 	/* interface 15 (P12 round 3) */
 	int (*usd_stage_dump)(const char *path, const char *json_path, char *r_error, int max_bytes);
+	/* interface 16 (P12 round 6) */
+	const bru_scene_api *(*usd_scene_api)(char *r_error, int max_bytes);
+	int (*usd_convert)(const char *src, const char *dst, char *r_error, int max_bytes);
 } BRMX_Bridge;
 
 /* The bridge, loaded on first use; NULL when it is missing or from another

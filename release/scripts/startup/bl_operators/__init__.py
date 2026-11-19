@@ -40,6 +40,7 @@ _modules = [
     "bge_remix_capture",  # BGE-Remix P12 (A2)
     "bge_remix_mod",  # BGE-Remix P12 (A3)
     "bge_remix_asset",  # BGE-Remix P12 (A4)
+    "bge_remix_usd",  # BGE-Remix P12 (B1)
     "clip",
     "console",
     "file",

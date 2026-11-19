@@ -28,9 +28,12 @@ add_library(bge_remix_usd SHARED
 	usd_core.cpp
 	usd_dll.cpp
 	usd_dump.cpp
+	usd_read.cpp
+	usd_scene.cpp
 
 	bge_remix_usd.h
 	usd_core.h
+	usd_read.h
 )
 target_include_directories(bge_remix_usd PRIVATE "${USD_ROOT_DIR}/include")
 # a static OpenUSD: no dllimport, and none of its functions exported from

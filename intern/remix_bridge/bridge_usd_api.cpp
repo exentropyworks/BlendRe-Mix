@@ -63,6 +63,8 @@ struct UsdDll {
 	int (*selftest)(const char *, const char *, char *, int) = nullptr;
 	const bru_capture_api *(*capture_api)(void) = nullptr;
 	int (*stage_dump)(const char *, const char *, const char *, char *, int) = nullptr;
+	const bru_scene_api *(*scene_api)(void) = nullptr;
+	int (*convert)(const char *, const char *, const char *, char *, int) = nullptr;
 };
 UsdDll g_usd;
 
@@ -100,7 +102,8 @@ bool usd_dll()
 	}
 	if (!find_fn(g_usd.abi_version, "bru_abi_version") || !find_fn(g_usd.usd_version, "bru_usd_version") ||
 	    !find_fn(g_usd.started, "bru_started") || !find_fn(g_usd.selftest, "bru_selftest") ||
-	    !find_fn(g_usd.capture_api, "bru_capture_get_api") || !find_fn(g_usd.stage_dump, "bru_stage_dump")) {
+	    !find_fn(g_usd.capture_api, "bru_capture_get_api") || !find_fn(g_usd.stage_dump, "bru_stage_dump") ||
+	    !find_fn(g_usd.scene_api, "bru_scene_get_api") || !find_fn(g_usd.convert, "bru_stage_convert")) {
 		FreeLibrary(g_usd.dll);
 		g_usd.dll = nullptr;
 		log("OpenUSD: %s", g_usd.error.c_str());
@@ -175,6 +178,35 @@ BRB_API int brb_usd_stage_dump(const char *path, const char *json_path, char *r_
 		return 0;
 	}
 	return g_usd.stage_dump(brb_usd_plugin_dir(), path, json_path, r_error, max_bytes);
+}
+
+BRB_API const bru_scene_api *brb_usd_scene_api(char *r_error, int max_bytes)
+{
+	const bru_scene_api *api = nullptr;
+	std::string err;
+	if (!usd_dll()) {
+		err = g_usd.error;
+	}
+	else {
+		api = g_usd.scene_api();
+		if (!api || api->abi != BRU_ABI_VERSION) {
+			err = "bge_remix_usd.dll's scene reader is of another version";
+			api = nullptr;
+		}
+	}
+	if (r_error && max_bytes > 0)
+		snprintf(r_error, size_t(max_bytes), "%s", err.c_str());
+	return api;
+}
+
+BRB_API int brb_usd_convert(const char *src, const char *dst, char *r_error, int max_bytes)
+{
+	if (!usd_dll()) {
+		if (r_error && max_bytes > 0)
+			snprintf(r_error, size_t(max_bytes), "%s", g_usd.error.c_str());
+		return 0;
+	}
+	return g_usd.convert(brb_usd_plugin_dir(), src, dst, r_error, max_bytes);
 }
 
 BRB_API int brb_usd_selftest(const wchar_t *folder, char *r_report, int max_bytes)

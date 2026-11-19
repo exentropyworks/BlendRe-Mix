@@ -26,6 +26,10 @@
  *             the same self-test, usd_core.cpp linked in (the native checks
  *             of the USD code itself); p12_usd_check --dump <plugin folder>
  *             <stage> <dump.json> the stage dump.
+ *   P12 round 6: --scene <file> <scene.json> a scene as the import reads it
+ *             (brb_usd_scene_api); --convert <src> <dst> a layer written in
+ *             another format (brb_usd_convert); elsewhere each with the
+ *             plugin folder first.
  * Exit code: the number of failed checks. */
 
 #include <cmath>
@@ -167,6 +171,117 @@ static int dump_capture(const bru_capture_api *api, const char *plugins, const c
 	return 0;
 }
 
+/* P12 round 6: a scene as the import reads it, as JSON (check_scene.py);
+ * returns 0 when it was read */
+static int dump_scene(const bru_scene_api *api, const char *plugins, const char *path, const char *json)
+{
+	char err[2048] = "";
+	bru_scene *sc = api->open(plugins, path, err, int(sizeof(err)));
+	FILE *f = fopen(json, "w");
+	if (!f)
+		return 1;
+	if (!sc) {
+		fprintf(f, "{\"error\": %s}\n", jstr(err).c_str());
+		fclose(f);
+		printf("scene %s: not read (%s)\n", path, err);
+		return 2;
+	}
+	bru_scene_info info;
+	api->info(sc, &info);
+	std::string o = "{\"meters_per_unit\": " + jnum(info.meters_per_unit) + ", \"z_up\": " + std::to_string(info.z_up) +
+	                ", \"default_prim\": " + jstr(info.default_prim) + ", \"creator\": " + jstr(info.creator) + ", \"usd_errors\": " +
+	                std::to_string(info.usd_errors) + ", \"report\": " + jstr(info.report);
+	o += ",\n \"nodes\": [";
+	for (int i = 0; i < info.node_count; i++) {
+		bru_node n;
+		api->node(sc, i, &n);
+		std::string subs = "[";
+		for (int k = 0; k < n.subset_count; k++)
+			subs += (k ? ", " : "") + std::to_string(n.subset_materials[k]);
+		subs += "]";
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"name\": " + jstr(n.name) + ", \"path\": " + jstr(n.path) +
+		     ", \"parent\": " + std::to_string(n.parent) + ", \"kind\": " + std::to_string(n.kind) +
+		     ", \"index\": " + std::to_string(n.index) + ", \"visible\": " + std::to_string(n.visible) +
+		     ", \"material\": " + std::to_string(n.material) + ", \"subset_materials\": " + subs +
+		     ", \"matrix\": " + jarr(n.matrix, 16) + "}";
+	}
+	o += "],\n \"meshes\": [";
+	for (int i = 0; i < info.mesh_count; i++) {
+		bru_scene_mesh m;
+		api->mesh(sc, i, &m);
+		std::string subs = "[";
+		for (int k = 0; k < m.subset_count; k++) {
+			bru_subset s;
+			api->subset(sc, i, k, &s);
+			std::string faces = "[";
+			for (int j = 0; j < s.face_count; j++)
+				faces += (j ? ", " : "") + std::to_string(s.faces[j]);
+			subs += std::string(k ? ", " : "") + "{\"name\": " + jstr(s.name) + ", \"faces\": " + faces + "]}";
+		}
+		subs += "]";
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"name\": " + jstr(m.name) + ", \"vertices\": " +
+		     std::to_string(m.vertex_count) + ", \"faces\": " + std::to_string(m.face_count) + ", \"corners\": " +
+		     std::to_string(m.corner_count) + ", \"points\": " + jarrf(m.points, m.vertex_count * 3) +
+		     ", \"normals\": " + (m.normals ? jarrf(m.normals, m.corner_count * 3) : std::string("null")) +
+		     ", \"uvs\": " + (m.uvs ? jarrf(m.uvs, m.corner_count * 2) : std::string("null")) +
+		     ", \"uv_name\": " + jstr(m.uv_name) +
+		     ", \"colors\": " + (m.colors ? jarrf(m.colors, m.corner_count * 4) : std::string("null")) +
+		     ", \"double_sided\": " + std::to_string(m.double_sided) + ", \"subsets\": " + subs + "}";
+	}
+	o += "],\n \"materials\": [";
+	for (int i = 0; i < info.material_count; i++) {
+		bru_scene_material mt;
+		api->material(sc, i, &mt);
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"name\": " + jstr(mt.name) + ", \"path\": " + jstr(mt.path) +
+		     ", \"preview\": " + std::to_string(mt.preview) + ", \"aperture\": " + std::to_string(mt.aperture) +
+		     ", \"mdl\": " + jstr(mt.mdl) + ", \"sub_identifier\": " + jstr(mt.sub_identifier) +
+		     ", \"other\": " + jstr(mt.other);
+		for (int which = 0; which < 2; which++) {
+			const int count = which ? mt.aperture_input_count : mt.preview_input_count;
+			o += which ? ", \"aperture_inputs\": {" : ", \"preview_inputs\": {";
+			for (int k = 0; k < count; k++) {
+				bru_shader_input in;
+				api->material_input(sc, i, which, k, &in);
+				o += std::string(k ? ", " : "") + jstr(in.name) + ": {\"kind\": " + std::to_string(in.kind) +
+				     ", \"v\": " + jarr(in.v, 4) + ", \"text\": " + jstr(in.text) + ", \"path\": " +
+				     jstr(in.path) + ", \"exists\": " + std::to_string(in.exists) + ", \"output\": " +
+				     jstr(in.output) + ", \"color_space\": " + jstr(in.color_space) + "}";
+			}
+			o += "}";
+		}
+		o += "}";
+	}
+	o += "],\n \"lights\": [";
+	for (int i = 0;; i++) {
+		bru_light l;
+		if (!api->light(sc, i, &l))
+			break;
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"name\": " + jstr(l.name) + ", \"kind\": " +
+		     std::to_string(l.kind) + ", \"color\": " + jarrf(l.color, 3) + ", \"intensity\": " + jnum(l.intensity) +
+		     ", \"exposure\": " + jnum(l.exposure) + ", \"radius\": " + jnum(l.radius) + ", \"angle\": " +
+		     jnum(l.angle) + ", \"width\": " + jnum(l.width) + ", \"height\": " + jnum(l.height) +
+		     ", \"shaped\": " + std::to_string(l.shaped) + ", \"cone_angle\": " + jnum(l.cone_angle) +
+		     ", \"cone_softness\": " + jnum(l.cone_softness) + "}";
+	}
+	o += "],\n \"cameras\": [";
+	for (int i = 0;; i++) {
+		bru_camera c;
+		if (!api->camera(sc, i, &c))
+			break;
+		o += std::string(i ? ",\n  " : "\n  ") + "{\"focal_length\": " + jnum(c.focal_length) +
+		     ", \"horizontal_aperture\": " + jnum(c.horizontal_aperture) + ", \"vertical_aperture\": " +
+		     jnum(c.vertical_aperture) + ", \"near\": " + jnum(c.near_clip) + ", \"far\": " + jnum(c.far_clip) +
+		     ", \"perspective\": " + std::to_string(c.perspective) + "}";
+	}
+	o += "]}\n";
+	fputs(o.c_str(), f);
+	fclose(f);
+	printf("scene %s: %d nodes, %d meshes, %d materials\n%s", path, info.node_count, info.mesh_count,
+	       info.material_count, info.report);
+	api->close(sc);
+	return 0;
+}
+
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
@@ -180,6 +295,8 @@ typedef const bru_capture_api *(*capture_api_fn)(char *, int);
 typedef const char *(*plugin_dir_fn)(void);
 typedef int (*dds_fn)(const wchar_t *, const wchar_t *, char *, int);
 typedef int (*stage_dump_fn)(const char *, const char *, char *, int);
+typedef const bru_scene_api *(*scene_api_fn)(char *, int);
+typedef int (*convert_fn)(const char *, const char *, char *, int);
 
 static std::wstring wide(const char *s)
 {
@@ -235,6 +352,33 @@ int main(int argc, char **argv)
 		g_step = "the stage dump";
 		int ok = stage_dump(argv[3], argv[4], err, int(sizeof(err)));
 		printf("%s  %s read through the bridge%s%s\n", ok ? "ok   " : "FAIL ", argv[3], ok ? "" : ": ", err);
+		return ok ? 0 : 1;
+	}
+	/* P12 round 6: a scene as the import reads it; a layer converted */
+	if (argc >= 5 && strcmp(argv[2], "--scene") == 0) {
+		scene_api_fn scene_api = (scene_api_fn)GetProcAddress(dll, "brb_usd_scene_api");
+		plugin_dir_fn plugin_dir = (plugin_dir_fn)GetProcAddress(dll, "brb_usd_plugin_dir");
+		char err[1024] = "";
+		const bru_scene_api *api = (scene_api && plugin_dir) ? scene_api(err, int(sizeof(err))) : nullptr;
+		if (!api) {
+			printf("FAIL  the bridge's scene reader (%s)\n", err);
+			return 1;
+		}
+		g_step = "reading the scene";
+		int r = dump_scene(api, plugin_dir(), argv[3], argv[4]);
+		printf("%s  %s read through the bridge\n", r == 0 ? "ok   " : "FAIL ", argv[3]);
+		return r == 0 ? 0 : 1;
+	}
+	if (argc >= 5 && strcmp(argv[2], "--convert") == 0) {
+		convert_fn conv = (convert_fn)GetProcAddress(dll, "brb_usd_convert");
+		if (!conv) {
+			printf("FAIL  the bridge lacks brb_usd_convert\n");
+			return 1;
+		}
+		char err[1024] = "";
+		g_step = "converting";
+		int ok = conv(argv[3], argv[4], err, int(sizeof(err)));
+		printf("%s  %s written as %s%s%s\n", ok ? "ok   " : "FAIL ", argv[3], argv[4], ok ? "" : ": ", err);
 		return ok ? 0 : 1;
 	}
 	version_fn version = (version_fn)GetProcAddress(dll, "brb_usd_version");
@@ -304,13 +448,26 @@ int main(int argc, char **argv)
 {
 	if (argc < 2) {
 		fprintf(stderr, "usage: p12_usd_check <folder> [<plugin folder> [<capture> <dump.json>]]\n"
-		                "       p12_usd_check --dump <plugin folder> <stage> <dump.json>\n");
+		                "       p12_usd_check --dump <plugin folder> <stage> <dump.json>\n"
+		                "       p12_usd_check --scene <plugin folder> <file> <scene.json>\n"
+		                "       p12_usd_check --convert <plugin folder> <src> <dst>\n");
 		return 1;
 	}
 	if (argc >= 5 && strcmp(argv[1], "--dump") == 0) {
 		char err[1024] = "";
 		int ok = bru_stage_dump(argv[2], argv[3], argv[4], err, int(sizeof(err)));
 		printf("%s  %s read%s%s\n", ok ? "ok   " : "FAIL ", argv[3], ok ? "" : ": ", err);
+		return ok ? 0 : 1;
+	}
+	if (argc >= 5 && strcmp(argv[1], "--scene") == 0) {
+		int r = dump_scene(bru_scene_get_api(), argv[2], argv[3], argv[4]);
+		printf("%s  %s read\n", r == 0 ? "ok   " : "FAIL ", argv[3]);
+		return r == 0 ? 0 : 1;
+	}
+	if (argc >= 5 && strcmp(argv[1], "--convert") == 0) {
+		char err[1024] = "";
+		int ok = bru_stage_convert(argv[2], argv[3], argv[4], err, int(sizeof(err)));
+		printf("%s  %s written as %s%s%s\n", ok ? "ok   " : "FAIL ", argv[3], argv[4], ok ? "" : ": ", err);
 		return ok ? 0 : 1;
 	}
 	int failed = 0;

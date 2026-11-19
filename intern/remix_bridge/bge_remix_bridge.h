@@ -64,8 +64,10 @@ extern "C" {
  * 13: P12 (the bridge's OpenUSD: brb_usd_*).
  * 14: P12 round 2 (RTX Remix captures read: brb_usd_capture_api,
  *     brb_usd_plugin_dir; brb_dds_to_png).
- * 15: P12 round 3 (any stage written out as JSON: brb_usd_stage_dump). */
-#define BRB_ABI_VERSION 15
+ * 15: P12 round 3 (any stage written out as JSON: brb_usd_stage_dump).
+ * 16: P12 round 6 (any tool's scene read: brb_usd_scene_api; a layer
+ *     written in another format: brb_usd_convert). */
+#define BRB_ABI_VERSION 16
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */
@@ -569,6 +571,17 @@ BRB_API int brb_dds_to_png(const wchar_t *dds, const wchar_t *png, char *r_error
  * OpenUSD composes it, written as JSON to json_path (usd/bge_remix_usd.h
  * bru_stage_dump). Returns 1, or 0 with the reason in r_error. */
 BRB_API int brb_usd_stage_dump(const char *path, const char *json_path, char *r_error, int max_bytes);
+
+/* Interface version 16 (P12 round 6): the scene reader of bge_remix_usd.dll
+ * (usd/bge_remix_usd.h bru_scene_api: File > Import > Universal Scene
+ * Description), loading the DLL first; NULL, with the reason in r_error,
+ * when it cannot. Its open() takes brb_usd_plugin_dir(). */
+BRB_API const bru_scene_api *brb_usd_scene_api(char *r_error, int max_bytes);
+
+/* The layer at src (UTF-8) written again at dst in the format dst's
+ * extension names (bru_stage_convert: the export's .usdc). Returns 1, or 0
+ * with the reason in r_error. */
+BRB_API int brb_usd_convert(const char *src, const char *dst, char *r_error, int max_bytes);
 
 #ifdef __cplusplus
 }

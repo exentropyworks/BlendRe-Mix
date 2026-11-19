@@ -45,8 +45,9 @@ extern "C" {
 /* Bumped whenever a function below changes; the bridge refuses a
  * bge_remix_usd.dll with another value. 1: P12 round 1. 2: P12 round 2
  * (reading RTX Remix captures: bru_capture_get_api). 3: P12 round 3 (any
- * stage written out as JSON: bru_stage_dump). */
-#define BRU_ABI_VERSION 3
+ * stage written out as JSON: bru_stage_dump). 4: P12 round 6 (any tool's
+ * scene read: bru_scene_get_api; text to binary: bru_stage_convert). */
+#define BRU_ABI_VERSION 4
 
 BRU_API int bru_abi_version(void);
 
@@ -189,6 +190,121 @@ BRU_API const bru_capture_api *bru_capture_get_api(void);
  * bounds; relationships' targets). Returns 1, or 0 with the reason. */
 BRU_API int bru_stage_dump(const char *plugin_dir, const char *path, const char *json_path, char *r_error,
                            int max_bytes);
+
+/* ------------------------------------------------------------------------- */
+/* P12 round 6: any tool's USD scene (usd_scene.cpp), for File > Import >
+ * Universal Scene Description.
+ *
+ * The stage as OpenUSD composes it (references, payloads, instancing), as a
+ * tree of nodes: transforms (Xform and other transformable prims), meshes,
+ * lights and cameras. Scopes and untyped prims are only groups: what is
+ * under them hangs from the nearest node above. Instances are expanded:
+ * each instance's meshes are nodes of their own sharing one mesh (that of
+ * the prototype). Everything is in the stage's own units and up axis;
+ * matrices are local to world (USD's rows: the translation in matrix[12..14]).
+ * Whatever is not read (curves, points, point instancers, volumes, other
+ * shaders) is named in the report. Pointers stay valid until close. */
+
+typedef struct bru_scene bru_scene;
+
+enum {
+	BRU_NODE_XFORM = 0,
+	BRU_NODE_MESH = 1,
+	BRU_NODE_LIGHT = 2,
+	BRU_NODE_CAMERA = 3,
+};
+
+typedef struct bru_scene_info {
+	double meters_per_unit;
+	int z_up;
+	double time;
+	int node_count, mesh_count, material_count;
+	const char *default_prim;   /* "" if none */
+	const char *creator;        /* the root layer's customLayerData creator ("" if none) */
+	const char *report;         /* what was left out, one line each ("" if nothing) */
+	int usd_errors;             /* OpenUSD's own complaints while reading (in the report too) */
+} bru_scene_info;
+
+typedef struct bru_node {
+	const char *name;           /* the prim's displayName, else its name */
+	const char *prim_name;
+	const char *path;           /* where it is in the stage (an instance's: its proxy path) */
+	int parent;                 /* the node it hangs from, -1: none (nodes come parents first) */
+	int kind;                   /* BRU_NODE_* */
+	int index;                  /* a mesh: its mesh; a light: its light; a camera: its camera */
+	int visible;
+	int material;               /* a mesh: the material bound to all of it, -1: none */
+	int subset_count;           /* a mesh: its mesh's subsets */
+	const int *subset_materials;/* the material bound to each subset here, -1: none */
+	double matrix[16];          /* local to world */
+} bru_node;
+
+typedef struct bru_scene_mesh {
+	const char *name;           /* the prim's (the prototype's, for an instance) */
+	int vertex_count, face_count, corner_count;
+	const float *points;
+	const int *face_sizes;
+	const int *corners;
+	const float *normals;       /* corner_count * 3, or NULL */
+	const float *uvs;           /* corner_count * 2, or NULL */
+	const char *uv_name;        /* the UVs' primvar (st, or the first texCoord2f one) */
+	const float *colors;        /* corner_count * 4, or NULL */
+	int double_sided;
+	int subset_count;           /* GeomSubsets of the materialBind family */
+} bru_scene_mesh;
+
+typedef struct bru_subset {
+	const char *name;
+	int face_count;
+	const int *faces;
+} bru_subset;
+
+typedef struct bru_scene_material {
+	const char *name;           /* displayName, else the prim's name */
+	const char *path;
+	int preview;                /* OpenUSD finds a UsdPreviewSurface as its surface */
+	int aperture;               /* OpenUSD finds an AperturePBR MDL as its mdl surface */
+	const char *mdl;            /* the MDL's sourceAsset, its sub-identifier */
+	const char *sub_identifier;
+	const char *other;          /* another shader found as its surface (its id), "" if none */
+	int preview_input_count, aperture_input_count;
+} bru_scene_material;
+
+/* a shader's input; a UsdPreviewSurface input wired to a UsdUVTexture comes
+ * as that texture's file (kind BRU_VALUE_ASSET) and the output read */
+typedef struct bru_shader_input {
+	const char *name;           /* without "inputs:" */
+	int kind;                   /* BRU_VALUE_* */
+	double v[4];
+	const char *text;           /* a token, or an asset as written */
+	const char *path;           /* an asset: its absolute path (resolved, or where it would be) */
+	int exists;
+	const char *output;         /* a texture: rgb, r, g, b, a ("" for a value) */
+	const char *color_space;    /* a texture's sourceColorSpace ("" if not given) */
+} bru_shader_input;
+
+typedef struct bru_scene_api {
+	int abi;                    /* BRU_ABI_VERSION */
+	bru_scene *(*open)(const char *plugin_dir, const char *path, char *r_error, int max_bytes);
+	void (*close)(bru_scene *sc);
+	void (*info)(const bru_scene *sc, bru_scene_info *r_info);
+	int (*node)(const bru_scene *sc, int index, bru_node *r_node);
+	int (*mesh)(const bru_scene *sc, int index, bru_scene_mesh *r_mesh);
+	int (*subset)(const bru_scene *sc, int mesh, int index, bru_subset *r_subset);
+	int (*material)(const bru_scene *sc, int index, bru_scene_material *r_material);
+	/* which: 0 the preview surface's inputs, 1 AperturePBR's */
+	int (*material_input)(const bru_scene *sc, int material, int which, int index, bru_shader_input *r_input);
+	int (*light)(const bru_scene *sc, int index, bru_light *r_light);
+	int (*camera)(const bru_scene *sc, int index, bru_camera *r_camera);
+} bru_scene_api;
+
+BRU_API const bru_scene_api *bru_scene_get_api(void);
+
+/* P12 round 6: the layer at src written again at dst, in the format dst's
+ * extension names (.usdc binary; .usd OpenUSD's default, binary; .usda
+ * text). Returns 1, or 0 with the reason. */
+BRU_API int bru_stage_convert(const char *plugin_dir, const char *src, const char *dst, char *r_error,
+                              int max_bytes);
 
 #ifdef __cplusplus
 }

@@ -993,6 +993,251 @@ static PyObject *brmx_usd_dump(PyObject *UNUSED_self, PyObject *args)
 	return Py_BuildValue("(Os)", ok ? Py_True : Py_False, err);
 }
 
+/* BGE-Remix P12 round 6: any tool's scene (File > Import > Universal Scene
+ * Description) */
+
+static PyObject *shader_input(const bru_shader_input *in)
+{
+	return Py_BuildValue("{s:i,s:(dddd),s:s,s:s,s:O,s:s,s:s}", "kind", in->kind, "v", in->v[0], in->v[1], in->v[2],
+	                     in->v[3], "text", in->text, "path", in->path, "exists", in->exists ? Py_True : Py_False,
+	                     "output", in->output, "color_space", in->color_space);
+}
+
+PyDoc_STRVAR(brmx_usd_read_doc,
+".. function:: usd_read(path)\n"
+"\n"
+"   BGE-Remix P12 round 6: read any tool's USD scene with the bridge's\n"
+"   OpenUSD, as it composes it (references, instancing), in the file's own\n"
+"   units and up axis (USD's matrices: rows, 16 numbers, local to world).\n"
+"\n"
+"   :return: dict with meters_per_unit, z_up, default_prim, creator, report\n"
+"      (text, a line each), usd_errors, nodes (name, path, parent, kind: 0\n"
+"      transform, 1 mesh, 2 light, 3 camera; index, visible, material,\n"
+"      subset_materials, matrix), meshes (name, vertices, faces, corners,\n"
+"      points, face_sizes, corners_data, normals, uvs, colors: bytes of\n"
+"      float32/int32 or None; uv_name, double_sided, subsets: name, faces),\n"
+"      materials (name, path, preview, aperture, mdl, sub_identifier, other,\n"
+"      preview_inputs, aperture_inputs: name to kind, v, text, path, exists,\n"
+"      output, color_space), lights (as capture_read's), cameras.\n"
+"   :raises RuntimeError: when it cannot be read.\n");
+static PyObject *brmx_usd_read(PyObject *UNUSED_self, PyObject *args)
+{
+	const char *path;
+	char err[2048] = "";
+	const bru_scene_api *api;
+	bru_scene *sc;
+	bru_scene_info info;
+	PyObject *out, *list;
+	int i, k;
+
+	if (!PyArg_ParseTuple(args, "s:usd_read", &path)) {
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		PyErr_SetString(PyExc_RuntimeError, BRMX_bridge_error());
+		return NULL;
+	}
+	api = B->usd_scene_api(err, (int)sizeof(err));
+	if (api == NULL) {
+		PyErr_SetString(PyExc_RuntimeError, err);
+		return NULL;
+	}
+	Py_BEGIN_ALLOW_THREADS
+	sc = api->open(B->usd_plugin_dir(), path, err, (int)sizeof(err));
+	Py_END_ALLOW_THREADS
+	if (sc == NULL) {
+		PyErr_SetString(PyExc_RuntimeError, err);
+		return NULL;
+	}
+	api->info(sc, &info);
+	out = PyDict_New();
+	dict_set(out, "meters_per_unit", PyFloat_FromDouble(info.meters_per_unit));
+	dict_set(out, "z_up", PyBool_FromLong(info.z_up));
+	dict_set(out, "default_prim", PyUnicode_FromString(info.default_prim));
+	dict_set(out, "creator", PyUnicode_FromString(info.creator));
+	dict_set(out, "report", PyUnicode_DecodeUTF8(info.report, (Py_ssize_t)strlen(info.report), "replace"));
+	dict_set(out, "usd_errors", PyLong_FromLong(info.usd_errors));
+
+	list = PyList_New(0);
+	for (i = 0; i < info.node_count; i++) {
+		bru_node n;
+		PyObject *d, *subs;
+		if (!api->node(sc, i, &n)) {
+			continue;
+		}
+		d = PyDict_New();
+		dict_set(d, "name", PyUnicode_FromString(n.name));
+		dict_set(d, "prim_name", PyUnicode_FromString(n.prim_name));
+		dict_set(d, "path", PyUnicode_FromString(n.path));
+		dict_set(d, "parent", PyLong_FromLong(n.parent));
+		dict_set(d, "kind", PyLong_FromLong(n.kind));
+		dict_set(d, "index", PyLong_FromLong(n.index));
+		dict_set(d, "visible", PyBool_FromLong(n.visible));
+		dict_set(d, "material", PyLong_FromLong(n.material));
+		subs = PyList_New(0);
+		for (k = 0; k < n.subset_count; k++) {
+			PyObject *v = PyLong_FromLong(n.subset_materials[k]);
+			PyList_Append(subs, v);
+			Py_DECREF(v);
+		}
+		dict_set(d, "subset_materials", subs);
+		dict_set(d, "matrix", matrix_tuple(n.matrix));
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "nodes", list);
+
+	list = PyList_New(0);
+	for (i = 0; i < info.mesh_count; i++) {
+		bru_scene_mesh m;
+		PyObject *d, *subs;
+		if (!api->mesh(sc, i, &m)) {
+			continue;
+		}
+		d = PyDict_New();
+		dict_set(d, "name", PyUnicode_FromString(m.name));
+		dict_set(d, "vertices", PyLong_FromLong(m.vertex_count));
+		dict_set(d, "faces", PyLong_FromLong(m.face_count));
+		dict_set(d, "corners", PyLong_FromLong(m.corner_count));
+		dict_set(d, "points", bytes_or_none(m.points, sizeof(float) * 3 * (size_t)m.vertex_count));
+		dict_set(d, "face_sizes", bytes_or_none(m.face_sizes, sizeof(int) * (size_t)m.face_count));
+		dict_set(d, "corners_data", bytes_or_none(m.corners, sizeof(int) * (size_t)m.corner_count));
+		dict_set(d, "normals", bytes_or_none(m.normals, sizeof(float) * 3 * (size_t)m.corner_count));
+		dict_set(d, "uvs", bytes_or_none(m.uvs, sizeof(float) * 2 * (size_t)m.corner_count));
+		dict_set(d, "uv_name", PyUnicode_FromString(m.uv_name));
+		dict_set(d, "colors", bytes_or_none(m.colors, sizeof(float) * 4 * (size_t)m.corner_count));
+		dict_set(d, "double_sided", PyBool_FromLong(m.double_sided));
+		subs = PyList_New(0);
+		for (k = 0; k < m.subset_count; k++) {
+			bru_subset s;
+			if (api->subset(sc, i, k, &s)) {
+				PyObject *faces = PyList_New(s.face_count), *sd;
+				int j;
+				for (j = 0; j < s.face_count; j++) {
+					PyList_SET_ITEM(faces, j, PyLong_FromLong(s.faces[j]));
+				}
+				sd = PyDict_New();
+				dict_set(sd, "name", PyUnicode_FromString(s.name));
+				dict_set(sd, "faces", faces);
+				PyList_Append(subs, sd);
+				Py_DECREF(sd);
+			}
+		}
+		dict_set(d, "subsets", subs);
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "meshes", list);
+
+	list = PyList_New(0);
+	for (i = 0; i < info.material_count; i++) {
+		bru_scene_material mt;
+		PyObject *d;
+		int which;
+		if (!api->material(sc, i, &mt)) {
+			continue;
+		}
+		d = PyDict_New();
+		dict_set(d, "name", PyUnicode_FromString(mt.name));
+		dict_set(d, "path", PyUnicode_FromString(mt.path));
+		dict_set(d, "preview", PyBool_FromLong(mt.preview));
+		dict_set(d, "aperture", PyBool_FromLong(mt.aperture));
+		dict_set(d, "mdl", PyUnicode_FromString(mt.mdl));
+		dict_set(d, "sub_identifier", PyUnicode_FromString(mt.sub_identifier));
+		dict_set(d, "other", PyUnicode_FromString(mt.other));
+		for (which = 0; which < 2; which++) {
+			const int count = which ? mt.aperture_input_count : mt.preview_input_count;
+			PyObject *inputs = PyDict_New();
+			for (k = 0; k < count; k++) {
+				bru_shader_input in;
+				if (api->material_input(sc, i, which, k, &in)) {
+					dict_set(inputs, in.name, shader_input(&in));
+				}
+			}
+			dict_set(d, which ? "aperture_inputs" : "preview_inputs", inputs);
+		}
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "materials", list);
+
+	list = PyList_New(0);
+	for (i = 0;; i++) {
+		bru_light l;
+		PyObject *d;
+		if (!api->light(sc, i, &l)) {
+			break;
+		}
+		d = PyDict_New();
+		dict_set(d, "hash", hex_hash(l.hash));
+		dict_set(d, "name", PyUnicode_FromString(l.name));
+		dict_set(d, "kind", PyUnicode_FromString(light_kind(l.kind)));
+		dict_set(d, "color", Py_BuildValue("(fff)", l.color[0], l.color[1], l.color[2]));
+		dict_set(d, "intensity", PyFloat_FromDouble(l.intensity));
+		dict_set(d, "exposure", PyFloat_FromDouble(l.exposure));
+		dict_set(d, "radius", PyFloat_FromDouble(l.radius));
+		dict_set(d, "angle", PyFloat_FromDouble(l.angle));
+		dict_set(d, "width", PyFloat_FromDouble(l.width));
+		dict_set(d, "height", PyFloat_FromDouble(l.height));
+		dict_set(d, "length", PyFloat_FromDouble(l.length));
+		dict_set(d, "shaped", PyBool_FromLong(l.shaped));
+		dict_set(d, "cone_angle", PyFloat_FromDouble(l.cone_angle));
+		dict_set(d, "cone_softness", PyFloat_FromDouble(l.cone_softness));
+		dict_set(d, "focus", PyFloat_FromDouble(l.focus));
+		dict_set(d, "matrix", matrix_tuple(l.matrix));
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "lights", list);
+
+	list = PyList_New(0);
+	for (i = 0;; i++) {
+		bru_camera c;
+		PyObject *d;
+		if (!api->camera(sc, i, &c)) {
+			break;
+		}
+		d = PyDict_New();
+		dict_set(d, "matrix", matrix_tuple(c.matrix));
+		dict_set(d, "focal_length", PyFloat_FromDouble(c.focal_length));
+		dict_set(d, "horizontal_aperture", PyFloat_FromDouble(c.horizontal_aperture));
+		dict_set(d, "vertical_aperture", PyFloat_FromDouble(c.vertical_aperture));
+		dict_set(d, "near", PyFloat_FromDouble(c.near_clip));
+		dict_set(d, "far", PyFloat_FromDouble(c.far_clip));
+		dict_set(d, "perspective", PyBool_FromLong(c.perspective));
+		PyList_Append(list, d);
+		Py_DECREF(d);
+	}
+	dict_set(out, "cameras", list);
+	api->close(sc);
+	return out;
+}
+
+PyDoc_STRVAR(brmx_usd_convert_doc,
+".. function:: usd_convert(src, dst)\n"
+"\n"
+"   BGE-Remix P12 round 6: the USD layer at src written again at dst, in the\n"
+"   format dst's extension names (.usdc binary, .usd binary, .usda text).\n"
+"\n"
+"   :return: (ok, error)\n");
+static PyObject *brmx_usd_convert(PyObject *UNUSED_self, PyObject *args)
+{
+	const char *src, *dst;
+	char err[1024] = "";
+	int ok;
+
+	if (!PyArg_ParseTuple(args, "ss:usd_convert", &src, &dst)) {
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		return Py_BuildValue("(Os)", Py_False, BRMX_bridge_error());
+	}
+	Py_BEGIN_ALLOW_THREADS
+	ok = B->usd_convert(src, dst, err, (int)sizeof(err));
+	Py_END_ALLOW_THREADS
+	return Py_BuildValue("(Os)", ok ? Py_True : Py_False, err);
+}
+
 PyDoc_STRVAR(brmx_dds_write_doc,
 ".. function:: dds_write(path, width, height, rgba, kind, top_first)\n"
 "\n"
@@ -1259,6 +1504,8 @@ static PyMethodDef brmx_methods[] = {
 	{"capture_read", (PyCFunction)brmx_capture_read, METH_VARARGS, brmx_capture_read_doc},
 	{"dds_to_png", (PyCFunction)brmx_dds_to_png, METH_VARARGS, brmx_dds_to_png_doc},
 	{"usd_dump", (PyCFunction)brmx_usd_dump, METH_VARARGS, brmx_usd_dump_doc},
+	{"usd_read", (PyCFunction)brmx_usd_read, METH_VARARGS, brmx_usd_read_doc},  /* round 6 */
+	{"usd_convert", (PyCFunction)brmx_usd_convert, METH_VARARGS, brmx_usd_convert_doc},
 	{"dds_write", (PyCFunction)brmx_dds_write, METH_VARARGS, brmx_dds_write_doc},
 	/* BGE-Remix P12 round 5 */
 	{"capture_fp", (PyCFunction)brmx_capture_fp, METH_VARARGS, brmx_capture_fp_doc},

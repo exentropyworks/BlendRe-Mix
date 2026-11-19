@@ -146,6 +146,8 @@ static int load_bridge(void)
 	BRIDGE_FN(usd_plugin_dir, "brb_usd_plugin_dir");
 	BRIDGE_FN(dds_to_png, "brb_dds_to_png");
 	BRIDGE_FN(usd_stage_dump, "brb_usd_stage_dump");
+	BRIDGE_FN(usd_scene_api, "brb_usd_scene_api");  /* P12 round 6 */
+	BRIDGE_FN(usd_convert, "brb_usd_convert");
 #undef BRIDGE_FN
 
 	/* Remix is shut down before the process ends, however it ends. */

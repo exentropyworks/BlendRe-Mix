@@ -174,6 +174,8 @@ class INFO_MT_file_import(Menu):
             self.layout.operator("wm.alembic_import", text="Alembic (.abc)")
         # BGE-Remix P12 (A2)
         self.layout.operator("import_scene.bge_remix_capture", text="RTX Remix Capture (.usd, .usda)")
+        # (B1): any tool's USD scene
+        self.layout.operator("import_scene.bge_remix_usd", text="Universal Scene Description (.usd, .usda, .usdc)")
 
 
 class INFO_MT_file_export(Menu):
@@ -189,6 +191,8 @@ class INFO_MT_file_export(Menu):
         self.layout.operator("export_scene.bge_remix_mod", text="RTX Remix Mod (.usda)")
         # (A4): the selected meshes for the RTX Remix Toolkit to ingest
         self.layout.operator("export_scene.bge_remix_asset", text="RTX Remix Asset (for the Toolkit)")
+        # (B1): the scene for other tools
+        self.layout.operator("export_scene.bge_remix_usd", text="Universal Scene Description (.usd, .usda, .usdc)")
 
 
 class INFO_MT_file_external_data(Menu):
