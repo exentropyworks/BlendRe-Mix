@@ -396,6 +396,8 @@ def import_capture(context, path, report):
     data = _bge_remix.capture_read(path)
     report.extend(data["report"])
     K, Kinv = capture_space(data["meters_per_unit"], data["z_up"])
+    from mathutils import Matrix
+    Sinv = Matrix.Scale(1.0 / K.to_scale()[0], 4)
     name = os.path.splitext(os.path.basename(path))[0]
     scene = bpy.data.scenes.new(name)
     scene.render.engine = context.scene.render.engine
@@ -433,10 +435,14 @@ def import_capture(context, path, report):
             continue
         ob = bpy.data.objects.new(l["name"], la)
         scene.objects.link(ob)
-        m = K * usd_matrix(l["matrix"]) * Kinv
+        # (round 6 fix 2) USD's rule: a light shines along its own -Z
+        # whatever the stage's up axis: its axes turn with the space (K M
+        # S^-1, S the scale of K), they are not re-mapped as a mesh's
+        # place is (K M K^-1, which turned a Y-up capture's lights 90
+        # degrees); the same for the camera
+        m = K * usd_matrix(l["matrix"]) * Sinv
         # a lamp's place and turn, not its scale (its size is in the lamp)
         loc, rot, _scale = m.decompose()
-        from mathutils import Matrix
         ob.matrix_world = Matrix.Translation(loc) * rot.to_matrix().to_4x4()
         ob[HASH] = l["hash"]
         ob[PLACE] = l["name"]
@@ -455,9 +461,8 @@ def import_capture(context, path, report):
             cd.type = 'ORTHO'
         ob = bpy.data.objects.new("Camera", cd)
         scene.objects.link(ob)
-        m = K * usd_matrix(cam["matrix"]) * Kinv
+        m = K * usd_matrix(cam["matrix"]) * Sinv
         loc, rot, _scale = m.decompose()
-        from mathutils import Matrix
         ob.matrix_world = Matrix.Translation(loc) * rot.to_matrix().to_4x4()
         scene.camera = ob
     scene["bge_remix_capture_counts"] = {"meshes": len(meshes), "objects": len(data["instances"]),

@@ -131,6 +131,8 @@ class Export:
         self.report = report
         self.K, self.Kinv = capture_space(self.cap.get("meters_per_unit", 1.0), self.cap.get("z_up", 1))
         self.s = self.K.to_scale()[0]
+        from mathutils import Matrix
+        self.S = Matrix.Scale(self.s, 4)
         import numpy as np
         self.k3inv = np.array([[self.Kinv[r][c] for c in range(3)] for r in range(3)], dtype=np.float64)
         self.mod = {"meters_per_unit": float(self.cap.get("meters_per_unit", 1.0)),
@@ -198,7 +200,9 @@ class Export:
             for c in added:
                 name = mt.ident(c.name, used)
                 if c.type == 'LAMP':
-                    m = self.Kinv * Pinv * rigid(c.matrix_world) * self.K
+                    # a light's axes turn with the space (USD's rule, round 6
+                    # fix 2: as the import reads them): K^-1 ... S
+                    m = self.Kinv * Pinv * rigid(c.matrix_world) * self.S
                     light = self.light(c, m, under_mesh=True)
                     if light is not None:
                         entry["lights"][name] = light
@@ -209,7 +213,7 @@ class Export:
                         entry["meshes"][name] = data
                         self.counts["added"] += 1
         for ob in self.lamps:
-            light = self.light(ob, self.Kinv * rigid(ob.matrix_world) * self.K, under_mesh=False)
+            light = self.light(ob, self.Kinv * rigid(ob.matrix_world) * self.S, under_mesh=False)
             if light is not None:
                 mod["lights"]["light_" + ob[HASH]] = light
                 self.counts["lights"] += 1

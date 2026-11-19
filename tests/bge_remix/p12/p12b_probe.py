@@ -129,6 +129,9 @@ def _remix(name, albedo, roughness, metallic, image=None):
 
 def _classic(name, colour, hardness=50):
     mat = bpy.data.materials.new(name)
+    # a Classic material (round 6 fix 2): a new one starts as P8's physical
+    # material (material.c BKE_material_physical_init)
+    mat["bge_physical"] = 0
     mat.diffuse_color = colour
     mat.diffuse_intensity = 0.8
     mat.specular_intensity = 0.5
@@ -350,6 +353,9 @@ def exchange(argv, out):
     folder = argv[2]
     shutil.rmtree(folder, ignore_errors=True)
     os.makedirs(folder, exist_ok=True)
+    # the startup file's own Camera, Cube and Lamp go first (round 6 fix 2:
+    # the room's camera came out as Camera.001)
+    clear()
     scene = make_room(folder)
     out["want"] = dump(scene)
     for ext in ("usda", "usdc"):

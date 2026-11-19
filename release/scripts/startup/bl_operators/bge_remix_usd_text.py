@@ -366,9 +366,36 @@ def _flat(v):
     return list(v or ())
 
 
+def written_order(scene):
+    """the scene with its objects in the order scene_text writes them (each
+    object, then what hangs from it), parents renumbered: the order the
+    reader gives them back"""
+    children = {}
+    for i, ob in enumerate(scene["objects"]):
+        children.setdefault(ob["parent"], []).append(i)
+    order = []
+
+    def walk(i):
+        order.append(i)
+        for c in children.get(i, ()):
+            walk(c)
+
+    for i in children.get(-1, ()):
+        walk(i)
+    new = {old: n for n, old in enumerate(order)}
+    objects = []
+    for i in order:
+        ob = dict(scene["objects"][i])
+        ob["parent"] = new[ob["parent"]] if ob["parent"] >= 0 else -1
+        objects.append(ob)
+    return dict(scene, objects=objects)
+
+
 def check_read(scene, read, tol=1e-6):
     """what is wrong with a scene this wrote, as the reader read it back: a
     list of lines, empty when it is as written"""
+    # (round 6 fix 2: compared in the order written, not the order gathered)
+    scene = written_order(scene)
     bad = []
     if "error" in read:
         return ["not read: %s" % read["error"]]
