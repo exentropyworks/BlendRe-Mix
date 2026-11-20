@@ -610,13 +610,21 @@ def _plain(v):
         return str(v)
 
 
+def _on_visible_layer(scene, ob):
+    """its base on one of the scene's visible layers (what the game plays)"""
+    for b in scene.object_bases:
+        if b.object == ob:
+            return any(x and y for x, y in zip(b.layers, scene.layers))
+    return False
+
+
 def physics_dump(scene):
     from mathutils import Euler, Vector
     gs = scene.game_settings
     d = {"engine": gs.physics_engine, "device": getattr(gs, "physx_device", None), "gravity": gs.physics_gravity,
          "objects": {}}
     for ob in scene.objects:
-        if not any(a and b for a, b in zip(ob.layers, scene.layers)):
+        if not _on_visible_layer(scene, ob):
             continue
         o = {"type": ob.type, "parent": ob.parent.name if ob.parent else None,
              "matrix": [list(r) for r in ob.matrix_world],
@@ -654,7 +662,7 @@ def standard_expect(scene):
     joints = {'BALL': "spherical", 'CONE_TWIST': "spherical", 'HINGE': "revolute", 'GENERIC_6_DOF': "d6"}
     E = {"bodies": [], "shapes": {}, "joints": {}, "frictions": {}, "roots": 0, "gravity": scene.game_settings.physics_gravity}
     for ob in scene.objects:
-        if not any(a and b for a, b in zip(ob.layers, scene.layers)) or ob.type != 'MESH':
+        if not _on_visible_layer(scene, ob) or ob.type != 'MESH':
             continue
         g = ob.game
         if g.physics_type not in ('STATIC', 'RIGID_BODY', 'DYNAMIC'):

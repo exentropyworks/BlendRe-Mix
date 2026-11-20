@@ -303,7 +303,12 @@ class SceneExport(Export):
         scene = self.scene
         # (round 7) what the game plays: the objects on the scene's visible
         # layers (a destructible's kept original is on layer 20)
-        hidden = [ob for ob in scene.objects if not any(a and b for a, b in zip(ob.layers, scene.layers))]
+        # (a base's layers, not the object's: an object linked into a scene
+        # that is not the active one keeps no layers of its own until the
+        # file is opened; the game plays the base's)
+        lay = {b.object.name: b.layers for b in scene.object_bases}
+        hidden = [ob for ob in scene.objects
+                  if not any(a and b for a, b in zip(lay.get(ob.name, ob.layers), scene.layers))]
         if hidden:
             self.note("%d object(s) on hidden layers left out (as the game leaves them out)" % len(hidden))
         obs = [ob for ob in scene.objects if (not self.selected_only or ob.select) and ob not in hidden]
@@ -1040,6 +1045,8 @@ class PhysicsImport:
             else:
                 self.note("%s: a collision shape with no object to hang from: left out" % sh["path"])
         for ob in self.made:
+            if ob.type not in ('MESH', 'EMPTY'):
+                continue  # (fix 1) lamps and cameras keep Blender's own physics settings
             ours = self.ours_of(ob)
             if "physicsType" in ours:
                 self.apply_ours(ob, ours, shapes.get(ob.name) or ())
