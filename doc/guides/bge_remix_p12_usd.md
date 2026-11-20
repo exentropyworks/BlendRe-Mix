@@ -166,8 +166,31 @@ selected objects, in metres and Z up, as text (.usda) or USD's binary form
   as left out.
 - **Cameras**: lens, sensor, clipping, perspective or orthographic.
 
+- **Physics** (in USD's standard physics schema, UsdPhysics, which
+  Omniverse, Isaac Sim and other PhysX tools read): the world's gravity;
+  Rigid Body and Dynamic objects as rigid bodies with their mass, Static
+  ones as colliders that do not move, No Collision as nothing; the
+  collision shape (Convex Hull and Triangle Mesh on the mesh itself; Box,
+  Sphere, Capsule, Cylinder and Cone as an invisible shape of that kind
+  under the object); compound bodies with their children as their shapes;
+  each first material's friction and bounce as a physics material; Rigid
+  Body Joints (Ball and Cone Twist as spherical joints, Hinge as a revolute
+  joint, Generic 6DOF as a joint with a limit for each axis it limits;
+  Disable Linked Collision kept); articulation roots (Fixed to the World
+  with its fixed joint to the world). What the standard has no place for
+  goes in attributes of BGE-Remix's own (bgeRemix:...), which other tools
+  keep and ignore: the physics type, bounds, margin, damping, speed limits,
+  Ghost, compound, locked axes, the engine (Bullet, PhysX CPU or GPU), every
+  joint limit as it was, and the settings of destructibles, fluid volumes
+  and ragdoll capsules. Soft bodies, characters, sensors, occluders and
+  navigation meshes are listed as left out. A Rigid Body Joint keeps no
+  motor in the file (a script sets it in the game), so none is written.
+- Only what the game plays: objects on hidden layers (such as a
+  destructible's kept original on layer 20) are left out, and listed.
+
 Before it reports success the file is read back the way the import reads
-it; if anything differs from what was written, the export says what.
+it, its physics with OpenUSD's own physics reader; if anything differs from
+what was written, the export says what.
 
 ## File > Import > Universal Scene Description
 
@@ -188,7 +211,22 @@ instancing included):
   Remix) and cameras;
 - a Y-up or centimetre file comes in Z up and in metres.
 
+- physics, read with OpenUSD's own physics reader (the one PhysX tools
+  use): rigid bodies (their mass, or their density times their shape's
+  volume when only that is given; 1000 kg/m³ when nothing is), static
+  colliders, collision shapes as Collision Bounds (a convex decomposition as
+  Convex Hull), physics materials as the material's friction and bounce,
+  gravity; revolute joints as Hinges, spherical ones as Ball or Cone Twist,
+  prismatic, fixed and D6 joints as Generic 6DOF, with their limits;
+  articulation roots, and a fixed joint from an articulation to the world as
+  its root's Fixed to the World. A file with physics but none on an object
+  makes it No Collision; a file with physics and no engine of ours comes in
+  with PhysX on the CPU (its physics is PhysX's). BGE-Remix's own files come
+  back with every setting as it was.
+
 Anything it cannot take is named in the Info log, never dropped silently:
 a shader network that is neither a preview surface nor AperturePBR (the
 material comes in plain), curves, points, point instancers, volumes and
-USD's own shapes (cube, sphere), dome lights.
+USD's own shapes (cube, sphere), dome lights; distance and custom joints,
+joint drives (motors), breaking forces, collision groups and filtered
+pairs, kinematic bodies (they come in Static) and starting speeds.

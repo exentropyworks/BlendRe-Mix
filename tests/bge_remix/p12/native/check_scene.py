@@ -8,7 +8,8 @@ checked; another tool's file and one with what the import does not take
       exchange.usda (and its pictures), other_tool.usda, unsupported.usda
   python check_scene.py check <folder>
       the reads in <folder>: exchange.json, exchange_c.json (exchange.usdc,
-      converted), other_tool.json, unsupported.json
+      converted), other_tool.json, unsupported.json; (round 7)
+      physics.json, physics_other.json
 
 The exchange scene: an empty with a table under it (its top a mesh, four
 legs parented to it, one named Leg.001), a two-material box with vertex
@@ -83,6 +84,67 @@ def the_scene():
     return {"root": "Exchange Room", "objects": objects, "materials": [gold, wood, red, blue]}
 
 
+def physics_scene():
+    """(round 7) the exchange scene with physics as the export writes it:
+    the table a 12 kg body (a box shape) with its legs as its compound
+    pieces (convex hulls, 1 kg each); the box Static (a triangle mesh, its
+    materials' friction); the sphere a 3 kg body (a sphere shape) hung from
+    the world by a Ball joint, the root of an articulation fixed to the
+    world; joints of every kind; gravity 9.81, PhysX on the CPU"""
+    sc = the_scene()
+    obs = sc["objects"]
+    idx = {ob["name"]: i for i, ob in enumerate(obs)}
+
+    def ours(kind, **kw):
+        return [("custom string", "bgeRemix:physicsType", kind)] + \
+            [("custom float", "bgeRemix:" + k, v) for k, v in sorted(kw.items())]
+
+    sc["materials"][1]["physics"] = {"static_friction": 0.7, "dynamic_friction": 0.7, "restitution": 0.1}
+    sc["materials"][2]["physics"] = {"static_friction": 0.4, "dynamic_friction": 0.4, "restitution": 0.6}
+    t = idx["Table"]
+    obs[t]["physics"] = {"apis": ["PhysicsRigidBodyAPI", "PhysicsMassAPI"],
+                         "attrs": [("float", "physics:mass", 12.0)] + ours("RIGID_BODY", mass=12.0),
+                         "collider": {"kind": "cube", "half": (0.6, 0.4, 0.025), "center": (0, 0, 0), "material": 1},
+                         "joints": []}
+    for name in ("Leg", "Leg.002", "Leg.003", "Leg.004"):
+        obs[idx[name]]["physics"] = {"apis": [], "attrs": ours("RIGID_BODY", mass=1.0),
+                                     "collider": {"kind": "mesh", "approximation": "convexHull", "material": 1,
+                                                  "mass": 1.0}}
+    b = idx["Box"]
+    obs[b]["physics"] = {"apis": [], "attrs": ours("STATIC"),
+                         "collider": {"kind": "mesh", "approximation": "none", "material": 2}}
+    s = idx["Sphere"]
+    q = (1.0, 0.0, 0.0, 0.0)
+    obs[s]["physics"] = {
+        "apis": ["PhysicsRigidBodyAPI", "PhysicsMassAPI"],
+        "attrs": [("float", "physics:mass", 3.0), ("rel", "bgeRemix:idprop:bge_destructible_of", t)] +
+        ours("RIGID_BODY", mass=3.0),
+        "collider": {"kind": "sphere", "radius": 0.5, "center": (0, 0, 0), "material": 0},
+        "joints": [
+            {"prim": "PhysicsSphericalJoint", "name": "Hang", "body0": s, "body1": None,
+             "attrs": [("point3f", "physics:localPos0", (0.0, 0.0, 0.5)), ("quatf", "physics:localRot0", q),
+                       ("point3f", "physics:localPos1", (2.0, -1.0, 1.5)), ("quatf", "physics:localRot1", q),
+                       ("uniform token", "physics:axis", "X")]},
+            {"prim": "PhysicsSphericalJoint", "name": "Cone", "body0": s, "body1": t,
+             "attrs": [("uniform token", "physics:axis", "X"), ("float", "physics:coneAngle0Limit", 30.0),
+                       ("float", "physics:coneAngle1Limit", 20.0)]},
+            {"prim": "PhysicsRevoluteJoint", "name": "Hinge", "body0": s, "body1": t,
+             "attrs": [("uniform token", "physics:axis", "X"), ("float", "physics:lowerLimit", 0.0),
+                       ("float", "physics:upperLimit", 100.0)]},
+            {"prim": "PhysicsJoint", "name": "Slider", "body0": s, "body1": t,
+             "apis": ["PhysicsLimitAPI:transX", "PhysicsLimitAPI:rotX"],
+             "attrs": [("float", "limit:transX:physics:low", -0.2), ("float", "limit:transX:physics:high", 0.4),
+                       ("float", "limit:rotX:physics:low", 0.0), ("float", "limit:rotX:physics:high", 0.0)]},
+            {"prim": "PhysicsFixedJoint", "name": "FixedBase", "body0": None, "body1": s,
+             "apis": ["PhysicsArticulationRootAPI"],
+             "attrs": [("point3f", "physics:localPos0", (2.0, -1.0, 1.0)), ("quatf", "physics:localRot0", q),
+                       ("custom bool", "bgeRemix:articulationBase", True)]}]}
+    sc["physics_scene"] = {"attrs": [("vector3f", "physics:gravityDirection", (0.0, 0.0, -1.0)),
+                                     ("float", "physics:gravityMagnitude", 9.81),
+                                     ("custom string", "bgeRemix:engine", "PHYSX_CPU")]}
+    return sc
+
+
 def write(folder):
     os.makedirs(os.path.join(folder, "textures"), exist_ok=True)
     uf.png(os.path.join(folder, "textures", "gold.png"), 4, 4, lambda x, y: (255, 200, 80, 255))
@@ -90,6 +152,9 @@ def write(folder):
         f.write(ut.scene_text(the_scene()))
     uf.other_tool(folder)
     uf.unsupported(os.path.join(folder))
+    with open(os.path.join(folder, "physics.usda"), "w") as f:
+        f.write(ut.scene_text(physics_scene()))
+    uf.physics_other(folder)
     print("written: exchange.usda, other_tool.usda, unsupported.usda in %s" % folder)
     return 0
 
@@ -173,6 +238,50 @@ def check(folder):
         if sorted(meshes) != sorted(["Floor", "Lift"]):
             bad.append("meshes %s came in" % meshes)
     result("what is not imported is named; the rest read", bad)
+
+    p = load("physics.json")
+    result("(round 7) the physics scene read back as written, by OpenUSD's physics reader too",
+           ut.check_read(physics_scene(), p))
+    ph = p.get("physics") or {}
+    bad = []
+    custom = ph.get("custom") or {}
+    sphere = [k for k in custom if k.endswith("/Sphere")]
+    if not sphere or custom[sphere[0]].get("idprop:bge_destructible_of") != ["/Exchange_Room/Furniture/Table"]:
+        bad.append("our attributes on the sphere: %s" % (custom.get(sphere[0]) if sphere else sorted(custom)[:5]))
+    if not [o for o in ut.objects_from_read(p) if o["name"] == "Sphere"]:
+        bad.append("the sphere's collider shape came in as an object of its own")
+    if [n for n in p.get("nodes") or () if n["name"] == ut.COLLIDER_NAME]:
+        bad.append("a collider shape read as a node")
+    if p.get("report"):
+        bad.append("reported: %r" % p.get("report"))
+    result("(round 7) our attributes read, collider shapes not made objects", bad)
+
+    o = load("physics_other.json")
+    ph = o.get("physics") or {}
+    bad = []
+    if "error" in o:
+        bad.append(o["error"])
+    else:
+        want = uf.PHYSICS_OTHER
+        bodies = sorted(b["path"] for b in ph.get("bodies") or ())
+        if bodies != sorted(want["bodies"]):
+            bad.append("bodies %s, not %s" % (bodies, sorted(want["bodies"])))
+        kinds = sorted((j["path"].rsplit("/", 1)[-1], j["kind"]) for j in ph.get("joints") or ())
+        if kinds != sorted(want["joints"].items()):
+            bad.append("joints %s, not %s" % (kinds, sorted(want["joints"].items())))
+        shapes = sorted((sh["path"].rsplit("/", 1)[-1], sh["kind"], sh.get("approximation", ""))
+                        for sh in ph.get("shapes") or ())
+        if shapes != sorted(want["shapes"]):
+            bad.append("shapes %s, not %s" % (shapes, sorted(want["shapes"])))
+        roots = [r for a in ph.get("articulations") or () for r in a["roots"]]
+        if not roots:
+            bad.append("no articulation found")
+        if not ph.get("groups"):
+            bad.append("no collision group found")
+        dens = [b.get("density") for b in ph.get("bodies") or () if b["path"].endswith("/Crate")]
+        if len(dens) != 1 or dens[0] is None or abs(dens[0] - want["crate_density"]) > 1e-9:
+            bad.append("the crate's density %s, not %s" % (dens, want["crate_density"]))
+    result("(round 7) another tool's physics file read by OpenUSD's physics reader", bad)
     print("%d failed" % failed)
     return failed
 

@@ -34,6 +34,7 @@
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/tf/errorMark.h"
 #include "pxr/usd/usd/attribute.h"
+#include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usdGeom/mesh.h"
 
 namespace brb {
@@ -66,6 +67,10 @@ struct Value {
 bool read_value(const PXR_NS::UsdAttribute &attr, double time, Value &in);
 
 void copy_matrix(const PXR_NS::GfMatrix4d &m, double r[16]);
+
+/* P12 round 7 (usd_physics.cpp): the stage's physics as JSON (bge_remix_usd.h
+ * bru_scene_api physics); what could not be read goes to r_notes */
+std::string physics_json(const PXR_NS::UsdStageRefPtr &stage, double time, std::string &r_notes);
 std::string errors_since(const PXR_NS::TfErrorMark &mark);
 
 }  // namespace usd

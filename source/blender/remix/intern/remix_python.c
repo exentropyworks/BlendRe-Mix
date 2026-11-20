@@ -1018,7 +1018,8 @@ PyDoc_STRVAR(brmx_usd_read_doc,
 "      float32/int32 or None; uv_name, double_sided, subsets: name, faces),\n"
 "      materials (name, path, preview, aperture, mdl, sub_identifier, other,\n"
 "      preview_inputs, aperture_inputs: name to kind, v, text, path, exists,\n"
-"      output, color_space), lights (as capture_read's), cameras.\n"
+"      output, color_space), lights (as capture_read's), cameras, physics\n"
+"      (round 7: the physics as JSON text, bge_remix_usd.h).\n"
 "   :raises RuntimeError: when it cannot be read.\n");
 static PyObject *brmx_usd_read(PyObject *UNUSED_self, PyObject *args)
 {
@@ -1209,6 +1210,11 @@ static PyObject *brmx_usd_read(PyObject *UNUSED_self, PyObject *args)
 		Py_DECREF(d);
 	}
 	dict_set(out, "cameras", list);
+	/* round 7: the physics, as JSON (bge_remix_usd.py parses it) */
+	{
+		const char *phys = api->physics(sc);
+		dict_set(out, "physics", PyUnicode_DecodeUTF8(phys, (Py_ssize_t)strlen(phys), "replace"));
+	}
 	api->close(sc);
 	return out;
 }

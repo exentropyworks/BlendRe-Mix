@@ -66,8 +66,10 @@ extern "C" {
  *     brb_usd_plugin_dir; brb_dds_to_png).
  * 15: P12 round 3 (any stage written out as JSON: brb_usd_stage_dump).
  * 16: P12 round 6 (any tool's scene read: brb_usd_scene_api; a layer
- *     written in another format: brb_usd_convert). */
-#define BRB_ABI_VERSION 16
+ *     written in another format: brb_usd_convert).
+ * 17: P12 round 7 (the scene reader gives the scene's physics:
+ *     bru_scene_api physics, bge_remix_usd.dll ABI 5). */
+#define BRB_ABI_VERSION 17
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */

@@ -46,8 +46,9 @@ extern "C" {
  * bge_remix_usd.dll with another value. 1: P12 round 1. 2: P12 round 2
  * (reading RTX Remix captures: bru_capture_get_api). 3: P12 round 3 (any
  * stage written out as JSON: bru_stage_dump). 4: P12 round 6 (any tool's
- * scene read: bru_scene_get_api; text to binary: bru_stage_convert). */
-#define BRU_ABI_VERSION 4
+ * scene read: bru_scene_get_api; text to binary: bru_stage_convert). 5: P12
+ * round 7 (the scene's physics: bru_scene_api physics). */
+#define BRU_ABI_VERSION 5
 
 BRU_API int bru_abi_version(void);
 
@@ -296,6 +297,14 @@ typedef struct bru_scene_api {
 	int (*material_input)(const bru_scene *sc, int material, int which, int index, bru_shader_input *r_input);
 	int (*light)(const bru_scene *sc, int index, bru_light *r_light);
 	int (*camera)(const bru_scene *sc, int index, bru_camera *r_camera);
+	/* P12 round 7: the stage's physics as JSON, read with OpenUSD's own
+	 * physics reader (usd_physics.cpp): scenes, bodies (with their MassAPI),
+	 * shapes, physics materials, joints (with their authored frames and the
+	 * world matrices of the prims they name), articulations, collision
+	 * groups, and every prim's bgeRemix:* attributes ("custom"); in the
+	 * stage's own units, angles in degrees. Collision shapes that are not
+	 * meshes (a Cube, a Capsule...) are read only here, not as nodes. */
+	const char *(*physics)(const bru_scene *sc);
 } bru_scene_api;
 
 BRU_API const bru_scene_api *bru_scene_get_api(void);

@@ -42,6 +42,7 @@ cameras. Y-up and centimetre files come in Z up and in metres. What it
 cannot take is listed in the report, never dropped silently.
 """
 
+import math
 import os
 import shutil
 
@@ -59,6 +60,15 @@ from .bge_remix_mod_text import ident
 LAST = {}
 EXTENSIONS = {'USDA': ".usda", 'USDC': ".usdc", 'USD': ".usd"}
 MESH_TYPES = ('MESH', 'CURVE', 'SURFACE', 'FONT')
+# (round 7) the physics USD takes; the ID properties of P11's features
+PHYSICS_KINDS = ('STATIC', 'DYNAMIC', 'RIGID_BODY')
+IDPROP_PREFIXES = ("bge_destructible", "bge_fluid", "bge_ragdoll")
+LIMIT_MIN = ("limit_min_x", "limit_min_y", "limit_min_z", "limit_angle_min_x", "limit_angle_min_y",
+             "limit_angle_min_z")
+LIMIT_MAX = ("limit_max_x", "limit_max_y", "limit_max_z", "limit_angle_max_x", "limit_angle_max_y",
+             "limit_angle_max_z")
+LIMIT_USE = ("use_limit_x", "use_limit_y", "use_limit_z", "use_angular_limit_x", "use_angular_limit_y",
+             "use_angular_limit_z")
 
 # an AperturePBR texture input, the preview surface's input it feeds, the
 # texture's output read there, and whether it is data (not colour)
@@ -291,7 +301,12 @@ class SceneExport(Export):
     def objects(self):
         """the objects to write, parents first"""
         scene = self.scene
-        obs = [ob for ob in scene.objects if not self.selected_only or ob.select]
+        # (round 7) what the game plays: the objects on the scene's visible
+        # layers (a destructible's kept original is on layer 20)
+        hidden = [ob for ob in scene.objects if not any(a and b for a, b in zip(ob.layers, scene.layers))]
+        if hidden:
+            self.note("%d object(s) on hidden layers left out (as the game leaves them out)" % len(hidden))
+        obs = [ob for ob in scene.objects if (not self.selected_only or ob.select) and ob not in hidden]
         chosen = set(ob.name for ob in obs)
 
         def depth(ob):
@@ -355,6 +370,231 @@ class SceneExport(Export):
             index[ob.name] = len(self.data["objects"])
             self.data["objects"].append(entry)
         self.counts["objects"] = len(self.data["objects"])
+        # (round 7) the physics, now every object has its index
+        self.index, self.world = index, world
+        for ob in obs:
+            if ob.name in index:
+                self.physics_of(ob, index[ob.name])
+        self.data["physics_scene"] = self.physics_scene()
+
+    # -- physics (round 7) ----------------------------------------------------
+
+    def physics_scene(self):
+        gs = self.scene.game_settings
+        engine = 'BULLET'
+        if gs.physics_engine == 'PHYSX':
+            engine = 'PHYSX_GPU' if getattr(gs, "physx_device", 'CPU') == 'GPU' else 'PHYSX_CPU'
+        return {"attrs": [("vector3f", "physics:gravityDirection", (0.0, 0.0, -1.0)),
+                          ("float", "physics:gravityMagnitude", float(gs.physics_gravity)),
+                          ("custom string", "bgeRemix:engine", engine)]}
+
+    def compound_parent(self, ob):
+        """the body ob is a piece of: its parent's, when both are compound
+        (BGE's compound: the children's shapes are the parent's)"""
+        g = ob.game
+        p = ob.parent
+        if p is None or not g.use_collision_compound or p.name not in self.index:
+            return None
+        if p.game.use_collision_compound and p.game.physics_type in PHYSICS_KINDS:
+            return p
+        return None
+
+    def physics_of(self, ob, i):
+        entry = self.data["objects"][i]
+        g = ob.game
+        kind = g.physics_type
+        if kind not in PHYSICS_KINDS:
+            if kind not in ('NO_COLLISION',):
+                self.note("%s: its physics (%s) is left out (USD has no %s)" % (
+                    ob.name, kind.replace("_", " ").title(), kind.replace("_", " ").lower()))
+            return
+        if entry["kind"] not in ("MESH", "XFORM"):
+            return
+        piece = self.compound_parent(ob) is not None
+        body = kind in ('RIGID_BODY', 'DYNAMIC') and not piece
+        apis, attrs = [], []
+        if body:
+            apis += ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+            attrs.append(("float", "physics:mass", float(g.mass)))
+        art = getattr(ob, "bge_articulation", 'NONE')
+        if body and art == 'FREE':
+            apis.append("PhysicsArticulationRootAPI")
+        # ours: what BGE has and UsdPhysics has not
+        attrs += [("custom string", "bgeRemix:physicsType", kind),
+                  ("custom bool", "bgeRemix:useBounds", bool(g.use_collision_bounds)),
+                  ("custom string", "bgeRemix:bounds", g.collision_bounds_type),
+                  ("custom float", "bgeRemix:margin", float(g.collision_margin)),
+                  ("custom float", "bgeRemix:radius", float(g.radius)),
+                  ("custom float", "bgeRemix:mass", float(g.mass)),
+                  ("custom float", "bgeRemix:damping", float(g.damping)),
+                  ("custom float", "bgeRemix:rotationDamping", float(g.rotation_damping)),
+                  ("custom float", "bgeRemix:velocityMin", float(g.velocity_min)),
+                  ("custom float", "bgeRemix:velocityMax", float(g.velocity_max)),
+                  ("custom bool", "bgeRemix:ghost", bool(g.use_ghost)),
+                  ("custom bool", "bgeRemix:compound", bool(g.use_collision_compound)),
+                  ("custom float3", "bgeRemix:lockLocation",
+                   tuple(1.0 if getattr(g, "lock_location_" + a) else 0.0 for a in "xyz")),
+                  ("custom float3", "bgeRemix:lockRotation",
+                   tuple(1.0 if getattr(g, "lock_rotation_" + a) else 0.0 for a in "xyz"))]
+        if art in ('FREE', 'FIXED'):
+            attrs.append(("custom string", "bgeRemix:articulation", art))
+        # P11's destructibles, fluid volumes and ragdoll capsules: their ID
+        # properties as they are (one naming an object: a relationship)
+        for key in sorted(ob.keys()):
+            if not key.startswith(IDPROP_PREFIXES):
+                continue
+            v = ob[key]
+            name = "bgeRemix:idprop:" + key
+            if isinstance(v, str):
+                if v in self.index:
+                    attrs.append(("rel", name, self.index[v]))
+                else:
+                    attrs.append(("custom string", name, v))
+            elif isinstance(v, bool):
+                attrs.append(("custom bool", name, v))
+            elif isinstance(v, int):
+                attrs.append(("custom int", name, v))
+            elif isinstance(v, float):
+                attrs.append(("custom float", name, v))
+            elif hasattr(v, "to_list") or isinstance(v, (list, tuple)):
+                vals = list(v.to_list() if hasattr(v, "to_list") else v)
+                if all(isinstance(x, (int, float)) for x in vals):
+                    attrs.append(("custom float[]", name, [float(x) for x in vals]))
+        phys = {"apis": apis, "attrs": attrs, "joints": []}
+        # the shape
+        if entry["kind"] == "MESH":
+            phys["collider"] = self.collider_of(ob, entry, body or piece)
+        entry["physics"] = phys
+        for con in ob.constraints:
+            if con.type == 'RIGID_BODY_JOINT':
+                j = self.joint_of(ob, i, con)
+                if j is not None:
+                    phys["joints"].append(j)
+        if art == 'FIXED' and body:
+            phys["joints"].append(self.fixed_base(ob, i))
+
+    def collider_of(self, ob, entry, moving):
+        g = ob.game
+        # BGE's friction and bounce: the first material's; on the material
+        # the mesh is drawn with (one only named here would not be bound)
+        mats = [s.material for s in ob.material_slots if s.material is not None]
+        mat = self.material_index.get(mats[0].name) if mats else None
+        if mat is not None:
+            m = mats[0]
+            self.data["materials"][mat]["physics"] = {"static_friction": float(m.physics.friction),
+                                                      "dynamic_friction": float(m.physics.friction),
+                                                      "restitution": float(m.physics.elasticity)}
+        c = {"material": mat}
+        if self.compound_parent(ob) is not None:
+            c["mass"] = float(g.mass)
+        bounds = g.collision_bounds_type if g.use_collision_bounds else ('SPHERE' if moving else 'TRIANGLE_MESH')
+        pts = entry["mesh"]["points"]
+        lo = [min(p[k] for p in pts) for k in range(3)]
+        hi = [max(p[k] for p in pts) for k in range(3)]
+        centre = tuple((a + b) * 0.5 for a, b in zip(lo, hi))
+        half = tuple(max((b - a) * 0.5, 1e-6) for a, b in zip(lo, hi))
+        if bounds == 'TRIANGLE_MESH':
+            c.update(kind="mesh", approximation="none")
+        elif bounds == 'CONVEX_HULL':
+            c.update(kind="mesh", approximation="convexHull")
+        elif bounds == 'BOX':
+            c.update(kind="cube", half=half, center=centre)
+        elif bounds == 'SPHERE':
+            # (BGE's sphere: its Radius, about the object's origin)
+            c.update(kind="sphere", radius=float(g.radius), center=(0.0, 0.0, 0.0))
+        else:
+            r = max(half[0], half[1])
+            h = half[2] * 2.0
+            kind = {'CAPSULE': "capsule", 'CYLINDER': "cylinder", 'CONE': "cone"}[bounds]
+            c.update(kind=kind, radius=r, height=max(h - 2.0 * r, 0.0) if kind == "capsule" else h, axis="Z",
+                     center=centre)
+        return c
+
+    def joint_of(self, ob, i, con):
+        from mathutils import Euler, Vector
+        kind = con.pivot_type
+        prims = {'BALL': "PhysicsSphericalJoint", 'HINGE': "PhysicsRevoluteJoint",
+                 'CONE_TWIST': "PhysicsSphericalJoint", 'GENERIC_6_DOF': "PhysicsJoint"}
+        if kind not in prims:
+            self.note("%s: its %s joint %s is left out (USD has none like it)" % (ob.name, kind.lower(), con.name))
+            return None
+        target = con.target
+        if target is not None and target.name not in self.index:
+            self.note("%s: its joint %s's target %s is not exported: joined to the world instead" % (
+                ob.name, con.name, target.name))
+            target = None
+        W0 = self.world[i]
+        pivot = Vector((con.pivot_x, con.pivot_y, con.pivot_z))
+        R0 = Euler((con.axis_x, con.axis_y, con.axis_z), 'XYZ').to_matrix()
+        frame_world_rot = W0.to_3x3().normalized() * R0
+        p_world = W0 * pivot
+        if target is not None:
+            W1 = self.world[self.index[target.name]]
+            p1 = W1.inverted() * p_world
+            r1 = (W1.to_3x3().normalized().inverted() * frame_world_rot).to_quaternion()
+        else:
+            p1 = p_world
+            r1 = frame_world_rot.to_quaternion()
+        r0 = R0.to_quaternion()
+        attrs = [("point3f", "physics:localPos0", tuple(pivot)),
+                 ("quatf", "physics:localRot0", (r0.w, r0.x, r0.y, r0.z)),
+                 ("point3f", "physics:localPos1", tuple(p1)),
+                 ("quatf", "physics:localRot1", (r1.w, r1.x, r1.y, r1.z)),
+                 ("bool", "physics:collisionEnabled", not con.use_linked_collision),
+                 ("custom string", "bgeRemix:pivotType", kind),
+                 ("custom string", "bgeRemix:name", con.name),
+                 ("custom float3", "bgeRemix:pivot", tuple(pivot)),
+                 ("custom float3", "bgeRemix:axis", (con.axis_x, con.axis_y, con.axis_z)),
+                 # every limit as BGE keeps it (the standard has the ones in use)
+                 ("custom float[]", "bgeRemix:limitMin", [getattr(con, n) for n in LIMIT_MIN]),
+                 ("custom float[]", "bgeRemix:limitMax", [getattr(con, n) for n in LIMIT_MAX]),
+                 ("custom float[]", "bgeRemix:limitUse", [1.0 if getattr(con, n) else 0.0 for n in LIMIT_USE])]
+        apis = []
+        deg = math.degrees
+        if kind == 'HINGE':
+            attrs.append(("uniform token", "physics:axis", "X"))
+            if con.use_angular_limit_x:
+                attrs += [("float", "physics:lowerLimit", deg(con.limit_angle_min_x)),
+                          ("float", "physics:upperLimit", deg(con.limit_angle_max_x))]
+        elif kind in ('BALL', 'CONE_TWIST'):
+            attrs.append(("uniform token", "physics:axis", "X"))
+            if kind == 'CONE_TWIST':
+                if con.use_angular_limit_y:
+                    attrs.append(("float", "physics:coneAngle0Limit", deg(con.limit_angle_max_y)))
+                if con.use_angular_limit_z:
+                    attrs.append(("float", "physics:coneAngle1Limit", deg(con.limit_angle_max_z)))
+                if con.use_angular_limit_x:
+                    attrs.append(("custom float2", "bgeRemix:twistLimit",
+                                  (deg(con.limit_angle_min_x), deg(con.limit_angle_max_x))))
+        else:
+            for axis, use, lo, hi, angular in (
+                    ("transX", con.use_limit_x, con.limit_min_x, con.limit_max_x, False),
+                    ("transY", con.use_limit_y, con.limit_min_y, con.limit_max_y, False),
+                    ("transZ", con.use_limit_z, con.limit_min_z, con.limit_max_z, False),
+                    ("rotX", con.use_angular_limit_x, con.limit_angle_min_x, con.limit_angle_max_x, True),
+                    ("rotY", con.use_angular_limit_y, con.limit_angle_min_y, con.limit_angle_max_y, True),
+                    ("rotZ", con.use_angular_limit_z, con.limit_angle_min_z, con.limit_angle_max_z, True)):
+                if not use:
+                    continue
+                apis.append("PhysicsLimitAPI:" + axis)
+                f = deg if angular else float
+                attrs += [("float", "limit:%s:physics:low" % axis, f(lo)),
+                          ("float", "limit:%s:physics:high" % axis, f(hi))]
+        return {"prim": prims[kind], "name": con.name, "apis": apis, "body0": i,
+                "body1": self.index[target.name] if target is not None else None, "attrs": attrs}
+
+    def fixed_base(self, ob, i):
+        """an articulation Fixed to the World: its fixed joint to the world
+        (where UsdPhysics puts the articulation root of a fixed base)"""
+        W = self.world[i]
+        q = W.to_3x3().normalized().to_quaternion()
+        return {"prim": "PhysicsFixedJoint", "name": "FixedBase", "apis": ["PhysicsArticulationRootAPI"],
+                "body0": None, "body1": i,
+                "attrs": [("point3f", "physics:localPos0", tuple(W.to_translation())),
+                          ("quatf", "physics:localRot0", (q.w, q.x, q.y, q.z)),
+                          ("point3f", "physics:localPos1", (0.0, 0.0, 0.0)),
+                          ("quatf", "physics:localRot1", (1.0, 0.0, 0.0, 0.0)),
+                          ("custom bool", "bgeRemix:articulationBase", True)]}
 
     def mesh_of(self, ob):
         try:
@@ -704,6 +944,15 @@ def import_usd(context, path, report):
         world.append(w)
     if camera is not None:
         scene.camera = camera
+    # (round 7) the physics
+    try:
+        import json
+        phys = json.loads(data.get("physics") or "{}")
+    except ValueError:
+        phys = {}
+        report.append("the file's physics could not be read")
+    if phys:
+        PhysicsImport(scene, data, phys, objects, made, world, K, report).apply()
     counts["objects"] = len(made)
     counts["meshes"] = len(meshes)
     counts["materials"] = len(materials)
@@ -711,6 +960,449 @@ def import_usd(context, path, report):
     scene.update()
     LAST.update({"scene": scene.name, "report": report, "counts": counts})
     return scene
+
+
+# ---------------------------------------------------------------------------
+# the physics coming in (round 7)
+
+AXIS_FRAME = {"X": None, "Y": ((0.0, 0.0, 1.0), 90.0), "Z": ((0.0, 1.0, 0.0), -90.0)}
+APPROXIMATION_BOUNDS = {"none": 'TRIANGLE_MESH', "convexHull": 'CONVEX_HULL', "boundingCube": 'BOX',
+                        "boundingSphere": 'SPHERE', "convexDecomposition": 'CONVEX_HULL',
+                        "meshSimplification": 'TRIANGLE_MESH', "sdf": 'TRIANGLE_MESH'}
+SHAPE_BOUNDS = {"cube": 'BOX', "sphere": 'SPHERE', "capsule": 'CAPSULE', "cylinder": 'CYLINDER', "cone": 'CONE',
+                "capsule1": 'CAPSULE', "cylinder1": 'CYLINDER'}
+LIMIT_AXES = (("transX", "x", False), ("transY", "y", False), ("transZ", "z", False),
+              ("rotX", "x", True), ("rotY", "y", True), ("rotZ", "z", True))
+ENGINES = {'BULLET': ('BULLET', None), 'PHYSX_CPU': ('PHYSX', 'CPU'), 'PHYSX_GPU': ('PHYSX', 'GPU')}
+
+
+class PhysicsImport:
+    """the file's physics (UsdPhysics, as OpenUSD's physics reader gives it,
+    and ours) on the objects the import made"""
+
+    def __init__(self, scene, data, phys, objects, made, world, K, report):
+        from mathutils import Matrix
+        self.scene, self.data, self.phys, self.report = scene, data, phys, report
+        self.K = K
+        self.s = K.to_scale()[0]
+        self.Krot = K.to_3x3().normalized()
+        self.mpu = float(data["meters_per_unit"])
+        self.kpu = float(phys.get("kilograms_per_unit") or 1.0)
+        self.custom = phys.get("custom") or {}
+        self.ours = data.get("creator") == ut.CREATOR
+        self.of_path = {}
+        self.world = {}
+        nodes = data["nodes"]
+        for o, ob, w in zip(objects, made, world):
+            for n in (o["node"], o["data_node"]):
+                self.of_path[nodes[n]["path"]] = ob
+            self.world[ob.name] = w
+        self.made = made
+        self.Matrix = Matrix
+
+    def note(self, line):
+        if line not in self.report:
+            self.report.append(line)
+
+    def owner(self, path):
+        """the object a prim path is (or is under)"""
+        while path and path != "/":
+            if path in self.of_path:
+                return self.of_path[path]
+            path = path.rsplit("/", 1)[0]
+        return None
+
+    def ours_of(self, ob):
+        """our attributes on an object's prims"""
+        out = {}
+        for path, o in self.of_path.items():
+            if o == ob:
+                out.update(self.custom.get(path) or {})
+        return out
+
+    def apply(self):
+        phys = self.phys
+        anything = any(phys.get(k) for k in ("scenes", "bodies", "shapes", "joints"))
+        if not phys.get("read", True):
+            self.note("OpenUSD's physics reader could not read the file's physics")
+        self.materials = {m["path"]: m for m in phys.get("materials") or ()}
+        self.apply_scene(anything)
+        bodies = {}
+        for b in phys.get("bodies") or ():
+            ob = self.owner(b["path"])
+            if ob is not None:
+                bodies[ob.name] = b
+        shapes = {}
+        for sh in phys.get("shapes") or ():
+            ob = self.owner(sh["path"])
+            if ob is not None:
+                shapes.setdefault(ob.name, []).append(sh)
+            else:
+                self.note("%s: a collision shape with no object to hang from: left out" % sh["path"])
+        for ob in self.made:
+            ours = self.ours_of(ob)
+            if "physicsType" in ours:
+                self.apply_ours(ob, ours, shapes.get(ob.name) or ())
+            elif anything:
+                self.apply_theirs(ob, bodies.get(ob.name), shapes.get(ob.name) or (), bodies)
+            for key, v in ours.items():
+                if key.startswith("idprop:"):
+                    self.apply_idprop(ob, key[7:], v)
+        if phys.get("groups"):
+            self.note("collision groups (%s) are left out: everything collides with everything" %
+                      ", ".join(g["path"].rsplit("/", 1)[-1] for g in phys["groups"]))
+        if any(b.get("filtered") for b in phys.get("bodies") or ()) or \
+                any(sh.get("filtered") for sh in phys.get("shapes") or ()):
+            self.note("filtered collision pairs are left out")
+        self.bases = set()
+        for j in phys.get("joints") or ():
+            self.apply_joint(j)
+        self.apply_articulations()
+
+    # -- the world -----------------------------------------------------------------
+
+    def apply_scene(self, anything):
+        gs = self.scene.game_settings
+        scenes = self.phys.get("scenes") or ()
+        ours = {}
+        if scenes:
+            sc = scenes[0]
+            ours = self.custom.get(sc["path"]) or {}
+            g = float(sc.get("gravity_magnitude") or 0.0)
+            if g >= 1e30 or g < 0.0:
+                g = 9.81 / self.mpu  # USD's default: Earth's, in the stage's units
+            gs.physics_gravity = g * self.mpu
+            d = sc.get("gravity_direction") or (0.0, 0.0, 0.0)
+            if any(abs(x) > 1e-9 for x in d):
+                from mathutils import Vector
+                dw = (self.Krot * Vector(d)).normalized()
+                if dw.z > -0.999:
+                    self.note("gravity points %s, not straight down: it comes in straight down" %
+                              [round(x, 3) for x in dw])
+            if len(scenes) > 1:
+                self.note("%d physics scenes: the first one's gravity is used" % len(scenes))
+        engine = ours.get("engine")
+        if engine in ENGINES:
+            self.set_engine(*ENGINES[engine])
+        elif anything:
+            # (a file's UsdPhysics is PhysX's: articulations need it)
+            self.set_engine('PHYSX', 'CPU')
+
+    def set_engine(self, engine, device):
+        gs = self.scene.game_settings
+        try:
+            gs.physics_engine = engine
+            if device:
+                gs.physx_device = device
+        except (TypeError, AttributeError):
+            pass
+
+    # -- bodies --------------------------------------------------------------------
+
+    def apply_ours(self, ob, ours, shapes):
+        """this export's own file: BGE's settings as they were"""
+        g = ob.game
+        try:
+            g.physics_type = ours["physicsType"]
+        except TypeError:
+            return
+        for key, attr in (("useBounds", "use_collision_bounds"), ("ghost", "use_ghost"),
+                          ("compound", "use_collision_compound")):
+            if key in ours:
+                setattr(g, attr, bool(ours[key]))
+        if ours.get("bounds"):
+            try:
+                g.collision_bounds_type = ours["bounds"]
+            except TypeError:
+                pass
+        for key, attr in (("margin", "collision_margin"), ("radius", "radius"), ("mass", "mass"),
+                          ("damping", "damping"), ("rotationDamping", "rotation_damping"),
+                          ("velocityMin", "velocity_min"), ("velocityMax", "velocity_max")):
+            if isinstance(ours.get(key), (int, float)):
+                setattr(g, attr, float(ours[key]))
+        for key, attr in (("lockLocation", "lock_location_"), ("lockRotation", "lock_rotation_")):
+            v = ours.get(key)
+            if isinstance(v, list) and len(v) == 3:
+                for a, x in zip("xyz", v):
+                    setattr(g, attr + a, bool(x))
+        art = ours.get("articulation")
+        if art in ('FREE', 'FIXED') and hasattr(ob, "bge_articulation"):
+            ob.bge_articulation = art
+        self.apply_material(ob, shapes)
+
+    def apply_theirs(self, ob, body, shapes, bodies):
+        """another tool's: from UsdPhysics alone"""
+        g = ob.game
+        if body is not None and body.get("enabled", True):
+            g.physics_type = 'RIGID_BODY'
+            if body.get("kinematic"):
+                g.physics_type = 'STATIC'
+                self.note("%s: a kinematic body: it comes in Static (moved by its animation, not by physics)"
+                          % ob.name)
+            if any(abs(x) > 1e-9 for x in (body.get("velocity") or ()) + (body.get("angular_velocity") or ())):
+                self.note("%s: its starting speed is left out (BGE sets speeds from logic)" % ob.name)
+        elif shapes or body is not None:
+            g.physics_type = 'STATIC'
+        else:
+            # the file has physics, and nothing of it here
+            g.physics_type = 'NO_COLLISION'
+            return
+        mine = [sh for sh in shapes]
+        if mine:
+            g.use_collision_bounds = True
+            sh = mine[0]
+            if sh["kind"] == "mesh":
+                approx = sh.get("approximation") or "none"
+                g.collision_bounds_type = APPROXIMATION_BOUNDS.get(approx, 'TRIANGLE_MESH')
+                if approx in ("convexDecomposition", "meshSimplification", "sdf"):
+                    self.note("%s: its %s collision shape comes in as %s" % (
+                        ob.name, approx, g.collision_bounds_type.replace("_", " ").title()))
+                elif approx not in APPROXIMATION_BOUNDS:
+                    self.note("%s: its %s collision shape comes in as a triangle mesh" % (ob.name, approx))
+            elif sh["kind"] in SHAPE_BOUNDS:
+                g.collision_bounds_type = SHAPE_BOUNDS[sh["kind"]]
+                if sh["kind"] == "sphere" and sh.get("radius"):
+                    scale = max(abs(x) for x in (sh.get("local_scale") or (1.0, 1.0, 1.0)))
+                    g.radius = float(sh["radius"]) * scale * self.s / max(max(self.world[ob.name].to_scale()), 1e-9)
+            else:
+                self.note("%s: a %s collision shape: it comes in as a convex hull" % (ob.name, sh["kind"]))
+                g.collision_bounds_type = 'CONVEX_HULL'
+            if len(mine) > 1:
+                self.note("%s: %d collision shapes: the first one's kind is used" % (ob.name, len(mine)))
+        # a shape of a body above it: one compound body
+        for sh in mine:
+            owner = self.owner(sh.get("body") or "")
+            if owner is not None and owner != ob and g.physics_type == 'STATIC' and owner.name in bodies:
+                g.physics_type = 'RIGID_BODY'
+                g.use_collision_compound = True
+                owner.game.use_collision_compound = True
+        if g.physics_type == 'RIGID_BODY':
+            g.mass = self.mass_of(ob, body, mine)
+        self.apply_material(ob, mine)
+
+    def mass_of(self, ob, body, shapes):
+        """kg: the body's mass, or its density times its volume (UsdPhysics'
+        default density: 1000 kg/m³)"""
+        if body is not None and body.get("mass"):
+            return max(float(body["mass"]) * self.kpu, 0.001)
+        density = (body or {}).get("density")
+        for sh in shapes:
+            density = density or sh.get("density")
+            for m in sh.get("materials") or ():
+                pm = self.materials.get(m) or {}
+                if pm.get("density"):
+                    density = density or pm["density"]
+        if density:
+            density = float(density) * self.kpu / (self.mpu ** 3)
+        else:
+            density = 1000.0
+        return max(density * self.volume(ob), 0.001)
+
+    def volume(self, ob):
+        """m³: the convex hull of the object's mesh, as it is in the world"""
+        if ob.type != 'MESH' or not ob.data.vertices:
+            return 0.0
+        from .bge_remix_destructible import hull_volume
+        W = self.world.get(ob.name, ob.matrix_world)
+        return hull_volume([W * v.co for v in ob.data.vertices])
+
+    def apply_material(self, ob, shapes):
+        """friction and bounce: on the object's first material (one made for
+        it when it has none)"""
+        pm = None
+        for sh in shapes:
+            for m in sh.get("materials") or ():
+                pm = pm or self.materials.get(m)
+        if pm is None:
+            return
+        if ob.type != 'MESH':
+            return
+        if not ob.material_slots or ob.material_slots[0].material is None:
+            mat = bpy.data.materials.new(pm["path"].rsplit("/", 1)[-1])
+            if not ob.material_slots:
+                ob.data.materials.append(mat)
+            else:
+                ob.material_slots[0].material = mat
+        mat = ob.material_slots[0].material
+        mat.physics.friction = float(pm.get("dynamic_friction", 0.5))
+        mat.physics.elasticity = float(pm.get("restitution", 0.0))
+        if abs(float(pm.get("static_friction", 0.0)) - float(pm.get("dynamic_friction", 0.0))) > 1e-6:
+            self.note("material %s: its static friction (%.3g) and its sliding one (%.3g) differ: BGE has one, "
+                      "the sliding one is used" % (mat.name, pm["static_friction"], pm["dynamic_friction"]))
+
+    def apply_idprop(self, ob, key, v):
+        if isinstance(v, list) and v and all(isinstance(x, str) for x in v):
+            target = self.owner(v[0])
+            if target is not None:
+                ob[key] = target.name
+            return
+        if isinstance(v, bool):
+            ob[key] = int(v)
+        elif isinstance(v, (int, float, str)):
+            ob[key] = v
+        elif isinstance(v, list) and all(isinstance(x, (int, float)) for x in v):
+            ob[key] = [float(x) for x in v]
+
+    # -- joints --------------------------------------------------------------------
+
+    def frame(self, j, side):
+        """a joint's frame (side 0 or 1) in Blender's world: (matrix, the object)"""
+        from mathutils import Quaternion, Vector
+        ob = self.owner(j["rel%d" % side])
+        W = j.get("world%d" % side)
+        q = j["local_rot%d" % side]
+        R = Quaternion((q[0], q[1], q[2], q[3])).to_matrix()
+        p = Vector(j["local_pos%d" % side])
+        if W:
+            M = usd_matrix(W)
+            p_world = self.K * (M * p)
+            rot = self.Krot * M.to_3x3().normalized() * R
+        else:
+            # to the world: the frame is in the world's space
+            p_world = self.K * p
+            rot = self.Krot * R
+        return p_world, rot, ob
+
+    def apply_joint(self, j):
+        from mathutils import Matrix, Vector
+        kind = j["kind"]
+        name = j["path"].rsplit("/", 1)[-1]
+        ours = self.custom.get(j["path"]) or {}
+        if kind in ("distance", "custom"):
+            self.note("joint %s: a %s joint: BGE has none like it, left out" % (name, kind))
+            return
+        p0, r0, ob0 = self.frame(j, 0)
+        p1, r1, ob1 = self.frame(j, 1)
+        if ob0 is None and ob1 is None:
+            self.note("joint %s joins nothing the import made: left out" % name)
+            return
+        if ours.get("articulationBase") or (kind == "fixed" and (ob0 is None) != (ob1 is None) and
+                                            self.in_articulation(j["path"])):
+            # an articulation fixed to the world: the root's Fixed to the World
+            self.bases.add((ob1 or ob0).name)
+            return
+        if ob0 is None:
+            p0, r0, ob0, ob1 = p1, r1, ob1, None
+        if not j.get("enabled", True):
+            self.note("joint %s is switched off in the file: left out" % name)
+            return
+        # its X along the joint's axis
+        axis = j.get("axis") or "X"
+        if kind in ("revolute", "prismatic", "spherical") and AXIS_FRAME.get(axis):
+            v, angle = AXIS_FRAME[axis]
+            r0 = r0 * Matrix.Rotation(math.radians(angle), 3, Vector(v))
+        # (the objects' places as the import set them: matrix_world is
+        # not updated until the scene is)
+        W = self.world[ob0.name]
+        local_rot = W.to_3x3().normalized().inverted() * r0
+        pivot = W.inverted() * p0
+        con = ob0.constraints.new('RIGID_BODY_JOINT')
+        con.name = ours.get("name") or name.replace(ut.JOINT_PREFIX, "")
+        con.target = ob1
+        if ours.get("pivotType") and isinstance(ours.get("pivot"), list) and isinstance(ours.get("axis"), list):
+            # our own: as it was
+            con.pivot_x, con.pivot_y, con.pivot_z = ours["pivot"]
+            con.axis_x, con.axis_y, con.axis_z = ours["axis"]
+        else:
+            con.pivot_x, con.pivot_y, con.pivot_z = pivot
+            e = local_rot.to_euler('XYZ')
+            con.axis_x, con.axis_y, con.axis_z = e.x, e.y, e.z
+        con.use_linked_collision = not j.get("collision_enabled", False)
+        exact = all(isinstance(ours.get(k), list) and len(ours[k]) == 6 for k in ("limitMin", "limitMax", "limitUse"))
+        rad = math.radians
+        limit = j.get("limit") or {}
+        if kind == "revolute":
+            con.pivot_type = 'HINGE'
+            if limit.get("enabled") and limit["lower"] > -1e29 and limit["upper"] < 1e29:
+                con.use_angular_limit_x = True
+                con.limit_angle_min_x, con.limit_angle_max_x = rad(limit["lower"]), rad(limit["upper"])
+        elif kind == "spherical":
+            cone = limit.get("enabled") and (limit["lower"] >= 0.0 or limit["upper"] >= 0.0)
+            con.pivot_type = 'CONE_TWIST' if cone or ours.get("pivotType") == 'CONE_TWIST' else 'BALL'
+            if cone:
+                if limit["lower"] >= 0.0:
+                    con.use_angular_limit_y = True
+                    con.limit_angle_max_y = rad(limit["lower"])
+                if limit["upper"] >= 0.0:
+                    con.use_angular_limit_z = True
+                    con.limit_angle_max_z = rad(limit["upper"])
+            tw = ours.get("twistLimit")
+            if isinstance(tw, list) and len(tw) == 2:
+                con.use_angular_limit_x = True
+                con.limit_angle_min_x, con.limit_angle_max_x = rad(tw[0]), rad(tw[1])
+        else:
+            con.pivot_type = 'GENERIC_6_DOF'
+            limits = {}
+            if kind == "fixed":
+                limits = {a: (0.0, 0.0) for a, _, _ in LIMIT_AXES}
+            elif kind == "prismatic":
+                limits = {"transY": (0.0, 0.0), "transZ": (0.0, 0.0), "rotX": (0.0, 0.0), "rotY": (0.0, 0.0),
+                          "rotZ": (0.0, 0.0)}
+                if limit.get("enabled") and limit["lower"] > -1e29 and limit["upper"] < 1e29:
+                    limits["transX"] = (limit["lower"], limit["upper"])
+            else:
+                for dof, l in (j.get("limits") or {}).items():
+                    if dof == "distance":
+                        self.note("joint %s: its distance limit is left out" % name)
+                        continue
+                    if not l.get("enabled", True):
+                        continue
+                    lo, hi = l["lower"], l["upper"]
+                    if lo > hi:
+                        lo = hi = 0.0  # USD's locked axis
+                    if lo < -1e29 or hi > 1e29:
+                        continue  # no limit: free
+                    limits[dof] = (lo, hi)
+            for dof, letter, angular in LIMIT_AXES:
+                if dof not in limits:
+                    continue
+                lo, hi = limits[dof]
+                if angular:
+                    setattr(con, "use_angular_limit_" + letter, True)
+                    setattr(con, "limit_angle_min_" + letter, rad(lo))
+                    setattr(con, "limit_angle_max_" + letter, rad(hi))
+                else:
+                    setattr(con, "use_limit_" + letter, True)
+                    setattr(con, "limit_min_" + letter, lo * self.s)
+                    setattr(con, "limit_max_" + letter, hi * self.s)
+        if exact:
+            # our own: every limit as it was
+            for n, v in zip(LIMIT_MIN, ours["limitMin"]):
+                setattr(con, n, v)
+            for n, v in zip(LIMIT_MAX, ours["limitMax"]):
+                setattr(con, n, v)
+            for n, v in zip(LIMIT_USE, ours["limitUse"]):
+                setattr(con, n, bool(v))
+        drives = [j.get("drive") or {}] + list((j.get("drives") or {}).values())
+        if any(d.get("enabled") for d in drives):
+            self.note("joint %s: its drive (motor) is left out: Rigid Body Joints keep no motor in the file "
+                      "(a script sets it)" % con.name)
+        if j.get("break_force", 1e300) < 1e29 or j.get("break_torque", 1e300) < 1e29:
+            self.note("joint %s: its breaking force is left out (BGE's joints do not break)" % con.name)
+
+    def in_articulation(self, path):
+        return any(path in (a.get("joints") or ()) or path in (a.get("roots") or ())
+                   for a in self.phys.get("articulations") or ())
+
+    def apply_articulations(self):
+        for a in self.phys.get("articulations") or ():
+            obs = [self.owner(p) for p in (a.get("bodies") or ())]
+            obs = [o for o in obs if o is not None]
+            if not obs:
+                continue
+            fixed = [o for o in obs if o.name in self.bases]
+            if fixed:
+                root, kind = fixed[0], 'FIXED'
+            else:
+                roots = [self.owner(p) for p in a.get("roots") or ()]
+                roots = [o for o in roots if o is not None and o in obs]
+                root, kind = (roots[0] if roots else obs[0]), 'FREE'
+            if hasattr(root, "bge_articulation") and root.bge_articulation == 'NONE':
+                root.bge_articulation = kind
+        for name in self.bases:
+            ob = self.scene.objects.get(name)
+            if ob is not None and hasattr(ob, "bge_articulation") and ob.bge_articulation == 'NONE':
+                ob.bge_articulation = 'FIXED'
 
 
 class IMPORT_SCENE_OT_bge_remix_usd(Operator, ImportHelper):

@@ -273,7 +273,9 @@ static int dump_scene(const bru_scene_api *api, const char *plugins, const char 
 		     jnum(c.vertical_aperture) + ", \"near\": " + jnum(c.near_clip) + ", \"far\": " + jnum(c.far_clip) +
 		     ", \"perspective\": " + std::to_string(c.perspective) + "}";
 	}
-	o += "]}\n";
+	o += "],\n \"physics\": ";
+	o += api->physics(sc);  /* round 7: JSON already */
+	o += "}\n";
 	fputs(o.c_str(), f);
 	fclose(f);
 	printf("scene %s: %d nodes, %d meshes, %d materials\n%s", path, info.node_count, info.mesh_count,

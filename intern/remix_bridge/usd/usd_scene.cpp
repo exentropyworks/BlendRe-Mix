@@ -63,6 +63,7 @@
 #include "pxr/usd/usdLux/rectLight.h"
 #include "pxr/usd/usdLux/shapingAPI.h"
 #include "pxr/usd/usdLux/sphereLight.h"
+#include "pxr/usd/usdPhysics/collisionAPI.h"
 #include "pxr/usd/usdShade/material.h"
 #include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "pxr/usd/usdShade/shader.h"
@@ -113,7 +114,7 @@ struct bru_scene {
 	double meters_per_unit = 1.0;
 	bool z_up = false;
 	double time = 0.0;
-	std::string default_prim, creator, report;
+	std::string default_prim, creator, report, physics;
 	int usd_errors = 0;
 	std::vector<Node> nodes;
 	std::vector<Mesh> meshes;
@@ -470,6 +471,8 @@ void walk(bru_scene &sc, UsdGeomXformCache &xf, const UsdPrim &prim, int parent)
 			        "are left out)");
 			continue;
 		}
+		if (c.IsA<UsdGeomGprim>() && c.HasAPI<UsdPhysicsCollisionAPI>())
+			continue; /* a collision shape (Cube, Sphere, Capsule...): read with the physics (round 7) */
 		if (c.IsA<UsdGeomGprim>()) {
 			sc.note(c.GetPath().GetString() + ": a " + type_name(c) + ": not imported (only meshes are)");
 			continue;
@@ -543,6 +546,12 @@ bru_scene *scene_open(const char *plugin_dir, const char *path, char *r_error, i
 		sc->default_prim = dp.GetName().GetString();
 	UsdGeomXformCache xf(timed ? UsdTimeCode(sc->time) : UsdTimeCode::Default());
 	walk(*sc, xf, stage->GetPseudoRoot(), -1);
+	{
+		std::string notes;
+		sc->physics = brb::usd::physics_json(stage, sc->time, notes);
+		if (!notes.empty())
+			sc->report += notes;
+	}
 
 	/* OpenUSD's own complaints */
 	for (const TfError &e : mark) {
@@ -677,6 +686,11 @@ int scene_light(const bru_scene *sc, int i, bru_light *r)
 	return 1;
 }
 
+const char *scene_physics(const bru_scene *sc)
+{
+	return sc->physics.c_str();
+}
+
 int scene_camera(const bru_scene *sc, int i, bru_camera *r)
 {
 	if (i < 0 || size_t(i) >= sc->cameras.size())
@@ -726,7 +740,7 @@ bru_scene *api_open(const char *plugin_dir, const char *path, char *r_error, int
 
 const bru_scene_api kSceneApi = {
     BRU_ABI_VERSION, api_open,      scene_close,          scene_info,  scene_node,   scene_mesh,
-    scene_subset,    scene_material, scene_material_input, scene_light, scene_camera,
+    scene_subset,    scene_material, scene_material_input, scene_light, scene_camera, scene_physics,
 };
 
 int convert(const char *plugin_dir, const char *src, const char *dst, char *r_error, int max_bytes)

@@ -84,8 +84,14 @@ def write_preview_material(out, path, prim, mt):
     """at path (<scope>/<prim>); mt: name, preview {inputs [(name, value)],
     textures {input: {file, output, raw, normal}}}, aperture (or None:
     write_material's mdl, inputs, textures)"""
-    out.open('def Material "%s"' % prim, _meta(mt["name"], prim))
+    phys = mt.get("physics")
+    out.open('def Material "%s"' % prim, _meta(mt["name"], prim, [_apis(["PhysicsMaterialAPI"])] if phys else None))
     out("token outputs:surface.connect = <%s/PreviewSurface.outputs:surface>" % path)
+    if phys:
+        # (round 7) its friction and bounce (Blender's material physics)
+        out("float physics:staticFriction = %s" % num(phys["static_friction"]))
+        out("float physics:dynamicFriction = %s" % num(phys["dynamic_friction"]))
+        out("float physics:restitution = %s" % num(phys["restitution"]))
     ap = mt.get("aperture")
     if ap:
         out("token outputs:mdl:surface.connect = <%s/Shader.outputs:out>" % path)
@@ -139,13 +145,21 @@ def write_preview_material(out, path, prim, mt):
     out.close()
 
 
-def write_mesh(out, prim, m, looks):
+def write_mesh(out, prim, m, looks, collider=None):
     """m: name, points, counts, indices; normals, uvs, colors per corner (or
     None); opacities; double_sided; material (an index into looks, or None);
-    subsets [{name, faces, material}]"""
+    subsets [{name, faces, material}]. collider (round 7): the mesh is its
+    object's collision shape ({approximation, material, mass})"""
     bind = m.get("material") is not None
-    out.open('def Mesh "%s"' % prim, _meta(m.get("name"), prim, ['prepend apiSchemas = ["MaterialBindingAPI"]']
-                                           if bind else None))
+    apis = ["MaterialBindingAPI"] if bind or (collider and collider.get("material") is not None) else []
+    if collider:
+        apis += ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
+        if collider.get("mass") is not None:
+            apis.append("PhysicsMassAPI")
+    out.open('def Mesh "%s"' % prim, _meta(m.get("name"), prim, [_apis(apis)] if apis else None))
+    if collider:
+        _collider_attrs(out, collider, looks)
+        out('uniform token physics:approximation = "%s"' % collider["approximation"])
     out("uniform bool doubleSided = %s" % value("bool", m.get("double_sided")))
     out('uniform token orientation = "rightHanded"')
     out('uniform token subdivisionScheme = "none"')
@@ -177,6 +191,81 @@ def write_mesh(out, prim, m, looks):
         if sb:
             out("rel material:binding = <%s>" % looks[s["material"]])
         out.close()
+    out.close()
+
+
+# ---------------------------------------------------------------------------
+# physics (round 7): UsdPhysics, and our own attributes (bgeRemix:*)
+
+def _apis(names):
+    return "prepend apiSchemas = [%s]" % ", ".join('"%s"' % n for n in names)
+
+
+def _attrs(out, attrs, obj_paths=None):
+    """(type, name, value): a type starting "custom " or "uniform " as it is;
+    a "rel" names an object (its index)"""
+    for kind, name, v in attrs or ():
+        base = kind.split(" ")[-1]
+        if base == "rel":
+            out("custom rel %s = <%s>" % (name, obj_paths[v]))
+        elif base.endswith("[]"):
+            out("%s %s = %s" % (kind, name, _array(base[:-2], list(v), 8)))
+        elif base == "quatf":
+            out("%s %s = %s" % (kind, name, vec(v)))
+        else:
+            out("%s %s = %s" % (kind, name, value(base, v)))
+
+
+def _collider_attrs(out, c, looks):
+    if c.get("material") is not None:
+        out("rel material:binding:physics = <%s>" % looks[c["material"]])
+    if c.get("mass") is not None:
+        out("float physics:mass = %s" % num(c["mass"]))
+
+
+COLLIDER_PRIMS = {"cube": "Cube", "sphere": "Sphere", "capsule": "Capsule", "cylinder": "Cylinder", "cone": "Cone"}
+COLLIDER_NAME = "BGE_Collider"
+
+
+def write_collider(out, c, looks):
+    """an object's collision shape that is not its mesh: an invisible Cube,
+    Sphere, Capsule, Cylinder or Cone ({kind, center, half (cube), radius,
+    height, axis, material, mass})"""
+    apis = ["PhysicsCollisionAPI"] + (["MaterialBindingAPI"] if c.get("material") is not None else []) + \
+        (["PhysicsMassAPI"] if c.get("mass") is not None else [])
+    out.open('def %s "%s"' % (COLLIDER_PRIMS[c["kind"]], COLLIDER_NAME), [_apis(apis)])
+    out('uniform token purpose = "guide"')
+    _collider_attrs(out, c, looks)
+    if c["kind"] == "cube":
+        out("double size = 2")
+    elif c["kind"] == "sphere":
+        out("double radius = %s" % num(c["radius"]))
+    else:
+        out("double radius = %s" % num(c["radius"]))
+        out("double height = %s" % num(c["height"]))
+        out('uniform token axis = "%s"' % c.get("axis", "Z"))
+    ops = ['"xformOp:translate"']
+    out("double3 xformOp:translate = %s" % vec(c.get("center") or (0.0, 0.0, 0.0)))
+    if c["kind"] == "cube":
+        out("float3 xformOp:scale = %s" % vec(c["half"]))
+        ops.append('"xformOp:scale"')
+    out("uniform token[] xformOpOrder = [%s]" % ", ".join(ops))
+    out.close()
+
+
+JOINT_PREFIX = "BGE_Joint_"
+
+
+def write_joint(out, j, obj_paths):
+    """j: prim (PhysicsRevoluteJoint, PhysicsSphericalJoint,
+    PhysicsPrismaticJoint, PhysicsFixedJoint, PhysicsJoint), name, apis,
+    body0 / body1 (object indices, None: the world), attrs"""
+    out.open('def %s "%s"' % (j["prim"], JOINT_PREFIX + ident(j["name"])), [_apis(j["apis"])] if j.get("apis")
+             else None)
+    for key in ("body0", "body1"):
+        if j.get(key) is not None:
+            out("rel physics:%s = <%s>" % (key, obj_paths[j[key]]))
+    _attrs(out, j["attrs"], obj_paths)
     out.close()
 
 
@@ -264,16 +353,31 @@ def scene_text(scene):
             out.open('def Camera "%s"' % prim, _meta(ob["name"], prim))
             write_camera_attrs(out, ob["camera"])
         else:
-            out.open('def Xform "%s"' % prim, _meta(ob["name"], prim))
+            phys = ob.get("physics") or {}
+            out.open('def Xform "%s"' % prim, _meta(ob["name"], prim, [_apis(phys["apis"])] if phys.get("apis")
+                                                  else None))
+        phys = ob.get("physics") or {}
         if not ob.get("visible", True):
             out('token visibility = "invisible"')
         _transform(out, ob["matrix"])
+        _attrs(out, phys.get("attrs"), obj_paths)
+        collider = phys.get("collider")
         if kind == "MESH":
-            write_mesh(out, mesh_paths[i].rsplit("/", 1)[1], ob["mesh"], looks)
+            write_mesh(out, mesh_paths[i].rsplit("/", 1)[1], ob["mesh"], looks,
+                       collider if collider and collider["kind"] == "mesh" else None)
+        if collider and collider["kind"] != "mesh":
+            write_collider(out, collider, looks)
+        for j in phys.get("joints") or ():
+            write_joint(out, j, obj_paths)
         for c in children.get(i, ()):
             write_object(c)
         out.close()
 
+    ps = scene.get("physics_scene")
+    if ps:
+        out.open('def PhysicsScene "physicsScene"')
+        _attrs(out, ps["attrs"])
+        out.close()
     for i in children.get(-1, ()):
         write_object(i)
     out.close()
@@ -384,9 +488,21 @@ def written_order(scene):
         walk(i)
     new = {old: n for n, old in enumerate(order)}
     objects = []
+    def renumber(attrs):
+        return [(k, n, new[v] if k.split(" ")[-1] == "rel" else v) for k, n, v in attrs or ()]
+
     for i in order:
         ob = dict(scene["objects"][i])
         ob["parent"] = new[ob["parent"]] if ob["parent"] >= 0 else -1
+        phys = ob.get("physics")
+        if phys:
+            # (round 7) the objects its joints and attributes name
+            phys = dict(phys, attrs=renumber(phys.get("attrs")))
+            phys["joints"] = [dict(j, attrs=renumber(j.get("attrs")),
+                                   body0=new[j["body0"]] if j.get("body0") is not None else None,
+                                   body1=new[j["body1"]] if j.get("body1") is not None else None)
+                              for j in phys.get("joints") or ()]
+            ob["physics"] = phys
         objects.append(ob)
     return dict(scene, objects=objects)
 
@@ -406,6 +522,15 @@ def check_read(scene, read, tol=1e-6):
     if read.get("report"):
         for line in read["report"].strip().split("\n"):
             bad.append("reported: " + line)
+    # (round 7) the physics, as OpenUSD's physics reader reads it
+    phys = read.get("physics")
+    if isinstance(phys, str):
+        import json
+        try:
+            phys = json.loads(phys)
+        except ValueError:
+            phys = None
+    bad += check_physics(scene, phys)
     got = objects_from_read(read)
     want = expected_objects(scene)
     if len(got) != len(want):
@@ -483,4 +608,106 @@ def check_read(scene, read, tol=1e-6):
             if not got_in or max(abs(a - b) for a, b in zip(vv, got_in["v"])) > 1e-6:
                 bad.append("material %s: its %s read as %s, not %s" % (mt["name"], iname,
                                                                        got_in and got_in["v"][:len(vv)], vv))
+    return bad
+
+
+JOINT_KINDS = {"PhysicsRevoluteJoint": "revolute", "PhysicsSphericalJoint": "spherical",
+               "PhysicsPrismaticJoint": "prismatic", "PhysicsFixedJoint": "fixed", "PhysicsJoint": "d6"}
+
+
+def _near(a, b, tol=1e-5):
+    if isinstance(a, (list, tuple)):
+        return isinstance(b, (list, tuple)) and len(a) == len(b) and all(_near(x, y, tol) for x, y in zip(a, b))
+    try:
+        return abs(float(a) - float(b)) <= tol * max(1.0, abs(float(a)))
+    except (TypeError, ValueError):
+        return False
+
+
+def expected_physics(scene):
+    """what OpenUSD's physics reader must find in a scene this wrote (round
+    7): {bodies {path: mass}, shapes {path: (kind, body)}, joints {path:
+    (kind, rel0, rel1)}, materials {path: (static, dynamic, restitution)},
+    roots [paths], gravity}"""
+    obj_paths, mesh_paths, looks = paths(scene)
+    bodies, shapes, joints, materials, roots = {}, {}, {}, {}, []
+    is_body = {}
+    for i, ob in enumerate(scene["objects"]):
+        phys = ob.get("physics") or {}
+        if "PhysicsRigidBodyAPI" in (phys.get("apis") or ()):
+            mass = None
+            for kind, name, v in phys.get("attrs") or ():
+                if name == "physics:mass":
+                    mass = v
+            bodies[obj_paths[i]] = mass
+            is_body[i] = True
+        if "PhysicsArticulationRootAPI" in (phys.get("apis") or ()):
+            roots.append(obj_paths[i])
+    for i, ob in enumerate(scene["objects"]):
+        phys = ob.get("physics") or {}
+        c = phys.get("collider")
+        if c:
+            k = i
+            while k >= 0 and not is_body.get(k):
+                k = scene["objects"][k]["parent"]
+            body = obj_paths[k] if k >= 0 else ""
+            path = mesh_paths[i] if c["kind"] == "mesh" else obj_paths[i] + "/" + COLLIDER_NAME
+            shapes[path] = (c["kind"], body)
+        for j in phys.get("joints") or ():
+            path = obj_paths[i] + "/" + JOINT_PREFIX + ident(j["name"])
+            joints[path] = (JOINT_KINDS[j["prim"]], obj_paths[j["body0"]] if j.get("body0") is not None else "",
+                            obj_paths[j["body1"]] if j.get("body1") is not None else "")
+            if "PhysicsArticulationRootAPI" in (j.get("apis") or ()):
+                roots.append(path)
+    for i, mt in enumerate(scene["materials"]):
+        p = mt.get("physics")
+        if p:
+            materials[looks[i]] = (p["static_friction"], p["dynamic_friction"], p["restitution"])
+    gravity = None
+    for kind, name, v in (scene.get("physics_scene") or {}).get("attrs") or ():
+        if name == "physics:gravityMagnitude":
+            gravity = v
+    return {"bodies": bodies, "shapes": shapes, "joints": joints, "materials": materials, "roots": roots,
+            "gravity": gravity}
+
+
+def check_physics(scene, phys):
+    """what is wrong with a scene's physics as OpenUSD's physics reader read
+    it back (the read's physics, as a dict): a list of lines"""
+    if not isinstance(phys, dict):
+        return ["no physics read"]
+    E = expected_physics(scene)
+    bad = []
+    if not phys.get("read"):
+        bad.append("OpenUSD's physics reader did not read it")
+    got_bodies = {b["path"]: b for b in phys.get("bodies") or ()}
+    if sorted(got_bodies) != sorted(E["bodies"]):
+        bad.append("bodies %s read, %s written" % (sorted(got_bodies), sorted(E["bodies"])))
+    for path, mass in E["bodies"].items():
+        b = got_bodies.get(path)
+        if b is not None and mass is not None and not _near(b.get("mass"), mass):
+            bad.append("%s: mass %s read, %s written" % (path, b.get("mass"), mass))
+    got_shapes = {s["path"]: (s["kind"], s["body"]) for s in phys.get("shapes") or ()}
+    if got_shapes != E["shapes"]:
+        miss = sorted(set(E["shapes"].items()) - set(got_shapes.items()))
+        more = sorted(set(got_shapes.items()) - set(E["shapes"].items()))
+        bad.append("shapes: missing %s, more %s" % (miss[:4], more[:4]))
+    got_joints = {j["path"]: (j["kind"], j["rel0"], j["rel1"]) for j in phys.get("joints") or ()}
+    if got_joints != E["joints"]:
+        miss = sorted(set(E["joints"].items()) - set(got_joints.items()))
+        more = sorted(set(got_joints.items()) - set(E["joints"].items()))
+        bad.append("joints: missing %s, more %s" % (miss[:4], more[:4]))
+    got_mats = {m["path"]: (m["static_friction"], m["dynamic_friction"], m["restitution"])
+                for m in phys.get("materials") or ()}
+    for path, want in E["materials"].items():
+        if not _near(list(got_mats.get(path) or ()), list(want)):
+            bad.append("physics material %s: %s read, %s written" % (path, got_mats.get(path), want))
+    roots = set(r for a in phys.get("articulations") or () for r in a.get("roots") or ())
+    for r in E["roots"]:
+        if r not in roots:
+            bad.append("articulation root %s not found (%s)" % (r, sorted(roots)))
+    if E["gravity"] is not None:
+        sc = (phys.get("scenes") or [{}])[0]
+        if not _near(sc.get("gravity_magnitude"), E["gravity"]):
+            bad.append("gravity %s read, %s written" % (sc.get("gravity_magnitude"), E["gravity"]))
     return bad

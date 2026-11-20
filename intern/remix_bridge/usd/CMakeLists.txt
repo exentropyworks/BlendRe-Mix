@@ -28,6 +28,7 @@ add_library(bge_remix_usd SHARED
 	usd_core.cpp
 	usd_dll.cpp
 	usd_dump.cpp
+	usd_physics.cpp
 	usd_read.cpp
 	usd_scene.cpp
 

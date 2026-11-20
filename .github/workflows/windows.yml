@@ -329,7 +329,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll --convert usd_check_out/scene/exchange.usda usd_check_out/scene/exchange.usdc
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the scene was not converted to .usdc (see the log)"; exit 1 }
-          foreach ($pair in @(@("exchange.usda", "exchange.json"), @("exchange.usdc", "exchange_c.json"), @("other_tool.usda", "other_tool.json"), @("unsupported.usda", "unsupported.json"))) {
+          foreach ($pair in @(@("exchange.usda", "exchange.json"), @("exchange.usdc", "exchange_c.json"), @("other_tool.usda", "other_tool.json"), @("unsupported.usda", "unsupported.json"), @("physics.usda", "physics.json"), @("physics_other.usda", "physics_other.json"))) {
             p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll --scene "usd_check_out/scene/$($pair[0])" "usd_check_out/scene/$($pair[1])"
             if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::$($pair[0]) was not read (see the log)"; exit 1 }
           }

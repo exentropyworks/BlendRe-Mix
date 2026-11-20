@@ -220,3 +220,145 @@ def unsupported(folder):
     with open(path, "w") as f:
         f.write(t)
     return path
+
+
+# ---------------------------------------------------------------------------
+# (round 7) another tool's physics: physics_other(folder) writes
+# physics_other.usda the way Omniverse and Isaac Sim write them (centimetres,
+# Y up, kilograms):
+#
+#   /World/physicsScene     gravity 981 cm/s² down (-Y)
+#   /World/Floor            a 400 x 10 x 400 cm Mesh, only a collider
+#                           (a triangle mesh), its physics material Rubber
+#                           (friction 0.9 / 0.8, bounce 0.3)
+#   /World/Crate            a body with only a density (0.0005 kg/cm³: 500
+#                           kg/m³, so 32 kg for its 40 cm cube), its mesh a
+#                           convex decomposition, 30 cm up
+#   /World/Lamp             a 1 kg body welded to the crate (a fixed joint)
+#   /World/Robot            the articulation root (on the Xform above it)
+#     Base                  10 kg, fixed to the world (BaseFixed)
+#     Link1, Link2, Gripper 2, 1 and 0.5 kg; Shoulder (revolute about Y, the
+#                           up axis: -90..90), Elbow (revolute about Z:
+#                           -45..120), Slide (prismatic along X: 0..10 cm)
+#   /World/Rope             a distance joint (crate to gripper): not taken
+#   /World/Debris           a collision group (the crate): not taken
+
+def _phys_mesh(name, size, indent, apis, approximation, extra=""):
+    pts, counts, idx = box(*size)
+    pad = " " * indent
+    t = '%sdef Mesh "%s" (\n%s    prepend apiSchemas = [%s]\n%s)\n%s{\n' % (
+        pad, name, pad, ", ".join('"%s"' % a for a in apis), pad, pad)
+    t += "%s    int[] faceVertexCounts = [%s]\n" % (pad, ", ".join(str(c) for c in counts))
+    t += "%s    int[] faceVertexIndices = [%s]\n" % (pad, ", ".join(str(i) for i in idx))
+    t += "%s    point3f[] points = [%s]\n" % (pad, ", ".join(_v(p) for p in pts))
+    t += '%s    uniform token physics:approximation = "%s"\n' % (pad, approximation)
+    t += extra
+    t += "%s}\n" % pad
+    return t
+
+
+def _body(name, loc, mass, size, indent=4, density=None, approximation="convexHull"):
+    pad = " " * indent
+    t = '%sdef Xform "%s" (\n%s    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]\n%s)\n%s{\n' % (
+        pad, name, pad, pad, pad)
+    if mass is not None:
+        t += "%s    float physics:mass = %s\n" % (pad, _f(mass))
+    if density is not None:
+        t += "%s    float physics:density = %s\n" % (pad, _f(density))
+    t += "%s    double3 xformOp:translate = %s\n" % (pad, _v(loc))
+    t += '%s    uniform token[] xformOpOrder = ["xformOp:translate"]\n' % pad
+    t += _phys_mesh(name + "Mesh", size, indent + 4, ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"],
+                    approximation)
+    return t + "%s}\n" % pad
+
+
+ROBOT = {"Base": ((100.0, 10.0, 0.0), 10.0, (20.0, 20.0, 20.0)),
+         "Link1": ((100.0, 35.0, 0.0), 2.0, (8.0, 30.0, 8.0)),
+         "Link2": ((100.0, 65.0, 0.0), 1.0, (6.0, 30.0, 6.0)),
+         "Gripper": ((100.0, 85.0, 0.0), 0.5, (10.0, 10.0, 10.0))}
+
+
+def _joint(kind, name, b0, b1, p0, p1, extra=""):
+    t = '        def %s "%s"\n        {\n' % (kind, name)
+    if b0:
+        t += "            rel physics:body0 = <%s>\n" % b0
+    if b1:
+        t += "            rel physics:body1 = <%s>\n" % b1
+    t += "            point3f physics:localPos0 = %s\n" % _v(p0)
+    t += "            point3f physics:localPos1 = %s\n" % _v(p1)
+    t += "            quatf physics:localRot0 = (1, 0, 0, 0)\n            quatf physics:localRot1 = (1, 0, 0, 0)\n"
+    return t + extra + "        }\n"
+
+
+def physics_other(folder):
+    os.makedirs(folder, exist_ok=True)
+    R = "/World/Robot/"
+    t = '#usda 1.0\n(\n    defaultPrim = "World"\n    metersPerUnit = 0.01\n    kilogramsPerUnit = 1\n' \
+        '    upAxis = "Y"\n)\n\n'
+    t += 'def Xform "World"\n{\n'
+    t += '    def PhysicsScene "physicsScene"\n    {\n        vector3f physics:gravityDirection = (0, -1, 0)\n' \
+         '        float physics:gravityMagnitude = 981\n    }\n'
+    t += '    def Material "Rubber" (\n        prepend apiSchemas = ["PhysicsMaterialAPI"]\n    )\n    {\n' \
+         '        float physics:staticFriction = 0.9\n        float physics:dynamicFriction = 0.8\n' \
+         '        float physics:restitution = 0.3\n    }\n'
+    t += '    def Xform "Floor"\n    {\n        double3 xformOp:translate = (0, -5, 0)\n' \
+         '        uniform token[] xformOpOrder = ["xformOp:translate"]\n'
+    t += _phys_mesh("FloorMesh", (400.0, 10.0, 400.0), 8,
+                    ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"], "none",
+                    "            rel material:binding:physics = </World/Rubber>\n")
+    t += "    }\n"
+    t += _body("Crate", (0.0, 30.0, 0.0), None, (40.0, 40.0, 40.0), density=0.0005,
+               approximation="convexDecomposition")
+    t += _body("Lamp", (0.0, 60.0, 0.0), 1.0, (10.0, 10.0, 10.0))
+    t += '    def Xform "Robot" (\n        prepend apiSchemas = ["PhysicsArticulationRootAPI"]\n    )\n    {\n'
+    for name, (loc, mass, size) in sorted(ROBOT.items()):
+        t += _body(name, loc, mass, size, indent=8)
+    t += _joint("PhysicsFixedJoint", "BaseFixed", None, R + "Base", ROBOT["Base"][0], (0, 0, 0))
+    t += _joint("PhysicsRevoluteJoint", "Shoulder", R + "Base", R + "Link1", (0, 10, 0), (0, -15, 0),
+                '            uniform token physics:axis = "Y"\n            float physics:lowerLimit = -90\n'
+                '            float physics:upperLimit = 90\n')
+    t += _joint("PhysicsRevoluteJoint", "Elbow", R + "Link1", R + "Link2", (0, 15, 0), (0, -15, 0),
+                '            uniform token physics:axis = "Z"\n            float physics:lowerLimit = -45\n'
+                '            float physics:upperLimit = 120\n')
+    t += _joint("PhysicsPrismaticJoint", "Slide", R + "Link2", R + "Gripper", (0, 15, 0), (0, -5, 0),
+                '            uniform token physics:axis = "X"\n            float physics:lowerLimit = 0\n'
+                '            float physics:upperLimit = 10\n')
+    t += "    }\n"
+    t += _joint("PhysicsFixedJoint", "LampWeld", "/World/Crate", "/World/Lamp", (0, 20, 0), (0, -10, 0)) \
+        .replace("        ", "    ", 1)
+    t += _joint("PhysicsDistanceJoint", "Rope", "/World/Crate", R + "Gripper", (0, 0, 0), (0, 0, 0),
+                "            float physics:minDistance = 0\n            float physics:maxDistance = 50\n") \
+        .replace("        ", "    ", 1)
+    t += '    def PhysicsCollisionGroup "Debris" (\n        prepend apiSchemas = ["CollectionAPI:colliders"]\n' \
+         '    )\n    {\n        rel collection:colliders:includes = </World/Crate>\n    }\n'
+    t += "}\n"
+    path = os.path.join(folder, "physics_other.usda")
+    with open(path, "w") as f:
+        f.write(t)
+    return path
+
+
+PHYSICS_OTHER = {
+    "bodies": ["/World/Crate", "/World/Lamp"] + ["/World/Robot/" + n for n in ROBOT],
+    "joints": {"BaseFixed": "fixed", "Shoulder": "revolute", "Elbow": "revolute", "Slide": "prismatic",
+               "LampWeld": "fixed", "Rope": "distance"},
+    "shapes": [("FloorMesh", "mesh", "none"), ("CrateMesh", "mesh", "convexDecomposition"),
+               ("LampMesh", "mesh", "convexHull")] + [(n + "Mesh", "mesh", "convexHull") for n in ROBOT],
+    "crate_density": 0.0005,
+    # what the import must make of it (metres, Z up; kg)
+    "objects": {"Floor": ('STATIC', 'TRIANGLE_MESH', None), "Crate": ('RIGID_BODY', 'CONVEX_HULL', 32.0),
+                "Lamp": ('RIGID_BODY', 'CONVEX_HULL', 1.0), "Base": ('RIGID_BODY', 'CONVEX_HULL', 10.0),
+                "Link1": ('RIGID_BODY', 'CONVEX_HULL', 2.0), "Link2": ('RIGID_BODY', 'CONVEX_HULL', 1.0),
+                "Gripper": ('RIGID_BODY', 'CONVEX_HULL', 0.5)},
+    # joint: owner, target, kind, axis in the world, pivot in the world, limits (radians or metres)
+    "constraints": {
+        "Shoulder": ("Base", "Link1", 'HINGE', (0.0, 0.0, 1.0), to_blender((100.0, 20.0, 0.0), 0.01, False),
+                     ("x", -90.0, 90.0)),
+        "Elbow": ("Link1", "Link2", 'HINGE', (0.0, -1.0, 0.0), to_blender((100.0, 50.0, 0.0), 0.01, False),
+                  ("x", -45.0, 120.0)),
+        "Slide": ("Link2", "Gripper", 'GENERIC_6_DOF', (1.0, 0.0, 0.0),
+                  to_blender((100.0, 80.0, 0.0), 0.01, False), ("lx", 0.0, 0.1)),
+        "LampWeld": ("Crate", "Lamp", 'GENERIC_6_DOF', None, to_blender((0.0, 50.0, 0.0), 0.01, False), None)},
+    "report": ("Rope", "distance joint", "Debris", "convexDecomposition"),
+    "gravity": 9.81,
+}

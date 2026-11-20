@@ -19,11 +19,33 @@ T12.d3  Another tool's file (usd_files.py: centimetres, Y up, nested
 T12.d4  What is not imported (a custom shader, curves, a point instancer)
         is named in the report, the rest comes in, nothing crashes.
 
-BGE_REMIX_P12B_ONLY (comma separated: exchange, other, unsupported; d1 and
-d2 both come from exchange) runs only those (a fix round's reruns). No RTX
-run this round.
+Round 7 (physics; p12b_probe.py's physics room):
+T12.e1  The physics room, out and back: every object's physics (its kind,
+        mass, bounds, margin, damping, Ghost, compound, locks, material
+        friction and bounce, articulation root, P11's destructible and fluid
+        settings) and every joint (its kind, target, pivot and axis within
+        0.1 mm and 0.01 degrees, limits, linked collision) back as they
+        were; the world's gravity and engine.
+T12.e2  Checked by the standard: OpenUSD's own physics reader finds the
+        room's bodies, shapes (their kinds), joints (their kinds), physics
+        materials, articulation root and gravity, with no complaint; the
+        .usdc reads the same, and imports the same.
+T12.e3  It plays the same: the room and the room imported each run 2 s
+        (PhysX on the CPU, one step a frame): every moving body ends within
+        1 cm and 1 degree of where the room's did.
+T12.e4  Another tool's physics file (usd_files.physics_other: centimetres,
+        Y up): its bodies, masses (one from its density), shapes, joints
+        (their axes and pivots in the world, their limits) and the robot
+        arm's articulation fixed to the world come in; the distance joint,
+        the collision group and the convex decomposition are named.
+
+BGE_REMIX_P12B_ONLY (comma separated: exchange, other, unsupported, physics,
+play, physicsother; d1 and d2 come from exchange, e1 and e2 from physics,
+e3 needs physics run first in the same run) runs only those (a fix round's
+reruns). No RTX run this round.
 """
 
+import math
 import os
 import sys
 
@@ -316,9 +338,253 @@ def t_unsupported(args, out, tests):
                                                       "traceback": got.get("traceback")})
 
 
+# ---------------------------------------------------------------------------
+# round 7: physics
+
+ANGLE_TOL = math.radians(0.01)
+ANGLE_FIELDS = ("axis_x", "axis_y", "axis_z", "limit_angle_min_x", "limit_angle_min_y", "limit_angle_min_z",
+                "limit_angle_max_x", "limit_angle_max_y", "limit_angle_max_z")
+
+
+def _same(a, b, tol=1e-4):
+    if isinstance(a, bool) or isinstance(b, bool) or isinstance(a, str) or a is None:
+        return a == b
+    if isinstance(a, (list, tuple)):
+        return isinstance(b, (list, tuple)) and len(a) == len(b) and all(_same(x, y, tol) for x, y in zip(a, b))
+    try:
+        return abs(float(a) - float(b)) <= tol * max(1.0, abs(float(a)))
+    except (TypeError, ValueError):
+        return a == b
+
+
+def physics_diff(want, got):
+    """the objects and joints whose physics differ: lines"""
+    bad = []
+    W, G = want.get("objects") or {}, got.get("objects") or {}
+    for name, w in sorted(W.items()):
+        g = G.get(name)
+        if g is None:
+            bad.append("%s missing" % name)
+            continue
+        for k, v in sorted(w["game"].items()):
+            if not _same(v, g["game"].get(k)):
+                bad.append("%s %s %s / %s" % (name, k, v, g["game"].get(k)))
+        for k in ("articulation", "friction", "elasticity", "parent"):
+            if not _same(w.get(k), g.get(k)):
+                bad.append("%s %s %s / %s" % (name, k, w.get(k), g.get(k)))
+        if w.get("idprops") != g.get("idprops"):
+            bad.append("%s ID properties %s / %s" % (name, w.get("idprops"), g.get("idprops")))
+        gj = {j["name"]: j for j in g.get("joints") or ()}
+        for j in w.get("joints") or ():
+            h = gj.get(j["name"])
+            if h is None:
+                bad.append("%s: joint %s missing (has %s)" % (name, j["name"], sorted(gj)))
+                continue
+            for k, v in sorted(j.items()):
+                if k in ("world_axis", "world_pivot"):
+                    continue
+                tol = ANGLE_TOL if k in ANGLE_FIELDS else 1e-4
+                if not _same(v, h.get(k), tol):
+                    bad.append("%s/%s %s %s / %s" % (name, j["name"], k, v, h.get(k)))
+        if len(gj) != len(w.get("joints") or ()):
+            bad.append("%s: %d joints, %d were" % (name, len(gj), len(w.get("joints") or ())))
+    extra = sorted(set(G) - set(W))
+    if extra:
+        bad.append("more objects: %s" % ", ".join(extra))
+    for k in ("engine", "device", "gravity"):
+        if not _same(want.get(k), got.get(k)):
+            bad.append("the world's %s %s / %s" % (k, want.get(k), got.get(k)))
+    return bad
+
+
+def _lines(bad, n=6):
+    return ": " + "; ".join(bad[:n]) + (" (and %d more)" % (len(bad) - n) if len(bad) > n else "") if bad else ""
+
+
+def t_physics(args, out, tests):
+    folder = os.path.join(out, "p12b_physics")
+    got = blender(args, out, "p12b_physics", ["physics", os.path.join(out, "p12b_physics_probe.json"), folder],
+                  timeout=1800)
+    out_state["physics_folder"] = folder if got.get("moving") else None
+    out_state["moving"] = got.get("moving") or []
+    want = got.get("want") or {}
+    ea, ec = got.get("export_usda") or {}, got.get("export_usdc") or {}
+    ga, gc = got.get("got_usda") or {}, got.get("got_usdc") or {}
+    c = {}
+    counts = ea.get("counts") or {}
+    c["exported as .usda (%s; %s objects)" % (ea.get("result"), counts.get("objects"))] = \
+        ea.get("result") == ["FINISHED"] and bool(ea.get("exists"))
+    rep = [l for l in (ea.get("report") or []) if "hidden layers" not in l]
+    c["nothing left out but the destructible's kept original (on layer 20)%s" % _lines(rep)] = not rep
+    c["imported (%s, %d note(s)%s)" % (ga.get("result"), len(ga.get("report") or []),
+                                      _lines(ga.get("report") or [], 3))] = \
+        ga.get("result") == ["FINISHED"] and not ga.get("report")
+    W = want.get("objects") or {}
+    bodies = sorted(n for n, w in W.items() if w["game"]["physics_type"] in ('RIGID_BODY', 'DYNAMIC'))
+    bad = physics_diff(want, ga.get("physics") or {})
+    c["every object's physics and every joint back as they were (%d objects, %d bodies, %d joints)%s" % (
+        len(W), len(bodies), sum(len(w.get("joints") or ()) for w in W.values()), _lines(bad))] = \
+        not bad and len(W) > 20
+    G = (ga.get("physics") or {}).get("objects") or {}
+    wall = [n for n, w in W.items() if (w.get("idprops") or {}).get("bge_destructible")]
+    pool = [n for n, w in W.items() if (w.get("idprops") or {}).get("bge_fluid")]
+    c["the destructible (%s: Strength %s, Anchored %s) and its %d pieces, the pool (%s) come back" % (
+        wall, wall and (G.get(wall[0]) or {}).get("idprops", {}).get("bge_destructible_strength"),
+        wall and (G.get(wall[0]) or {}).get("idprops", {}).get("bge_destructible_anchored"),
+        sum(1 for g in G.values() if (g.get("idprops") or {}).get("bge_destructible_of")), pool)] = \
+        len(wall) == 1 and len(pool) == 1 and \
+        sum(1 for g in G.values() if (g.get("idprops") or {}).get("bge_destructible_of")) >= 5
+    c["the world: %s %s, gravity %s" % ((ga.get("physics") or {}).get("engine"),
+                                        (ga.get("physics") or {}).get("device"),
+                                        (ga.get("physics") or {}).get("gravity"))] = \
+        (ga.get("physics") or {}).get("engine") == 'PHYSX' and \
+        _same((ga.get("physics") or {}).get("gravity"), 9.81)
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests["T12.e1 The physics room, out and back"] = _test(c, {"export": ea, "import_report": ga.get("report"),
+                                                            "diff": bad, "traceback": got.get("traceback")})
+
+    c = {}
+    E = got.get("standard_want") or {}
+    for ext in ("usda", "usdc"):
+        S = got.get("standard_" + ext) or {}
+        c["%s: OpenUSD's physics reader read it (%s), no complaint (%s, %r)" % (
+            ext, S.get("read"), S.get("usd_errors"), S.get("report"))] = \
+            bool(S.get("read")) and S.get("usd_errors") == 0 and not S.get("report")
+        c["%s: the bodies %s" % (ext, ", ".join(S.get("bodies") or []))] = S.get("bodies") == sorted(E.get("bodies") or [])
+        diff = sorted(k for k in set(E.get("shapes") or {}) | set(S.get("shapes") or {})
+                      if (E.get("shapes") or {}).get(k) != (S.get("shapes") or {}).get(k))
+        c["%s: every collider and its shape's kind (%d)%s" % (ext, len(S.get("shapes") or {}), _lines(
+            ["%s %s/%s" % (k, (E.get("shapes") or {}).get(k), (S.get("shapes") or {}).get(k)) for k in diff]))] = \
+            not diff and bool(E.get("shapes"))
+        diff = sorted(k for k in set(E.get("joints") or {}) | set(S.get("joints") or {})
+                      if (E.get("joints") or {}).get(k) != (S.get("joints") or {}).get(k))
+        c["%s: every joint and its kind (%s)%s" % (ext, ", ".join("%s %s" % kv for kv in sorted(
+            (S.get("joints") or {}).items())), _lines(diff))] = not diff and bool(E.get("joints"))
+        fr = [k for k, v in (E.get("frictions") or {}).items() if not _same(v, (S.get("frictions") or {}).get(k))]
+        c["%s: the physics materials (friction, bounce)%s" % (ext, _lines(fr))] = not fr
+        c["%s: the articulation root (%s, want %s), gravity %s" % (ext, S.get("roots"), E.get("roots"),
+                                                                 S.get("gravity"))] = \
+            S.get("roots") == E.get("roots") and _same(S.get("gravity"), E.get("gravity"))
+    c["the .usdc's physics reads the same as the .usda's"] = \
+        bool(got.get("physics_json_usda")) and got.get("physics_json_usda") == got.get("physics_json_usdc")
+    bad = physics_diff(want, gc.get("physics") or {})
+    c["the .usdc imports the same (%s)%s" % (gc.get("result"), _lines(bad))] = \
+        gc.get("result") == ["FINISHED"] and not bad and not gc.get("report")
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests["T12.e2 Checked by the standard (physics)"] = _test(c, {"want": E, "usda": got.get("standard_usda"),
+                                                                "export_usdc": ec})
+
+
+FIXED = ["-g", "fixedtime", "=", "1"]
+NO_REMIX = ["-g", "remix", "=", "0"]
+out_state = {}
+
+
+def _play(args, out, tag, blend):
+    res = os.path.join(out, tag + "_bodies.json")
+    if os.path.isfile(res):
+        os.remove(res)
+    r = p2.player(args.ours, out, tag, blend, {"BGE_REMIX_P12_OUT": res, "BGE_REMIX_P2_FRAMES": "150"},
+                  size=(640, 360), args=FIXED + NO_REMIX)
+    return p2.read_json(res) or {}, r
+
+
+def t_play(args, out, tests):
+    folder = out_state.get("physics_folder") or os.path.join(out, "p12b_physics")
+    names = out_state.get("moving") or []
+    a, ra = _play(args, out, "p12b_play_room", os.path.join(folder, "room.blend"))
+    b, rb = _play(args, out, "p12b_play_imported", os.path.join(folder, "imported.blend"))
+    c = {}
+    A, B = a.get("bodies") or {}, b.get("bodies") or {}
+    c["both played to tic %s / %s (%d / %d bodies)" % (a.get("tic"), b.get("tic"), len(A), len(B))] = \
+        bool(A) and len(A) == len(B) and (not names or len(A) == len(names))
+    bad, worst_p, worst_r = [], 0.0, 0.0
+    for name, x in sorted(A.items()):
+        y = B.get(name)
+        if y is None:
+            bad.append("%s missing" % name)
+            continue
+        dp = math.sqrt(sum((p - q) ** 2 for p, q in zip(x["pos"], y["pos"])))
+        # the angle between the two turns
+        R = [[sum(x["rot"][k][i] * y["rot"][k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+        cos = max(-1.0, min(1.0, (R[0][0] + R[1][1] + R[2][2] - 1.0) * 0.5))
+        dr = math.degrees(math.acos(cos))
+        worst_p, worst_r = max(worst_p, dp), max(worst_r, dr)
+        if dp > 0.01 or dr > 1.0:
+            bad.append("%s %.3f m, %.2f deg" % (name, dp, dr))
+    moved = [n for n, x in A.items() if n in ("Flap", "Link3", "Drawer")]
+    c["every body where the room's was (worst %.4f m, %.3f degrees)%s" % (worst_p, worst_r, _lines(bad))] = \
+        not bad and bool(A)
+    c["the flap, the chain's end and the drawer moved (%s)" % ", ".join(moved)] = len(moved) == 3
+    c["no crash"] = ra["exit"] == 0 and rb["exit"] == 0 and not ra["traceback_in_output"] and \
+        not rb["traceback_in_output"]
+    tests["T12.e3 It plays the same"] = _test(c, {"room": A, "imported": B})
+
+
+def t_physics_other(args, out, tests):
+    folder = os.path.join(out, "p12b_physics_other")
+    got = blender(args, out, "p12b_physics_other",
+                  ["physics_other", os.path.join(out, "p12b_physics_other_probe.json"), folder])
+    r = got.get("got") or {}
+    P = r.get("physics") or {}
+    G = P.get("objects") or {}
+    want = uf.PHYSICS_OTHER
+    c = {}
+    c["imported (%s)" % r.get("result")] = r.get("result") == ["FINISHED"]
+    bad = []
+    for name, (kind, bounds, mass) in sorted(want["objects"].items()):
+        g = (G.get(name) or {}).get("game") or {}
+        if g.get("physics_type") != kind or (bounds and g.get("collision_bounds_type") != bounds) or \
+                (mass is not None and not _same(g.get("mass"), mass, 1e-3)):
+            bad.append("%s: %s %s %s kg (want %s %s %s)" % (name, g.get("physics_type"), g.get("collision_bounds_type"),
+                                                          g.get("mass"), kind, bounds, mass))
+    c["the bodies, their shapes and masses (the crate's 32 kg from its density)%s" % _lines(bad)] = not bad
+    joints = {}
+    for name, g in G.items():
+        for j in g.get("joints") or ():
+            joints[j["name"]] = (name, j)
+    bad = []
+    for name, (owner, target, kind, axis, pivot, limit) in sorted(want["constraints"].items()):
+        o, j = joints.get(name, (None, None))
+        if j is None:
+            bad.append("%s missing" % name)
+            continue
+        if o != owner or j.get("target") != target or j.get("pivot_type") != kind:
+            bad.append("%s: %s to %s, a %s" % (name, o, j.get("target"), j.get("pivot_type")))
+        if axis is not None and abs(abs(sum(a * b for a, b in zip(axis, j.get("world_axis") or (0, 0, 0)))) - 1.0) > 1e-4:
+            bad.append("%s: its axis %s (want +-%s)" % (name, [round(x, 4) for x in j.get("world_axis") or ()], axis))
+        if not _same(pivot, j.get("world_pivot"), 1e-4):
+            bad.append("%s: its pivot %s (want %s)" % (name, [round(x, 4) for x in j.get("world_pivot") or ()], pivot))
+        if limit is not None:
+            ax, lo, hi = limit
+            if ax == "x":
+                ok = j.get("use_angular_limit_x") and _same(j.get("limit_angle_min_x"), math.radians(lo)) and \
+                    _same(j.get("limit_angle_max_x"), math.radians(hi))
+            else:
+                ok = j.get("use_limit_x") and _same(j.get("limit_min_x"), lo) and _same(j.get("limit_max_x"), hi)
+            if not ok:
+                bad.append("%s: its limits %s" % (name, {k: v for k, v in j.items() if "limit" in k and v}))
+    c["the joints: who to whom, their kinds, axes and pivots in the world, limits%s" % _lines(bad)] = not bad
+    c["the robot arm an articulation Fixed to the World on its base (%s)" % (G.get("Base") or {}).get("articulation")] = \
+        (G.get("Base") or {}).get("articulation") == 'FIXED' and "BaseFixed" not in joints
+    report = "\n".join(r.get("report") or [])
+    for w in want["report"]:
+        c["the report names %r" % w] = w in report
+    c["the world: %s, gravity %s (want 9.81)" % (P.get("engine"), P.get("gravity"))] = \
+        P.get("engine") == 'PHYSX' and _same(P.get("gravity"), want["gravity"])
+    floor = G.get("Floor") or {}
+    c["the floor's physics material: friction %s, bounce %s (want 0.8, 0.3)" % (floor.get("friction"),
+                                                                              floor.get("elasticity"))] = \
+        _same(floor.get("friction"), 0.8) and _same(floor.get("elasticity"), 0.3)
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests["T12.e4 Another tool's physics file"] = _test(c, {"report": r.get("report"), "error": r.get("error"),
+                                                          "traceback": got.get("traceback")})
+
+
 def normal(args, out, scenes, E, tests, sheets):
     only = _only()
-    for key, fn in (("exchange", t_exchange), ("other", t_other), ("unsupported", t_unsupported)):
+    for key, fn in (("exchange", t_exchange), ("other", t_other), ("unsupported", t_unsupported),
+                    ("physics", t_physics), ("play", t_play), ("physicsother", t_physics_other)):
         if not only or key in only:
             try:
                 fn(args, out, tests)
