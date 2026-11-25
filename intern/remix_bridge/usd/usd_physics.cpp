@@ -38,6 +38,7 @@
 #include "pxr/pxr.h"
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/quatf.h"
+#include "pxr/base/vt/types.h"
 #include "pxr/usd/usd/primRange.h"
 #include "pxr/usd/usd/relationship.h"
 #include "pxr/usd/usd/stage.h"
@@ -186,6 +187,28 @@ std::string jvalue(const UsdAttribute &attr, double time)
 		const VtFloatArray &a = v.UncheckedGet<VtFloatArray>();
 		for (size_t i = 0; i < a.size(); i++)
 			o += (i ? ", " : "") + jn(a[i]);
+		return o + "]";
+	}
+	/* (round 8) the bones' names, lengths and switches */
+	if (v.IsHolding<VtIntArray>()) {
+		std::string o = "[";
+		const VtIntArray &a = v.UncheckedGet<VtIntArray>();
+		for (size_t i = 0; i < a.size(); i++)
+			o += (i ? ", " : "") + std::to_string(a[i]);
+		return o + "]";
+	}
+	if (v.IsHolding<VtStringArray>()) {
+		std::string o = "[";
+		const VtStringArray &a = v.UncheckedGet<VtStringArray>();
+		for (size_t i = 0; i < a.size(); i++)
+			o += (i ? ", " : "") + js(a[i]);
+		return o + "]";
+	}
+	if (v.IsHolding<VtTokenArray>()) {
+		std::string o = "[";
+		const VtTokenArray &a = v.UncheckedGet<VtTokenArray>();
+		for (size_t i = 0; i < a.size(); i++)
+			o += (i ? ", " : "") + js(a[i].GetString());
 		return o + "]";
 	}
 	return "null";

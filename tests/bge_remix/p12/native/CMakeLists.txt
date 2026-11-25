@@ -24,7 +24,8 @@ else()
 	find_library(TBB_LIB NAMES tbb PATHS "${TBB_ROOT_DIR}/lib" NO_DEFAULT_PATH REQUIRED)
 	add_executable(p12_usd_check usd_check.cpp "${USD_SRC}/usd_core.cpp" "${USD_SRC}/usd_capture.cpp"
 	               "${USD_SRC}/usd_dump.cpp" "${USD_SRC}/usd_read.cpp"
-	               "${USD_SRC}/usd_scene.cpp" "${USD_SRC}/usd_physics.cpp")
+	               "${USD_SRC}/usd_scene.cpp" "${USD_SRC}/usd_physics.cpp"
+	               "${USD_SRC}/usd_skel.cpp")
 	target_include_directories(p12_usd_check PRIVATE "${USD_SRC}" "${USD_ROOT_DIR}/include" "${TBB_ROOT_DIR}/include")
 	target_compile_definitions(p12_usd_check PRIVATE PXR_STATIC=1)
 	target_link_libraries(p12_usd_check "$<LINK_LIBRARY:WHOLE_ARCHIVE,${USD_M}>" "${TBB_LIB}" ${CMAKE_DL_LIBS} pthread)

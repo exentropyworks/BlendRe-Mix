@@ -39,10 +39,37 @@ T12.e4  Another tool's physics file (usd_files.physics_other: centimetres,
         arm's articulation fixed to the world come in; the distance joint,
         the collision group and the convex decomposition are named.
 
+Round 8 (armatures; p12b_probe.py's character):
+T12.f1  The character, out and back: every bone back with its name, parent,
+        head, tail and roll (0.1 mm, 0.01 degrees); every vertex with its
+        groups and weights; both actions, every bone's pose the same at
+        every frame; the body deformed the same at frames 1, 12 and 24
+        (0.1 mm); the ragdoll's capsules back on their bones, with their
+        physics and joints.
+T12.f2  Checked by the standard: OpenUSD's own skeleton reader finds the
+        skeleton valid (its joints and their order), the body bound to it,
+        the animation's frames; OpenUSD's own skinning of the body at frame
+        12 within 1 mm of Blender's; the .usdc reads the same.
+T12.f3  Another tool's character (usd_files.character_other: Maya's way, Y
+        up, centimetres, 30 frames a second, joints with no length, 4 bones
+        a vertex, a blend shape) comes in upright and to scale, the bones
+        reaching to their children; at frames 1, 15 and 30 its deformed
+        body within 1 mm of OpenUSD's own skinning; the blend shape named.
+T12.f4  It plays the same: the character and the character imported each
+        play Walk in the game for 1 s (an Action actuator): every bone at
+        tics 30 and 60 within 0.1 mm and 0.01 degrees of the original's.
+T12.f5  The Remix View marks what came from USD (a window run, the physics
+        layer): the physics room imported and another tool's physics file:
+        every body and joint says it came from USD (each body its place in
+        the file), the other tool's crate shows its note (its convex
+        decomposition came in as a Convex Hull); the room made in Blender
+        has no such mark.
+
 BGE_REMIX_P12B_ONLY (comma separated: exchange, other, unsupported, physics,
-play, physicsother; d1 and d2 come from exchange, e1 and e2 from physics,
-e3 needs physics run first in the same run) runs only those (a fix round's
-reruns). No RTX run this round.
+play, physicsother, character, characterother, characterplay, usdview; d1
+and d2 come from exchange, e1 and e2 from physics, f1 and f2 from
+character; e3 needs physics run first in the same run, f4 character) runs
+only those (a fix round's reruns). No RTX run this round.
 """
 
 import math
@@ -581,10 +608,363 @@ def t_physics_other(args, out, tests):
                                                           "traceback": got.get("traceback")})
 
 
+# ---------------------------------------------------------------------------
+# round 8: armatures
+
+def turn_deg(a, b):
+    """the angle (degrees) between the turns of two 4 x 4 (or 3 x 3)
+    matrices, their scale taken out"""
+    def cols(m):
+        c = [[m[r][k] for r in range(3)] for k in range(3)]
+        return [[x / max(math.sqrt(sum(y * y for y in v)), 1e-12) for x in v] for v in c]
+    A, B = cols(a), cols(b)
+    tr = sum(sum(A[k][r] * B[k][r] for r in range(3)) for k in range(3))
+    return math.degrees(math.acos(max(-1.0, min(1.0, (tr - 1.0) * 0.5))))
+
+
+def place_off(a, b):
+    return max(abs(a[r][3] - b[r][3]) for r in range(3))
+
+
+def dist(a, b):
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def bones_diff(W, G):
+    bad = []
+    wb, gb = (W.get("rig") or {}).get("bones") or {}, (G.get("rig") or {}).get("bones") or {}
+    for name, w in sorted(wb.items()):
+        g = gb.get(name)
+        if g is None:
+            bad.append("%s missing" % name)
+            continue
+        if g["parent"] != w["parent"] or g["connect"] != w["connect"] or g["deform"] != w["deform"]:
+            bad.append("%s: under %s (connected %s, deform %s), was under %s (%s, %s)" % (
+                name, g["parent"], g["connect"], g["deform"], w["parent"], w["connect"], w["deform"]))
+        dh, dt = dist(w["head"], g["head"]), dist(w["tail"], g["tail"])
+        dr = turn_deg(w["matrix"], g["matrix"])
+        if dh > PLACE_TOL or dt > PLACE_TOL or dr > 0.01:
+            bad.append("%s: head %.3g m, tail %.3g m, roll %.3g deg off" % (name, dh, dt, dr))
+    if sorted(gb) != sorted(wb):
+        bad.append("bones %s, were %s" % (sorted(gb), sorted(wb)))
+    return bad
+
+
+def poses_diff(W, G):
+    bad, worst = [], [0.0, 0.0]
+    for act, w in sorted((W.get("actions") or {}).items()):
+        g = (G.get("actions") or {}).get(act)
+        if g is None:
+            bad.append("action %s missing" % act)
+            continue
+        if sorted(g["poses"]) != sorted(w["poses"]):
+            bad.append("%s: frames %s, were %s" % (act, g["range"], w["range"]))
+            continue
+        for f, bones in w["poses"].items():
+            for b, m in bones.items():
+                h = g["poses"][f].get(b)
+                if h is None:
+                    bad.append("%s frame %s: no %s" % (act, f, b))
+                    continue
+                dp, dr = place_off(m, h), turn_deg(m, h)
+                ds = max(abs(math.sqrt(sum(m[r][k] ** 2 for r in range(3))) -
+                             math.sqrt(sum(h[r][k] ** 2 for r in range(3)))) for k in range(3))
+                worst = [max(worst[0], dp), max(worst[1], dr)]
+                if dp > PLACE_TOL or dr > 0.01 or ds > 1e-4:
+                    bad.append("%s frame %s %s: %.3g m, %.3g deg, scale %.3g off" % (act, f, b, dp, dr, ds))
+    return bad, worst
+
+
+def groups_diff(W, G):
+    wg, gg = (W.get("body") or {}).get("groups") or [], (G.get("body") or {}).get("groups") or []
+    if len(wg) != len(gg):
+        return ["%d vertices, were %d" % (len(gg), len(wg))]
+    bad = []
+    for v, (a, b) in enumerate(zip(wg, gg)):
+        if sorted(a) != sorted(b) or any(abs(a[k] - b[k]) > 1e-5 for k in a):
+            bad.append("vertex %d: %s, was %s" % (v, b, a))
+    return bad
+
+
+def deformed_diff(W, G, frames, tol):
+    bad, worst = [], 0.0
+    for f in frames:
+        a, b = (W or {}).get(str(f)) or [], (G or {}).get(str(f)) or []
+        if not a or len(a) != len(b):
+            bad.append("frame %s: %d vertices, %d wanted" % (f, len(b), len(a)))
+            continue
+        d = max(dist(p, q) for p, q in zip(a, b))
+        worst = max(worst, d)
+        if d > tol:
+            bad.append("frame %s: %.3g m off" % (f, d))
+    return bad, worst
+
+
+def capsules_diff(W, G):
+    bad = []
+    wc, gc = W.get("capsules") or {}, G.get("capsules") or {}
+    for name, w in sorted(wc.items()):
+        g = gc.get(name)
+        if g is None:
+            bad.append("%s missing" % name)
+            continue
+        if (g["parent"], g["parent_type"], g["parent_bone"]) != (w["parent"], w["parent_type"], w["parent_bone"]):
+            bad.append("%s: on %s %s %s, was on %s %s %s" % (name, g["parent"], g["parent_type"], g["parent_bone"],
+                                                            w["parent"], w["parent_type"], w["parent_bone"]))
+        if place_off(w["matrix"], g["matrix"]) > PLACE_TOL or turn_deg(w["matrix"], g["matrix"]) > 0.01:
+            bad.append("%s: placed %.3g m, %.3g deg off" % (name, place_off(w["matrix"], g["matrix"]),
+                                                          turn_deg(w["matrix"], g["matrix"])))
+    if sorted(gc) != sorted(wc):
+        bad.append("capsules %d, were %d" % (len(gc), len(wc)))
+    bad += physics_diff({"objects": {n: c["physics"] for n, c in wc.items() if c.get("physics")}},
+                        {"objects": {n: c["physics"] for n, c in gc.items() if c.get("physics")}})
+    return bad
+
+
+def t_character(args, out, tests):
+    folder = os.path.join(out, "p12b_character")
+    got = blender(args, out, "p12b_character", ["character", os.path.join(out, "p12b_character_probe.json"),
+                                                 folder], timeout=1800)
+    out_state["character_folder"] = folder if (got.get("want") or {}).get("rig") else None
+    W = got.get("want") or {}
+    ea, ec = got.get("export_usda") or {}, got.get("export_usdc") or {}
+    ga, gc = got.get("got_usda") or {}, got.get("got_usdc") or {}
+    A, C = ga.get("character") or {}, gc.get("character") or {}
+    c = {}
+    counts = ea.get("counts") or {}
+    c["exported as .usda (%s; %s armature, %s skinned, %s animations)" % (
+        ea.get("result"), counts.get("armatures"), counts.get("skinned"), counts.get("animations"))] = \
+        ea.get("result") == ["FINISHED"] and bool(ea.get("exists")) and counts.get("armatures") == 1 and \
+        counts.get("skinned") == 1 and counts.get("animations") == 2
+    rep = [l for l in (ea.get("report") or []) if "hidden layers" not in l]
+    c["nothing left out%s" % _lines(rep)] = not rep
+    c["imported (%s, %d note(s)%s)" % (ga.get("result"), len(ga.get("report") or []),
+                                      _lines(ga.get("report") or [], 3))] = \
+        ga.get("result") == ["FINISHED"] and not ga.get("report")
+    wb = (W.get("rig") or {}).get("bones") or {}
+    bad = bones_diff(W, A)
+    c["every bone back: name, parent, head, tail, roll (%d bones)%s" % (len(wb), _lines(bad))] = \
+        not bad and len(wb) == 12
+    c["the armature where it was (%.3g m, %.3g deg)" % (
+        place_off((W.get("rig") or {}).get("matrix") or [[0] * 4] * 4, (A.get("rig") or {}).get("matrix") or
+                  [[1e9] * 4] * 4),
+        turn_deg((W.get("rig") or {}).get("matrix") or [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+                 (A.get("rig") or {}).get("matrix") or [[1, 0, 0], [0, 1, 0], [0, 0, 1]]))] = \
+        bool(A.get("rig")) and place_off(W["rig"]["matrix"], A["rig"]["matrix"]) <= PLACE_TOL and \
+        turn_deg(W["rig"]["matrix"], A["rig"]["matrix"]) <= 0.01
+    bad = groups_diff(W, A)
+    body = A.get("body") or {}
+    c["the body: every vertex's groups and weights (%d vertices)%s" % (len(body.get("groups") or ()),
+                                                                     _lines(bad))] = \
+        not bad and bool(body.get("groups"))
+    c["the body under Rig, an Armature modifier on Rig (%s, %s)" % (body.get("parent"), body.get("modifiers"))] = \
+        body.get("parent") == "Rig" and body.get("modifiers") == [["ARMATURE", "Rig"]]
+    bad, worst = poses_diff(W, A)
+    c["both actions, every bone's pose at every frame (worst %.3g m, %.3g deg)%s" % (worst[0], worst[1],
+                                                                                   _lines(bad))] = \
+        not bad and sorted(A.get("actions") or {}) == ["Walk", "Wave"]
+    c["Walk the armature's action, Wave kept (%s; Wave fake user %s)" % (
+        A.get("action"), ((A.get("actions") or {}).get("Wave") or {}).get("fake_user"))] = \
+        A.get("action") == "Walk" and bool(((A.get("actions") or {}).get("Wave") or {}).get("fake_user"))
+    c["24 frames a second, frames 1 to 24 (%s, %s)" % (A.get("fps"), A.get("frames"))] = \
+        _same(A.get("fps"), 24.0) and A.get("frames") == [1, 24]
+    bad, worst = deformed_diff(W.get("deformed"), A.get("deformed"), (1, 12, 24), PLACE_TOL)
+    c["the body deformed the same at frames 1, 12 and 24 (worst %.3g m)%s" % (worst, _lines(bad))] = not bad
+    bad = capsules_diff(W, A)
+    c["the ragdoll's %d capsules back on their bones, with their physics and joints%s" % (
+        len(W.get("capsules") or {}), _lines(bad))] = not bad and len(W.get("capsules") or {}) == 12
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests["T12.f1 The character, out and back"] = _test(c, {"export": ea, "import_report": ga.get("report"),
+                                                         "traceback": got.get("traceback")})
+
+    c = {}
+    joints = got.get("want_joints") or []
+    for ext in ("usda", "usdc"):
+        S = got.get("standard_" + ext) or {}
+        sk = S.get("skeletons") or {}
+        skels = sk.get("skeletons") or []
+        s0 = skels[0] if skels else {}
+        c["%s: no complaint (%s, %r)" % (ext, S.get("usd_errors"), S.get("report"))] = \
+            S.get("usd_errors") == 0 and not S.get("report") and "error" not in S
+        c["%s: one skeleton, valid (%s %s), its %d joints in order" % (ext, s0.get("valid"), s0.get("problem"),
+                                                                       len(s0.get("joints") or ()))] = \
+            len(skels) == 1 and bool(s0.get("valid")) and s0.get("joints") == joints and len(joints) == 12
+        skin = sk.get("skinned") or []
+        c["%s: the body bound to it (%s)" % (ext, [x.get("path") for x in skin])] = \
+            len(skin) == 1 and skin[0].get("skeleton") == s0.get("path") and bool(S.get("mesh_path"))
+        anims = sorted(a["path"].rsplit("/", 1)[-1] for a in sk.get("animations") or ())
+        t = sk.get("time") or {}
+        c["%s: Walk bound, Wave there, frames %s to %s at %s" % (ext, t.get("start"), t.get("end"), t.get("fps"))] = \
+            (s0.get("animation") or "").endswith("/Walk") and anims == ["Walk", "Wave"] and \
+            bool(t.get("authored")) and _same(t.get("start"), 1) and _same(t.get("end"), 24) and \
+            _same(t.get("fps"), 24)
+        usd = (S.get("skinned") or {}).get("12") or []
+        mine = (W.get("deformed") or {}).get("12") or []
+        d = max(dist(p, q) for p, q in zip(mine, usd)) if mine and len(mine) == len(usd) else 1e9
+        c["%s: OpenUSD's own skinning of the body at frame 12 within 1 mm of Blender's (%.3g m)" % (ext, d)] = \
+            d <= 1e-3
+    import json as _json
+    c["the .usdc's skeletons read the same as the .usda's"] = \
+        bool((got.get("standard_usda") or {}).get("skeletons")) and \
+        _json.dumps((got.get("standard_usda") or {}).get("skeletons"), sort_keys=True) == \
+        _json.dumps((got.get("standard_usdc") or {}).get("skeletons"), sort_keys=True)
+    bad = bones_diff(W, C) + poses_diff(W, C)[0] + groups_diff(W, C)
+    c["the .usdc imports the same (%s)%s" % (gc.get("result"), _lines(bad))] = \
+        gc.get("result") == ["FINISHED"] and not bad and not gc.get("report")
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests["T12.f2 Checked by the standard (skeletons)"] = _test(c, {"usda": {k: v for k, v in (
+        got.get("standard_usda") or {}).items() if k != "skinned"}, "export_usdc": ec})
+
+
+def t_character_other(args, out, tests):
+    folder = os.path.join(out, "p12b_character_other")
+    got = blender(args, out, "p12b_character_other",
+                  ["character_other", os.path.join(out, "p12b_character_other_probe.json"), folder])
+    r = got.get("got") or {}
+    G = r.get("character") or {}
+    E = got.get("expect") or {}
+    S = got.get("standard") or {}
+    c = {}
+    c["imported (%s)" % r.get("result")] = r.get("result") == ["FINISHED"]
+    bones = G.get("bones") or {}
+    c["an armature of %d bones (%s), its action Anim (%s)" % (len(bones), G.get("armatures"), G.get("action"))] = \
+        len(G.get("armatures") or ()) == 1 and len(bones) == E.get("bones") and G.get("action") == "Anim"
+    bad = []
+    for n, h in sorted((E.get("heads") or {}).items()):
+        b = bones.get(n)
+        if b is None:
+            bad.append("%s missing" % n)
+        elif dist(b["head"], h) > PLACE_TOL:
+            bad.append("%s's head at %s, not %s" % (n, [round(x, 4) for x in b["head"]], [round(x, 4) for x in h]))
+    c["upright and to scale: every joint where the file has it, in metres, Z up%s" % _lines(bad)] = \
+        not bad and bool(bones)
+    bad = []
+    for n, t in sorted((E.get("tails") or {}).items()):
+        b = bones.get(n)
+        if b is not None and dist(b["tail"], t) > PLACE_TOL:
+            bad.append("%s reaches %s, not %s" % (n, [round(x, 4) for x in b["tail"]], [round(x, 4) for x in t]))
+    c["the bones reaching to their children%s" % _lines(bad)] = not bad and bool(bones)
+    body = G.get("body") or {}
+    c["the body: %s vertices, %s groups, %s, under %s" % (body.get("vertices"), body.get("groups"),
+                                                         body.get("modifiers"), body.get("parent"))] = \
+        body.get("vertices") == E.get("vertices") and body.get("modifiers") == ["ARMATURE"] and \
+        body.get("parent") in (G.get("armatures") or [None])
+    c["30 frames a second, frames 1 to 30 (%s, %s)" % (G.get("fps"), G.get("frames"))] = \
+        _same(G.get("fps"), 30.0) and G.get("frames") == [1, 30]
+    usd = {f: [uf.to_blender(p, 0.01, False) for p in pts] for f, pts in (S.get("skinned") or {}).items()}
+    bad, worst = deformed_diff(usd, G.get("deformed"), (1, 15, 30), 1e-3)
+    c["at frames 1, 15 and 30 its body within 1 mm of OpenUSD's own skinning (worst %.3g m)%s" % (
+        worst, _lines(bad))] = not bad and len(usd) == 3
+    report = "\n".join(r.get("report") or [])
+    for w in E.get("report") or ():
+        c["the report names %r" % w] = w in report
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests["T12.f3 Another tool's character"] = _test(c, {"report": r.get("report"), "error": r.get("error"),
+                                                       "traceback": got.get("traceback")})
+
+
+def _play_character(args, out, tag, blend):
+    res = os.path.join(out, tag + "_poses.json")
+    if os.path.isfile(res):
+        os.remove(res)
+    r = p2.player(args.ours, out, tag, blend, {"BGE_REMIX_P12_OUT": res, "BGE_REMIX_P2_FRAMES": "90"},
+                  size=(640, 360), args=FIXED + NO_REMIX)
+    return p2.read_json(res) or {}, r
+
+
+def t_character_play(args, out, tests):
+    folder = out_state.get("character_folder") or os.path.join(out, "p12b_character")
+    a, ra = _play_character(args, out, "p12b_play_character", os.path.join(folder, "character.blend"))
+    b, rb = _play_character(args, out, "p12b_play_character_imported", os.path.join(folder, "imported.blend"))
+    c = {}
+    A, B = a.get("poses") or {}, b.get("poses") or {}
+    c["both played to tic %s / %s (poses at %s / %s)" % (a.get("tic"), b.get("tic"), sorted(A), sorted(B))] = \
+        sorted(A) == ["30", "60"] and sorted(B) == ["30", "60"]
+    bad, worst = [], [0.0, 0.0]
+    for tic in sorted(A):
+        x, y = A[tic], B.get(tic) or {}
+        for name, p in sorted((x.get("bones") or {}).items()):
+            q = (y.get("bones") or {}).get(name)
+            if q is None:
+                bad.append("tic %s: %s missing" % (tic, name))
+                continue
+            dp = max(dist(p["head"], q["head"]), dist(p["tail"], q["tail"]))
+            dr = turn_deg(p["matrix"], q["matrix"])
+            worst = [max(worst[0], dp), max(worst[1], dr)]
+            if dp > PLACE_TOL or dr > 0.01:
+                bad.append("tic %s %s: %.3g m, %.3g deg" % (tic, name, dp, dr))
+    frames = [(A.get(t) or {}).get("frame") for t in ("30", "60")]
+    c["every bone where the original's was (worst %.3g m, %.3g deg; Walk at frames %s)%s" % (
+        worst[0], worst[1], frames, _lines(bad))] = not bad and len((A.get("30") or {}).get("bones") or ()) == 12
+    c["no crash"] = ra["exit"] == 0 and rb["exit"] == 0 and not ra["traceback_in_output"] and \
+        not rb["traceback_in_output"]
+    tests["T12.f4 It plays the same (armature)"] = _test(c, {"original": A.get("60"), "imported": B.get("60")})
+
+
+def t_usd_view(args, out, tests):
+    import p12a_tests as pa
+    folder = os.path.join(out, "p12b_usd_view")
+    got = blender(args, out, "p12b_usd_view", ["usd_view", os.path.join(out, "p12b_usd_view_probe.json"), folder],
+                  timeout=1800)
+    c = {}
+    c["the room exported, imported, the other tool's file imported, each saved with a Remix View (%s; %s, %s)" % (
+        got.get("export"), (got.get("imported") or {}).get("result"), (got.get("other") or {}).get("result"))] = \
+        got.get("export") == ["FINISHED"] and (got.get("imported") or {}).get("result") == ["FINISHED"] and \
+        (got.get("other") or {}).get("result") == ["FINISHED"] and bool(got.get("room_screens"))
+    views = {}
+    for tag in ("room", "imported", "other"):
+        blend = os.path.join(folder, tag + ".blend")
+        views[tag] = pa.view_run(args, out, "p12b_usd_view_" + tag, blend, layer="PHYSICS") \
+            if os.path.isfile(blend) else {}
+        c["%s: the Remix View built in the window (physics layer)" % tag] = bool(views[tag].get("ran"))
+
+    def parts(view):
+        b = (view.get("steps") or {}).get("build") or {}
+        return b.get("elements") or [], b.get("warnings") or []
+
+    for tag in ("imported", "other"):
+        els, warns = parts(views[tag])
+        marks = (got.get(tag) or {}).get("marks") or {}
+        bodies = [e for e in els if (e.get("kind") or "").startswith("body:") and
+                  e.get("kind") != "body:NO_COLLISION"]
+        bad = []
+        for e in bodies:
+            prim = (marks.get(e.get("owner")) or {}).get("prim") or (marks.get(e.get("name")) or {}).get("prim")
+            if not prim or ("from USD: " + prim) not in (e.get("info") or ""):
+                bad.append("%s: %r" % (e.get("name"), e.get("info")))
+        c["%s: every body says it came from USD, with its place in the file (%d bodies)%s" % (
+            tag, len(bodies), _lines(bad, 4))] = not bad and bool(bodies)
+        joints = [e for e in els if (e.get("kind") or "").startswith("joint:")]
+        bad = ["%s: %r" % (e.get("name"), e.get("info")) for e in joints if "from USD" not in (e.get("info") or "")]
+        c["%s: every joint says it came from USD (%d joints)%s" % (tag, len(joints), _lines(bad, 4))] = \
+            not bad and bool(joints)
+        eng = [e for e in els if (e.get("kind") or "").startswith("engine:")]
+        c["%s: the scene says which file it came from (%r)" % (tag, eng and eng[0].get("info"))] = \
+            bool(eng) and "the scene came from USD (" in (eng[0].get("info") or "")
+        if tag == "other":
+            notes = [w for w in warns if w.get("code") == "USD_NOTE"]
+            crate = [w for w in notes if w.get("name") == "Crate" or w.get("owner") == "Crate"]
+            c["other: the crate's note: its convex decomposition came in as a Convex Hull (%s)" % (
+                [w.get("text") for w in crate])] = \
+                any("convexDecomposition" in (w.get("text") or "") and "Convex Hull" in (w.get("text") or "")
+                    for w in crate)
+    els, warns = parts(views["room"])
+    marked = [e.get("name") for e in els if "USD" in (e.get("info") or "")] + \
+        [w.get("name") for w in warns if w.get("code") == "USD_NOTE"]
+    c["the room made in Blender has no such mark (%d elements%s)" % (len(els), _lines(marked, 4))] = \
+        not marked and bool(els)
+    c["no crash"] = got.get("exit") == 0 and "traceback" not in got
+    tests["T12.f5 The Remix View marks what came from USD"] = _test(c, {
+        "traceback": got.get("traceback"), "other_marks": (got.get("other") or {}).get("marks"),
+        "views": {t: {k: v for k, v in (views[t] or {}).items() if k != "steps"} for t in views}})
+
+
 def normal(args, out, scenes, E, tests, sheets):
     only = _only()
     for key, fn in (("exchange", t_exchange), ("other", t_other), ("unsupported", t_unsupported),
-                    ("physics", t_physics), ("play", t_play), ("physicsother", t_physics_other)):
+                    ("physics", t_physics), ("play", t_play), ("physicsother", t_physics_other),
+                    ("character", t_character), ("characterother", t_character_other),
+                    ("characterplay", t_character_play), ("usdview", t_usd_view)):
         if not only or key in only:
             try:
                 fn(args, out, tests)

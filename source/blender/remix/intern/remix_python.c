@@ -1019,7 +1019,8 @@ PyDoc_STRVAR(brmx_usd_read_doc,
 "      materials (name, path, preview, aperture, mdl, sub_identifier, other,\n"
 "      preview_inputs, aperture_inputs: name to kind, v, text, path, exists,\n"
 "      output, color_space), lights (as capture_read's), cameras, physics\n"
-"      (round 7: the physics as JSON text, bge_remix_usd.h).\n"
+"      (round 7: the physics as JSON text, bge_remix_usd.h), skeletons (round\n"
+"      8: the skeletons, skinned meshes and animations as JSON text).\n"
 "   :raises RuntimeError: when it cannot be read.\n");
 static PyObject *brmx_usd_read(PyObject *UNUSED_self, PyObject *args)
 {
@@ -1215,6 +1216,11 @@ static PyObject *brmx_usd_read(PyObject *UNUSED_self, PyObject *args)
 		const char *phys = api->physics(sc);
 		dict_set(out, "physics", PyUnicode_DecodeUTF8(phys, (Py_ssize_t)strlen(phys), "replace"));
 	}
+	/* round 8: the skeletons, as JSON */
+	{
+		const char *sk = api->skeletons(sc);
+		dict_set(out, "skeletons", PyUnicode_DecodeUTF8(sk, (Py_ssize_t)strlen(sk), "replace"));
+	}
 	api->close(sc);
 	return out;
 }
@@ -1242,6 +1248,64 @@ static PyObject *brmx_usd_convert(PyObject *UNUSED_self, PyObject *args)
 	ok = B->usd_convert(src, dst, err, (int)sizeof(err));
 	Py_END_ALLOW_THREADS
 	return Py_BuildValue("(Os)", ok ? Py_True : Py_False, err);
+}
+
+PyDoc_STRVAR(brmx_usd_skinned_points_doc,
+".. function:: usd_skinned_points(path, mesh_path, time)\n"
+"\n"
+"   BGE-Remix P12 round 8: OpenUSD's own skinning (UsdSkel) of the mesh at\n"
+"   mesh_path in the USD file at path, at time, in the world (the file's\n"
+"   units and up axis).\n"
+"\n"
+"   :return: bytes of float32, x y z for each point, or None when that mesh\n"
+"      is not skinned.\n"
+"   :raises RuntimeError: when the file cannot be read.\n");
+static PyObject *brmx_usd_skinned_points(PyObject *UNUSED_self, PyObject *args)
+{
+	const char *path, *mesh;
+	double time;
+	char err[2048] = "";
+	const bru_scene_api *api;
+	bru_scene *sc;
+	PyObject *out;
+	int n;
+
+	if (!PyArg_ParseTuple(args, "ssd:usd_skinned_points", &path, &mesh, &time)) {
+		return NULL;
+	}
+	if (!bridge_ensure()) {
+		PyErr_SetString(PyExc_RuntimeError, BRMX_bridge_error());
+		return NULL;
+	}
+	api = B->usd_scene_api(err, (int)sizeof(err));
+	if (api == NULL) {
+		PyErr_SetString(PyExc_RuntimeError, err);
+		return NULL;
+	}
+	Py_BEGIN_ALLOW_THREADS
+	sc = api->open(B->usd_plugin_dir(), path, err, (int)sizeof(err));
+	Py_END_ALLOW_THREADS
+	if (sc == NULL) {
+		PyErr_SetString(PyExc_RuntimeError, err);
+		return NULL;
+	}
+	n = api->skinned_points(sc, mesh, time, NULL, 0);
+	if (n < 0) {
+		api->close(sc);
+		Py_RETURN_NONE;
+	}
+	{
+		float *pts = (float *)PyMem_Malloc(sizeof(float) * 3 * (size_t)(n > 0 ? n : 1));
+		if (pts == NULL) {
+			api->close(sc);
+			return PyErr_NoMemory();
+		}
+		api->skinned_points(sc, mesh, time, pts, n);
+		out = PyBytes_FromStringAndSize((const char *)pts, (Py_ssize_t)(sizeof(float) * 3 * (size_t)n));
+		PyMem_Free(pts);
+	}
+	api->close(sc);
+	return out;
 }
 
 PyDoc_STRVAR(brmx_dds_write_doc,
@@ -1512,6 +1576,7 @@ static PyMethodDef brmx_methods[] = {
 	{"usd_dump", (PyCFunction)brmx_usd_dump, METH_VARARGS, brmx_usd_dump_doc},
 	{"usd_read", (PyCFunction)brmx_usd_read, METH_VARARGS, brmx_usd_read_doc},  /* round 6 */
 	{"usd_convert", (PyCFunction)brmx_usd_convert, METH_VARARGS, brmx_usd_convert_doc},
+	{"usd_skinned_points", (PyCFunction)brmx_usd_skinned_points, METH_VARARGS, brmx_usd_skinned_points_doc},
 	{"dds_write", (PyCFunction)brmx_dds_write, METH_VARARGS, brmx_dds_write_doc},
 	/* BGE-Remix P12 round 5 */
 	{"capture_fp", (PyCFunction)brmx_capture_fp, METH_VARARGS, brmx_capture_fp_doc},

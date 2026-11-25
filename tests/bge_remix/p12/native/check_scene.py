@@ -9,7 +9,11 @@ checked; another tool's file and one with what the import does not take
   python check_scene.py check <folder>
       the reads in <folder>: exchange.json, exchange_c.json (exchange.usdc,
       converted), other_tool.json, unsupported.json; (round 7)
-      physics.json, physics_other.json
+      physics.json, physics_other.json; (round 8) character.json,
+      character_c.json (character.usdc, converted), character_other.json,
+      and OpenUSD's own skinning: character_skin.json (/Character/Rig/Body/
+      BodyMesh at frame 12), character_other_skin.json (/World/Character/
+      Body at frame 15)
 
 The exchange scene: an empty with a table under it (its top a mesh, four
 legs parented to it, one named Leg.001), a two-material box with vertex
@@ -145,6 +149,138 @@ def physics_scene():
     return sc
 
 
+# -- round 8: a character ------------------------------------------------------
+
+def _rot_x(deg):
+    import math
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return [1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]
+
+
+# bone: parent, bind (in the armature's space, USD rows: Blender's
+# matrix_local), length
+CHAR_BONES = [("Root", None, uf.m_mul(_rot_x(-90.0), move(0.0, 0.0, 1.0)), 0.3),
+              ("Spine", 0, uf.m_mul(_rot_x(-90.0), move(0.0, 0.0, 1.3)), 0.4),
+              ("Arm.L", 1, uf.m_mul(uf.m_rotate("Z", -90.0), move(0.1, 0.0, 1.6)), 0.5)]
+CHAR_ARM = move(1.0, 2.0, 0.0)
+CHAR_BODY = move(0.0, 0.0, 0.05)  # the body object, relative to the armature
+
+
+def _local(tr, q, sc):
+    """(translation, w x y z, scale) as USD rows: S R T"""
+    w, x, y, z = q
+    R = [1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y), 0,
+         2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x), 0,
+         2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y), 0, 0, 0, 0, 1]
+    S = [sc[0], 0, 0, 0, 0, sc[1], 0, 0, 0, 0, sc[2], 0, 0, 0, 0, 1]
+    return uf.m_mul(uf.m_mul(S, R), move(*tr))
+
+
+def _pose(f):
+    """each bone's (translation, rotation, scale) relative to its parent's
+    at frame f (Walk)"""
+    import math
+    out = []
+    for i, (_n, parent, bind, _l) in enumerate(CHAR_BONES):
+        rest = bind if parent is None else uf.m_mul(bind, uf.m_inverse(CHAR_BONES[parent][2]))
+        a = math.radians(20.0 * math.sin(f / 4.0) * (i + 1))
+        turn = (math.cos(a / 2), math.sin(a / 2), 0.0, 0.0)  # about the bone's own X
+        L = uf.m_mul(_local((0, 0, 0), turn, (1, 1, 1)), rest)
+        tr = (L[12], L[13] + (0.02 * f if i == 0 else 0.0), L[14])
+        out.append((tr, uf.quat_of(L), (1.0, 1.0, 1.0)))
+    return out
+
+
+def character_scene():
+    """an armature Rig (3 bones, its Walk bound, Wave as well), a body
+    skinned to it (two bones a vertex), a cube hung from its Arm.L bone"""
+    tokens = ["Root", "Root/Spine", "Root/Spine/Arm_L"]
+    bind = [b[2] for b in CHAR_BONES]
+    rest = [bind[0]] + [uf.m_mul(b[2], uf.m_inverse(CHAR_BONES[b[1]][2])) for b in CHAR_BONES[1:]]
+    walk = [(float(f), [p[0] for p in _pose(f)], [p[1] for p in _pose(f)], [p[2] for p in _pose(f)])
+            for f in (1, 6, 12, 18, 24)]
+    wave = [(float(f), [p[0] for p in _pose(f * 2)], [p[1] for p in _pose(f * 2)], [p[2] for p in _pose(f * 2)])
+            for f in (1, 12)]
+    pts, counts, idx = uf.box(0.4, 0.4, 1.0)
+    pts = [(x, y, z + 1.4) for x, y, z in pts]
+    indices, weights = [], []
+    for x, y, z in pts:
+        lo = z < 1.4
+        indices += [0, 1] if lo else [1, 2]
+        weights += [0.75, 0.25] if lo else [0.6, 0.4]
+    body = {"name": "BodyMesh", "points": pts, "counts": counts, "indices": idx, "normals": None, "uvs": None,
+            "double_sided": False, "material": None,
+            "skin": {"armature": 0, "element_size": 2, "indices": indices, "weights": weights,
+                     "geom_bind": CHAR_BODY, "method": "classicLinear"}}
+    a = {"name": "Rig", "kind": "ARMATURE", "parent": -1, "matrix": CHAR_ARM,
+         "skeleton": {"name": "RigData", "joints": tokens, "bind": bind, "rest": rest, "animation": 0,
+                      "attrs": [("custom string[]", "bgeRemix:boneNames", [b[0] for b in CHAR_BONES]),
+                                ("custom float[]", "bgeRemix:boneLengths", [b[3] for b in CHAR_BONES]),
+                                ("custom int[]", "bgeRemix:boneConnect", [0, 1, 0])]},
+         "animations": [{"name": "Walk", "joints": tokens, "samples": walk,
+                         "attrs": [("custom string", "bgeRemix:action", "Walk")]},
+                        {"name": "Wave", "joints": tokens, "samples": wave,
+                         "attrs": [("custom string", "bgeRemix:action", "Wave")]}],
+         "attrs": [("custom double", "bgeRemix:frame", 1.0)]}
+    return {"root": "Character", "materials": [], "time": {"start": 1.0, "end": 24.0, "fps": 24.0},
+            "objects": [a,
+                        {"name": "Body", "kind": "MESH", "parent": 0, "matrix": CHAR_BODY, "mesh": body},
+                        {"name": "Hat", "kind": "MESH", "parent": 0, "matrix": move(0.3, 0.0, 1.9),
+                         "mesh": mesh("HatMesh", (0.1, 0.1, 0.1)),
+                         "attrs": [("custom string", "bgeRemix:parentBone", "Arm.L")]}]}
+
+
+def character_skinned(f):
+    """the body at frame f in the world as Blender deforms it: the armature
+    A, its pose P_i and rest B_i, the body object O: A * sum(w P B^-1) *
+    A^-1 * O (here as USD rows)"""
+    sc = character_scene()
+    walk = sc["objects"][0]["animations"][0]["samples"]
+    sample = [s for s in walk if s[0] == f][0]
+    J = []
+    for i, (_n, parent, _b, _l) in enumerate(CHAR_BONES):
+        L = _local(sample[1][i], sample[2][i], sample[3][i])
+        J.append(L if parent is None else uf.m_mul(L, J[parent]))
+    skin = sc["objects"][1]["mesh"]["skin"]
+    O = uf.m_mul(CHAR_BODY, CHAR_ARM)  # the body's world
+    G = uf.m_mul(O, uf.m_inverse(CHAR_ARM))
+    out = []
+    for v, p in enumerate(sc["objects"][1]["mesh"]["points"]):
+        q = uf.m_point(G, p)
+        acc = [0.0, 0.0, 0.0]
+        for k in range(2):
+            j, w = skin["indices"][v * 2 + k], skin["weights"][v * 2 + k]
+            r = uf.m_point(uf.m_mul(uf.m_inverse(CHAR_BONES[j][2]), J[j]), q)
+            acc = [a + w * b for a, b in zip(acc, r)]
+        out.append(uf.m_point(CHAR_ARM, acc))
+    return out
+
+
+def character_other_skinned(f):
+    """another tool's body at frame f in its own space, skinned by hand
+    (USD's rule: rest points * geomBind * sum(w bind^-1 joint) * the
+    skeleton's world)"""
+    names, bind, rest = uf.character_binds()
+    anim, _w = uf.character_frame(f)
+    local = dict(rest)
+    for (name, _a, _m), (tr, q, sc) in zip(uf.CHARACTER_ANIMATED, anim):
+        local[name] = _local(tr, q, sc)
+    J = {}
+    for name, parent, _p, _t in uf.CHARACTER_JOINTS:
+        J[name] = local[name] if parent is None else uf.m_mul(local[name], J[parent])
+    pts, _c, _i, joints, weights = uf.character_mesh()
+    out = []
+    for v, p in enumerate(pts):
+        q = uf.m_point(uf.GEOM_BIND, p)
+        acc = [0.0, 0.0, 0.0]
+        for k in range(4):
+            n = names[joints[v * 4 + k]]
+            r = uf.m_point(uf.m_mul(uf.m_inverse(bind[n]), J[n]), q)
+            acc = [a + weights[v * 4 + k] * b for a, b in zip(acc, r)]
+        out.append(uf.m_point(uf.CHARACTER_ROOT, acc))
+    return out
+
+
 def write(folder):
     os.makedirs(os.path.join(folder, "textures"), exist_ok=True)
     uf.png(os.path.join(folder, "textures", "gold.png"), 4, 4, lambda x, y: (255, 200, 80, 255))
@@ -155,7 +291,11 @@ def write(folder):
     with open(os.path.join(folder, "physics.usda"), "w") as f:
         f.write(ut.scene_text(physics_scene()))
     uf.physics_other(folder)
-    print("written: exchange.usda, other_tool.usda, unsupported.usda in %s" % folder)
+    with open(os.path.join(folder, "character.usda"), "w") as f:
+        f.write(ut.scene_text(character_scene()))
+    uf.character_other(folder)
+    print("written: exchange.usda, other_tool.usda, unsupported.usda, physics.usda, physics_other.usda, "
+          "character.usda, character_other.usda in %s" % folder)
     return 0
 
 
@@ -282,6 +422,81 @@ def check(folder):
         if len(dens) != 1 or dens[0] is None or abs(dens[0] - want["crate_density"]) > 1e-9:
             bad.append("the crate's density %s, not %s" % (dens, want["crate_density"]))
     result("(round 7) another tool's physics file read by OpenUSD's physics reader", bad)
+
+    # round 8: skeletons
+    ch = load("character.json")
+    result("(round 8) the character read back as written, by OpenUSD's skeleton reader too",
+           ut.check_read(character_scene(), ch))
+    cc = load("character_c.json")
+    same = []
+    if "error" in ch or "error" in cc:
+        same.append("not read")
+    elif json.dumps(ch.get("skeletons"), sort_keys=True) != json.dumps(cc.get("skeletons"), sort_keys=True):
+        same.append("its skeletons differ")
+    result("(round 8) the character's .usdc reads the same", same)
+    bad = []
+    custom = (ch.get("physics") or {}).get("custom") or {}
+    sk = custom.get("/Character/Rig/Skeleton") or {}
+    if sk.get("boneNames") != ["Root", "Spine", "Arm.L"] or sk.get("boneConnect") != [0, 1, 0] or \
+            [round(x, 6) for x in sk.get("boneLengths") or ()] != [0.3, 0.4, 0.5]:
+        bad.append("our bone attributes: %s" % sk)
+    if (custom.get("/Character/Rig/Hat") or {}).get("parentBone") != "Arm.L":
+        bad.append("the hat's bone: %s" % custom.get("/Character/Rig/Hat"))
+    if (custom.get("/Character/Rig/Walk") or {}).get("action") != "Walk":
+        bad.append("Walk's name: %s" % custom.get("/Character/Rig/Walk"))
+    objs = ut.objects_from_read(ch) if "error" not in ch else []
+    kinds = [(o["name"], o["kind"], o["parent"]) for o in objs]
+    if kinds != [("Rig", "ARMATURE", -1), ("Body", "MESH", 0), ("Hat", "MESH", 0)]:
+        bad.append("objects %s" % kinds)
+    result("(round 8) our bone attributes, the armature an object with its body and hat under it", bad)
+    sk = load("character_skin.json")
+    want = character_skinned(12.0)
+    got = sk.get("points") or []
+    bad = []
+    if sk.get("count") != len(want):
+        bad.append("%s points skinned, %d in the body" % (sk.get("count"), len(want)))
+    else:
+        d = max(abs(a - b) for i, p in enumerate(want) for a, b in zip(p, got[i * 3:i * 3 + 3]))
+        if d > 1e-5:
+            bad.append("%.3g m off Blender's way" % d)
+    result("(round 8) OpenUSD skins the body at frame 12 as Blender does", bad)
+
+    o = load("character_other.json")
+    bad = []
+    if "error" in o:
+        bad.append(o["error"])
+    else:
+        sk = o.get("skeletons") or {}
+        s0 = (sk.get("skeletons") or [{}])[0]
+        if len(sk.get("skeletons") or ()) != 1 or not s0.get("valid") or len(s0.get("joints") or ()) != 7:
+            bad.append("the skeleton: %s" % {k: s0.get(k) for k in ("path", "valid", "problem", "joints")})
+        if s0.get("animation") != "/World/Character/Skel/Anim":
+            bad.append("its animation %s" % s0.get("animation"))
+        sn = (sk.get("skinned") or [{}])[0]
+        if sn.get("path") != "/World/Character/Body" or sn.get("element_size") != 4 or not sn.get("blend_shapes"):
+            bad.append("the body: %s" % {k: sn.get(k) for k in ("path", "element_size", "blend_shapes")})
+        an = (sk.get("animations") or [{}])[0]
+        if len(an.get("times") or ()) != 30 or an.get("blend_shapes") != ["Smile"]:
+            bad.append("the animation: %d samples, blend shapes %s" % (len(an.get("times") or ()),
+                                                                       an.get("blend_shapes")))
+        t = sk.get("time") or {}
+        if (t.get("start"), t.get("end"), t.get("fps"), t.get("authored")) != (1, 30, 30, True):
+            bad.append("frames %s" % t)
+        objs = [(x["name"], x["kind"], x["parent"]) for x in ut.objects_from_read(o)]
+        if objs != [("World", "XFORM", -1), ("Character", "ARMATURE", 0), ("Body", "MESH", 1)]:
+            bad.append("objects %s" % objs)
+    result("(round 8) another tool's character read by OpenUSD's skeleton reader", bad)
+    sk = load("character_other_skin.json")
+    want = character_other_skinned(15)
+    got = sk.get("points") or []
+    bad = []
+    if sk.get("count") != len(want):
+        bad.append("%s points skinned, %d in the body" % (sk.get("count"), len(want)))
+    else:
+        d = max(abs(a - b) for i, p in enumerate(want) for a, b in zip(p, got[i * 3:i * 3 + 3]))
+        if d > 1e-3:  # centimetres: 0.01 mm
+            bad.append("%.3g cm off the hand skinning" % d)
+    result("(round 8) OpenUSD skins another tool's body at frame 15 as worked out by hand", bad)
     print("%d failed" % failed)
     return failed
 

@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "bge_remix_usd.h"
 
@@ -275,6 +276,8 @@ static int dump_scene(const bru_scene_api *api, const char *plugins, const char 
 	}
 	o += "],\n \"physics\": ";
 	o += api->physics(sc);  /* round 7: JSON already */
+	o += ",\n \"skeletons\": ";
+	o += api->skeletons(sc);  /* round 8 */
 	o += "}\n";
 	fputs(o.c_str(), f);
 	fclose(f);
@@ -282,6 +285,30 @@ static int dump_scene(const bru_scene_api *api, const char *plugins, const char 
 	       info.material_count, info.report);
 	api->close(sc);
 	return 0;
+}
+
+/* P12 round 8: OpenUSD's own skinning of a mesh at a time, as JSON */
+static int dump_skin(const bru_scene_api *api, const char *plugins, const char *path, const char *mesh, double time,
+                     const char *json)
+{
+	char err[2048] = "";
+	bru_scene *sc = api->open(plugins, path, err, int(sizeof(err)));
+	if (!sc) {
+		printf("scene %s: not read (%s)\n", path, err);
+		return 2;
+	}
+	const int n = api->skinned_points(sc, mesh, time, nullptr, 0);
+	std::vector<float> pts(size_t(n > 0 ? n : 0) * 3);
+	if (n > 0)
+		api->skinned_points(sc, mesh, time, pts.data(), n);
+	api->close(sc);
+	FILE *f = fopen(json, "w");
+	if (!f)
+		return 1;
+	fprintf(f, "{\"count\": %d, \"points\": %s}\n", n, jarrf(pts.data(), int(pts.size())).c_str());
+	fclose(f);
+	printf("%s at %g: %d skinned points\n", mesh, time, n);
+	return n >= 0 ? 0 : 3;
 }
 
 #ifdef _WIN32
@@ -371,6 +398,17 @@ int main(int argc, char **argv)
 		printf("%s  %s read through the bridge\n", r == 0 ? "ok   " : "FAIL ", argv[3]);
 		return r == 0 ? 0 : 1;
 	}
+	if (argc >= 7 && strcmp(argv[2], "--skin") == 0) {
+		scene_api_fn scene_api = (scene_api_fn)GetProcAddress(dll, "brb_usd_scene_api");
+		plugin_dir_fn plugin_dir = (plugin_dir_fn)GetProcAddress(dll, "brb_usd_plugin_dir");
+		char err[1024] = "";
+		const bru_scene_api *api = (scene_api && plugin_dir) ? scene_api(err, int(sizeof(err))) : nullptr;
+		if (!api) {
+			printf("FAIL  the bridge's scene reader (%s)\n", err);
+			return 1;
+		}
+		return dump_skin(api, plugin_dir(), argv[3], argv[4], atof(argv[5]), argv[6]);
+	}
 	if (argc >= 5 && strcmp(argv[2], "--convert") == 0) {
 		convert_fn conv = (convert_fn)GetProcAddress(dll, "brb_usd_convert");
 		if (!conv) {
@@ -452,7 +490,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: p12_usd_check <folder> [<plugin folder> [<capture> <dump.json>]]\n"
 		                "       p12_usd_check --dump <plugin folder> <stage> <dump.json>\n"
 		                "       p12_usd_check --scene <plugin folder> <file> <scene.json>\n"
-		                "       p12_usd_check --convert <plugin folder> <src> <dst>\n");
+		                "       p12_usd_check --convert <plugin folder> <src> <dst>\n"
+		                "       p12_usd_check --skin <plugin folder> <file> <mesh path> <time> <out.json>\n");
 		return 1;
 	}
 	if (argc >= 5 && strcmp(argv[1], "--dump") == 0) {
@@ -465,6 +504,9 @@ int main(int argc, char **argv)
 		int r = dump_scene(bru_scene_get_api(), argv[2], argv[3], argv[4]);
 		printf("%s  %s read\n", r == 0 ? "ok   " : "FAIL ", argv[3]);
 		return r == 0 ? 0 : 1;
+	}
+	if (argc >= 7 && strcmp(argv[1], "--skin") == 0) {
+		return dump_skin(bru_scene_get_api(), argv[2], argv[3], argv[4], atof(argv[5]), argv[6]);
 	}
 	if (argc >= 5 && strcmp(argv[1], "--convert") == 0) {
 		char err[1024] = "";

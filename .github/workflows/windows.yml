@@ -327,11 +327,18 @@ jobs:
           # take, each read through the bridge as the import reads it
           python blender/tests/bge_remix/p12/native/check_scene.py write usd_check_out/scene
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll --convert usd_check_out/scene/exchange.usda usd_check_out/scene/exchange.usdc
-          if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the scene was not converted to .usdc (see the log)"; exit 1 }
-          foreach ($pair in @(@("exchange.usda", "exchange.json"), @("exchange.usdc", "exchange_c.json"), @("other_tool.usda", "other_tool.json"), @("unsupported.usda", "unsupported.json"), @("physics.usda", "physics.json"), @("physics_other.usda", "physics_other.json"))) {
+          foreach ($name in @("exchange", "character")) {
+            p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll --convert "usd_check_out/scene/$name.usda" "usd_check_out/scene/$name.usdc"
+            if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::$name was not converted to .usdc (see the log)"; exit 1 }
+          }
+          foreach ($pair in @(@("exchange.usda", "exchange.json"), @("exchange.usdc", "exchange_c.json"), @("other_tool.usda", "other_tool.json"), @("unsupported.usda", "unsupported.json"), @("physics.usda", "physics.json"), @("physics_other.usda", "physics_other.json"), @("character.usda", "character.json"), @("character.usdc", "character_c.json"), @("character_other.usda", "character_other.json"))) {
             p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll --scene "usd_check_out/scene/$($pair[0])" "usd_check_out/scene/$($pair[1])"
             if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::$($pair[0]) was not read (see the log)"; exit 1 }
+          }
+          # P12 round 8: OpenUSD's own skinning of the two bodies
+          foreach ($skin in @(@("character.usda", "/Character/Rig/Body/BodyMesh", "12", "character_skin.json"), @("character_other.usda", "/World/Character/Body", "15", "character_other_skin.json"))) {
+            p12native/Release/p12_usd_check.exe build/bin/Release/bge_remix_bridge.dll --skin "usd_check_out/scene/$($skin[0])" $skin[1] $skin[2] "usd_check_out/scene/$($skin[3])"
+            if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::$($skin[0]) was not skinned (see the log)"; exit 1 }
           }
           python blender/tests/bge_remix/p12/native/check_scene.py check usd_check_out/scene
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=OpenUSD check::the scenes were not read as written (see the log)"; exit 1 }

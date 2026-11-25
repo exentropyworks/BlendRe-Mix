@@ -39,7 +39,10 @@ The layout (metres, Z up, as Blender's):
                                 it; a mesh object's mesh its child Mesh
                                 (named after the mesh), split by material
                                 into GeomSubsets; a lamp a UsdLux light, a
-                                camera a Camera, each with its transform
+                                camera a Camera, each with its transform;
+                                (round 8) an armature a SkelRoot with its
+                                Skeleton and a SkelAnimation for each
+                                action under it, a skinned mesh bound to it
 
 Names Blender has that USD does not take (Leg.001) are kept as the prims'
 displayName. Matrices are USD's: row vectors, the translation in the last
@@ -51,10 +54,11 @@ try:
 except ImportError:  # outside Blender (the native checks)
     from bge_remix_mod_text import INPUT_TYPES, Out, ident, num, value, vec, matrix, _array
 
-ROOT_KINDS = ("XFORM", "MESH", "LIGHT", "CAMERA")
+ROOT_KINDS = ("XFORM", "MESH", "LIGHT", "CAMERA", "ARMATURE")
 CREATOR = "BGE-Remix"
 # the reader's node kinds (bge_remix_usd.h BRU_NODE_*)
-NODE_KINDS = {0: "XFORM", 1: "MESH", 2: "LIGHT", 3: "CAMERA"}
+NODE_KINDS = {0: "XFORM", 1: "MESH", 2: "LIGHT", 3: "CAMERA", 4: "ARMATURE"}
+SKELETON_NAME = "Skeleton"
 
 # UsdPreviewSurface's inputs and their USD types
 PREVIEW_TYPES = {
@@ -156,7 +160,20 @@ def write_mesh(out, prim, m, looks, collider=None):
         apis += ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"]
         if collider.get("mass") is not None:
             apis.append("PhysicsMassAPI")
+    skin = m.get("skin")
+    if skin:
+        apis.append("SkelBindingAPI")
     out.open('def Mesh "%s"' % prim, _meta(m.get("name"), prim, [_apis(apis)] if apis else None))
+    if skin:
+        # (round 8) bound to its skeleton: each vertex's joints and weights
+        out("rel skel:skeleton = <%s>" % skin["skeleton_path"])
+        out('uniform token skel:skinningMethod = "%s"' % skin.get("method", "classicLinear"))
+        out("matrix4d primvars:skel:geomBindTransform = " + matrix(skin["geom_bind"]))
+        n = skin["element_size"]
+        out("int[] primvars:skel:jointIndices = %s (\n    elementSize = %d\n    interpolation = \"vertex\"\n)" %
+            (_array("int", skin["indices"], 32), n))
+        out("float[] primvars:skel:jointWeights = %s (\n    elementSize = %d\n    interpolation = \"vertex\"\n)" %
+            (_array("float", skin["weights"], 16), n))
     if collider:
         _collider_attrs(out, collider, looks)
         out('uniform token physics:approximation = "%s"' % collider["approximation"])
@@ -253,6 +270,57 @@ def write_collider(out, c, looks):
     out.close()
 
 
+def _samples(out, kind, name, samples, per_line=4):
+    """samples: [(time, [values])]"""
+    out("%s %s.timeSamples = {" % (kind, name))
+    base = kind.rstrip("[]")
+    for t, vals in samples:
+        out("    %s: %s," % (num(t), _array(base, vals, per_line)))
+    out("}")
+
+
+def write_skeleton(out, sk, anim_paths):
+    """sk: name (the armature's), joints (path tokens), bind (in the
+    skeleton's space), rest (local; 16 each), attrs (ours), animation (the
+    index of the one bound, or None)"""
+    out.open('def Skeleton "%s"' % SKELETON_NAME, _meta(sk.get("name"), SKELETON_NAME, [_apis(["SkelBindingAPI"])]))
+    out("uniform token[] joints = " + _array("token", sk["joints"], 4))
+    out("uniform matrix4d[] bindTransforms = [%s]" % ",\n    ".join(matrix(m) for m in sk["bind"]))
+    out("uniform matrix4d[] restTransforms = [%s]" % ",\n    ".join(matrix(m) for m in sk["rest"]))
+    if sk.get("animation") is not None:
+        out("rel skel:animationSource = <%s>" % anim_paths[sk["animation"]])
+    _attrs(out, sk.get("attrs"))
+    out.close()
+
+
+def write_animation(out, prim, a):
+    """a: name (the action's), joints, samples [(time, translations
+    [(x, y, z)], rotations [(w, x, y, z)], scales [(x, y, z)])], attrs
+    (ours)"""
+    out.open('def SkelAnimation "%s"' % prim, _meta(a["name"], prim))
+    out("uniform token[] joints = " + _array("token", a["joints"], 4))
+    _samples(out, "float3[]", "translations", [(t, tr) for t, tr, _r, _s in a["samples"]])
+    _samples(out, "quatf[]", "rotations", [(t, ro) for t, _t, ro, _s in a["samples"]])
+    _samples(out, "half3[]", "scales", [(t, sc) for t, _t, _r, sc in a["samples"]])
+    _attrs(out, a.get("attrs"))
+    out.close()
+
+
+def animation_paths(scene, obj_paths, names):
+    """each armature's animations' prim paths: {object index: [paths]}"""
+    out = {}
+    for i, ob in enumerate(scene["objects"]):
+        if ob["kind"] != "ARMATURE":
+            continue
+        used = set(names[j] for j, o in enumerate(scene["objects"]) if o["parent"] == i) | {SKELETON_NAME}
+        out[i] = [obj_paths[i] + "/" + ident(a["name"], used) for a in ob.get("animations") or ()]
+    return out
+
+
+def skeleton_path(obj_paths, i):
+    return obj_paths[i] + "/" + SKELETON_NAME
+
+
 JOINT_PREFIX = "BGE_Joint_"
 
 
@@ -286,8 +354,10 @@ def prim_names(scene):
     """each object's and material's prim name, unique among its siblings"""
     used = {}
     names = []
-    for ob in scene["objects"]:
+    for i, ob in enumerate(scene["objects"]):
         names.append(ident(ob["name"], used.setdefault(ob["parent"], set())))
+        if ob["kind"] == "ARMATURE":
+            used[i] = {SKELETON_NAME}  # (round 8) its Skeleton's name
     looks = set()
     mats = [ident(mt["name"], looks) for mt in scene["materials"]]
     return names, mats
@@ -318,6 +388,7 @@ def scene_text(scene):
     [{name, preview, aperture}]; the .usda text. Objects come parents first."""
     obj_paths, mesh_paths, looks = paths(scene)
     names, mats = prim_names(scene)
+    anims = animation_paths(scene, obj_paths, names)
     root = ident(scene["root"])
     out = Out()
     out("#usda 1.0")
@@ -326,7 +397,15 @@ def scene_text(scene):
     out('        string creator = "%s"' % CREATOR)
     out("    }")
     out('    defaultPrim = "%s"' % root)
+    t = scene.get("time")
+    if t:
+        # (round 8) the frames the animations cover, and their rate
+        out("    endTimeCode = %s" % num(t["end"]))
+        out("    framesPerSecond = %s" % num(t["fps"]))
     out("    metersPerUnit = 1")
+    if t:
+        out("    startTimeCode = %s" % num(t["start"]))
+        out("    timeCodesPerSecond = %s" % num(t["fps"]))
     out('    upAxis = "Z"')
     out(")")
     out()
@@ -352,6 +431,12 @@ def scene_text(scene):
         elif kind == "CAMERA":
             out.open('def Camera "%s"' % prim, _meta(ob["name"], prim))
             write_camera_attrs(out, ob["camera"])
+        elif kind == "ARMATURE":
+            # (round 8) a SkelRoot: its Skeleton, animations and what it
+            # moves under it
+            phys = ob.get("physics") or {}
+            out.open('def SkelRoot "%s"' % prim, _meta(ob["name"], prim, [_apis(phys["apis"])] if phys.get("apis")
+                                                     else None))
         else:
             phys = ob.get("physics") or {}
             out.open('def Xform "%s"' % prim, _meta(ob["name"], prim, [_apis(phys["apis"])] if phys.get("apis")
@@ -361,9 +446,17 @@ def scene_text(scene):
             out('token visibility = "invisible"')
         _transform(out, ob["matrix"])
         _attrs(out, phys.get("attrs"), obj_paths)
+        _attrs(out, ob.get("attrs"), obj_paths)
         collider = phys.get("collider")
+        if kind == "ARMATURE":
+            write_skeleton(out, ob["skeleton"], anims[i])
+            for a, path in zip(ob.get("animations") or (), anims[i]):
+                write_animation(out, path.rsplit("/", 1)[1], a)
         if kind == "MESH":
-            write_mesh(out, mesh_paths[i].rsplit("/", 1)[1], ob["mesh"], looks,
+            m = ob["mesh"]
+            if m.get("skin"):
+                m = dict(m, skin=dict(m["skin"], skeleton_path=skeleton_path(obj_paths, m["skin"]["armature"])))
+            write_mesh(out, mesh_paths[i].rsplit("/", 1)[1], m, looks,
                        collider if collider and collider["kind"] == "mesh" else None)
         if collider and collider["kind"] != "mesh":
             write_collider(out, collider, looks)
@@ -408,7 +501,11 @@ def objects_from_read(read):
     light or camera only when it sits where its Xform is. In this export's
     own files a mesh object is an Xform with its mesh and its child objects
     under it: there the one mesh child is taken in whatever else is there,
-    and lamps and cameras are objects of their own."""
+    and lamps and cameras are objects of their own.
+
+    (round 8) An Xform with one Skeleton under it (a SkelRoot, as every tool
+    writes one) is an armature, in the skeleton's place, with what else is
+    under it hanging from it; a Skeleton on its own is an armature too."""
     nodes = read["nodes"]
     ours = read.get("creator") == CREATOR
     kids = {}
@@ -419,6 +516,12 @@ def objects_from_read(read):
         if NODE_KINDS.get(n["kind"]) != "XFORM":
             continue
         k = kids.get(i, [])
+        skels = [c for c in k if NODE_KINDS.get(nodes[c]["kind"]) == "ARMATURE"]
+        if len(skels) == 1:
+            # (round 8) an Xform (a SkelRoot) with one Skeleton: the armature,
+            # in the skeleton's place, whatever else hangs from it
+            taken[skels[0]] = i
+            continue
         if ours:
             data = [c for c in k if NODE_KINDS.get(nodes[c]["kind"]) == "MESH"]
         else:
@@ -454,9 +557,15 @@ def expected_objects(scene):
     for ob in scene["objects"]:
         m = ob["matrix"]
         world.append(m if ob["parent"] < 0 else mat_mul(m, world[ob["parent"]]))
+    def data_name(ob):
+        if ob["kind"] == "MESH":
+            return ob["mesh"].get("name") or "mesh"
+        if ob["kind"] == "ARMATURE":
+            return ob["skeleton"].get("name") or SKELETON_NAME
+        return ob["name"]
+
     return [{"name": ob["name"], "kind": ob["kind"], "parent": ob["parent"], "world": world[i],
-             "data_name": (ob["mesh"].get("name") or "mesh") if ob["kind"] == "MESH" else ob["name"]}
-            for i, ob in enumerate(scene["objects"])]
+             "data_name": data_name(ob)} for i, ob in enumerate(scene["objects"])]
 
 
 def _flat(v):
@@ -503,6 +612,12 @@ def written_order(scene):
                                    body1=new[j["body1"]] if j.get("body1") is not None else None)
                               for j in phys.get("joints") or ()]
             ob["physics"] = phys
+        if ob.get("attrs"):
+            ob["attrs"] = renumber(ob["attrs"])
+        skin = (ob.get("mesh") or {}).get("skin")
+        if skin:
+            # (round 8) the armature it is bound to
+            ob["mesh"] = dict(ob["mesh"], skin=dict(skin, armature=new[skin["armature"]]))
         objects.append(ob)
     return dict(scene, objects=objects)
 
@@ -531,6 +646,15 @@ def check_read(scene, read, tol=1e-6):
         except ValueError:
             phys = None
     bad += check_physics(scene, phys)
+    # (round 8) the skeletons, as OpenUSD's skeleton reader reads them
+    skel = read.get("skeletons")
+    if isinstance(skel, str):
+        import json
+        try:
+            skel = json.loads(skel)
+        except ValueError:
+            skel = None
+    bad += check_skeletons(scene, skel)
     got = objects_from_read(read)
     want = expected_objects(scene)
     if len(got) != len(want):
@@ -710,4 +834,114 @@ def check_physics(scene, phys):
         sc = (phys.get("scenes") or [{}])[0]
         if not _near(sc.get("gravity_magnitude"), E["gravity"]):
             bad.append("gravity %s read, %s written" % (sc.get("gravity_magnitude"), E["gravity"]))
+    return bad
+
+
+# ---------------------------------------------------------------------------
+# skeletons (round 8): as OpenUSD's skeleton reader reads them back
+
+def expected_skeletons(scene):
+    """what OpenUSD's skeleton reader must find in a scene this wrote:
+    {skeletons {path: (joints, bind, rest, animation path)}, skinned {mesh
+    path: skin}, animations {path: animation}, time}"""
+    obj_paths, mesh_paths, _looks = paths(scene)
+    names, _mats = prim_names(scene)
+    anims = animation_paths(scene, obj_paths, names)
+    skels, skinned, animations = {}, {}, {}
+    for i, ob in enumerate(scene["objects"]):
+        if ob["kind"] == "ARMATURE":
+            sk = ob["skeleton"]
+            a = sk.get("animation")
+            skels[skeleton_path(obj_paths, i)] = (list(sk["joints"]), sk["bind"], sk["rest"],
+                                                  anims[i][a] if a is not None else "")
+            for an, path in zip(ob.get("animations") or (), anims[i]):
+                animations[path] = an
+        skin = (ob.get("mesh") or {}).get("skin")
+        if skin:
+            skinned[mesh_paths[i]] = dict(skin, skeleton_path=skeleton_path(obj_paths, skin["armature"]))
+    return {"skeletons": skels, "skinned": skinned, "animations": animations, "time": scene.get("time")}
+
+
+def _off(a, b):
+    a, b = [float(x) for x in a], [float(x) for x in b]
+    if len(a) != len(b):
+        return float("inf")
+    return max([abs(x - y) for x, y in zip(a, b)] or [0.0])
+
+
+def check_skeletons(scene, skel, tol=1e-5):
+    """what is wrong with a scene's skeletons as OpenUSD read them back (the
+    read's skeletons, as a dict): a list of lines"""
+    E = expected_skeletons(scene)
+    if not (E["skeletons"] or E["skinned"] or E["animations"]):
+        return []
+    if not isinstance(skel, dict):
+        return ["no skeletons read"]
+    bad = []
+    got = {s["path"]: s for s in skel.get("skeletons") or ()}
+    if sorted(got) != sorted(E["skeletons"]):
+        bad.append("skeletons %s read, %s written" % (sorted(got), sorted(E["skeletons"])))
+    for path, (joints, bind, rest, anim) in E["skeletons"].items():
+        g = got.get(path)
+        if g is None:
+            continue
+        if not g.get("valid"):
+            bad.append("%s: OpenUSD finds it broken: %s" % (path, g.get("problem")))
+        if list(g["joints"]) != joints:
+            bad.append("%s: joints %s read, %s written" % (path, g["joints"][:4], joints[:4]))
+            continue
+        d = _off(g["bind"], [x for m in bind for x in m])
+        if d > tol:
+            bad.append("%s: its bind transforms %.3g off" % (path, d))
+        d = _off(g["rest"], [x for m in rest for x in m])
+        if d > tol:
+            bad.append("%s: its rest transforms %.3g off" % (path, d))
+        if g.get("animation", "") != anim:
+            bad.append("%s: its animation %s read, %s written" % (path, g.get("animation") or "none", anim or "none"))
+    got = {s["path"]: s for s in skel.get("skinned") or ()}
+    if sorted(got) != sorted(E["skinned"]):
+        bad.append("skinned meshes %s read, %s written" % (sorted(got), sorted(E["skinned"])))
+    for path, skin in E["skinned"].items():
+        g = got.get(path)
+        if g is None:
+            continue
+        if g["skeleton"] != skin["skeleton_path"]:
+            bad.append("%s: bound to %s, not %s" % (path, g["skeleton"], skin["skeleton_path"]))
+        if g["interpolation"] != "vertex" or g["element_size"] != skin["element_size"]:
+            bad.append("%s: %s influences, %d each, read; vertex, %d written" % (
+                path, g["interpolation"], g["element_size"], skin["element_size"]))
+        elif list(g["indices"]) != list(skin["indices"]) or _off(g["weights"], skin["weights"]) > tol:
+            bad.append("%s: its joint influences read back otherwise" % path)
+        d = _off(g["geom_bind"], skin["geom_bind"])
+        if d > tol:
+            bad.append("%s: its geometry bind transform %.3g off" % (path, d))
+        if g["method"] != skin.get("method", "classicLinear"):
+            bad.append("%s: skinned %s, not %s" % (path, g["method"], skin.get("method", "classicLinear")))
+    got = {a["path"]: a for a in skel.get("animations") or ()}
+    if sorted(got) != sorted(E["animations"]):
+        bad.append("animations %s read, %s written" % (sorted(got), sorted(E["animations"])))
+    for path, a in E["animations"].items():
+        g = got.get(path)
+        if g is None:
+            continue
+        times = [t for t, _tr, _ro, _sc in a["samples"]]
+        if _off(g["times"], times) > 1e-9:
+            bad.append("%s: frames %s read, %s written" % (path, g["times"][:3], times[:3]))
+            continue
+        worst = [0.0, 0.0, 0.0]
+        for k, (_t, tr, ro, sc) in enumerate(a["samples"]):
+            worst[0] = max(worst[0], _off(g["translations"][k], [x for v in tr for x in v]))
+            worst[1] = max(worst[1], _off(g["rotations"][k], [x for v in ro for x in v]))
+            # scales are halfs: 3 digits
+            worst[2] = max(worst[2], _off(g["scales"][k], [x for v in sc for x in v]) /
+                           max(1.0, max([abs(x) for v in sc for x in v] or [1.0])))
+        if worst[0] > tol or worst[1] > tol or worst[2] > 1e-3:
+            bad.append("%s: its samples %.3g/%.3g/%.3g off (move/turn/scale)" % (path, worst[0], worst[1], worst[2]))
+    t = E["time"]
+    if t:
+        gt = skel.get("time") or {}
+        if not gt.get("authored") or not _near(gt.get("start"), t["start"]) or not _near(gt.get("end"), t["end"]) \
+                or not _near(gt.get("fps"), t["fps"]):
+            bad.append("frames %s-%s at %s read, %s-%s at %s written" % (gt.get("start"), gt.get("end"), gt.get("fps"),
+                                                                         t["start"], t["end"], t["fps"]))
     return bad

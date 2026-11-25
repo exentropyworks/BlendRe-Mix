@@ -185,6 +185,28 @@ selected objects, in metres and Z up, as text (.usda) or USD's binary form
   and ragdoll capsules. Soft bodies, characters, sensors, occluders and
   navigation meshes are listed as left out. A Rigid Body Joint keeps no
   motor in the file (a script sets it in the game), so none is written.
+- **Armatures** (in USD's standard skeleton schema, UsdSkel, which
+  Omniverse, Maya, Houdini and Blender 2.8 and later read): each armature
+  as a skeleton (a SkelRoot holding a Skeleton), every bone a joint with its
+  parent, its rest (bind) pose and the pose it stands in now; each bone's
+  name, length, Connected and Deform switches go in attributes of our own,
+  so BGE-Remix gets the bones back exactly.
+- **Skinned meshes**: a mesh deformed by an Armature modifier, under its
+  armature, goes out in its rest pose (the modifier not applied) bound to
+  the skeleton, each vertex with its bones and weights (its vertex groups;
+  the four strongest, adding up to one). Preserve Volume goes out as dual
+  quaternion skinning. A deformed mesh that is not under its armature goes
+  out as it stands now, and is listed.
+- **Actions**: the armature's own action as the skeleton's animation, a
+  sample every frame of its range, at the scene's frame rate (the file's
+  frame range and rate are set from it); its other actions as animations of
+  their own, named, so they come back as actions. Bone constraints, IK and
+  drivers are baked into the samples (the file keeps none of them, and says
+  so); NLA strips, shape keys and the Action actuators that play the
+  actions (logic) are left out.
+- **Objects on a bone** (such as P11's ragdoll capsules) keep their bone in
+  an attribute of our own, and come back on it.
+
 - Only what the game plays: objects on hidden layers (such as a
   destructible's kept original on layer 20) are left out, and listed.
 
@@ -224,9 +246,28 @@ instancing included):
   with PhysX on the CPU (its physics is PhysX's). BGE-Remix's own files come
   back with every setting as it was.
 
+- skeletons as armatures, read with OpenUSD's own skeleton reader:
+  BGE-Remix's own come back exactly; another tool's joints have no length,
+  so each bone reaches to its child (to the child that carries its chain on,
+  such as the spine from the hips) and one at the end of a chain is as long
+  as its parent, its roll following the joint's Z; skinned meshes come in
+  with their vertex groups and an Armature modifier, under the armature;
+  each animation as an action (a linear key a sample), the skeleton's own
+  set as the armature's action; the scene's frame range and rate from the
+  file. The bones' own frames can differ from the file's joints: the
+  actions are converted so that the mesh moves exactly as the file's does.
+
+In the Remix View, what came from a USD file says so: the scene's engine
+line names the file, and in the physics layer every body says it came from
+USD and where it was in the file, every joint that it came from USD. What
+the import could not take for an object (such as a convex decomposition
+that came in as a Convex Hull) is shown as that object's notes.
+
 Anything it cannot take is named in the Info log, never dropped silently:
 a shader network that is neither a preview surface nor AperturePBR (the
 material comes in plain), curves, points, point instancers, volumes and
 USD's own shapes (cube, sphere), dome lights; distance and custom joints,
 joint drives (motors), breaking forces, collision groups and filtered
-pairs, kinematic bodies (they come in Static) and starting speeds.
+pairs, kinematic bodies (they come in Static) and starting speeds; blend
+shapes (USD's shape keys), skinning methods other than linear and dual
+quaternion, and animations no skeleton uses.

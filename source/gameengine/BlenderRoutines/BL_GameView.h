@@ -114,7 +114,8 @@ typedef struct GVElement {
 	char name[64];        /* what it is called (brick name, object name, ...) */
 	char owner[64];       /* the object it belongs to ("" at scene level) */
 	char avatar[40];      /* icon name (an avatar in datafiles/gameview) */
-	char info[160];       /* one line for the N panel (P12 round 5: 160, for the capture hashes) */
+	char info[256];       /* one line for the N panel (P12 round 5: 160, for the capture hashes; round 8:
+	                       * 256, for a USD prim path after it) */
 	float offset[3];      /* place relative to the owner's origin (world axes) */
 	float pos[3];         /* world position when built (scene-level elements) */
 	float heat;           /* Performance: share of the scene's estimated cost (0..1) */

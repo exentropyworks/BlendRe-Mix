@@ -7,7 +7,9 @@ drawn a few times the model is built (Refresh) and the Remix layer is
 written out: its elements (kind, name, owner, info) and its warnings (code,
 level, owner, name, text). Then Blender quits.
 
-Environment: BGE_REMIX_P12V_OUT (the JSON written).
+Environment: BGE_REMIX_P12V_OUT (the JSON written); (round 8)
+BGE_REMIX_P12V_LAYER, the layer written (REMIX when not set; PHYSICS for
+T12.f5).
 """
 
 import json
@@ -22,6 +24,7 @@ except ImportError:
     gv = None
 
 OUT = os.environ.get("BGE_REMIX_P12V_OUT", "p12a_view.json")
+LAYER = os.environ.get("BGE_REMIX_P12V_LAYER") or "REMIX"
 result = {"steps": {}, "errors": [], "finished": False}
 
 
@@ -44,11 +47,11 @@ def override():
 
 def remix_layer():
     keep = ("index", "kind", "name", "owner", "state", "info")
-    els = gv.elements("REMIX") if gv else []
+    els = gv.elements(LAYER) if gv else []
     warnings = gv.warnings() if gv else []
     return {"elements": [{k: e.get(k) for k in keep} for e in els],
             "warnings": [{"code": w["code"], "level": w["level"], "owner": w["owner"], "name": w["name"],
-                          "text": w["text"]} for w in warnings if w["layer"] == "REMIX"],
+                          "text": w["text"]} for w in warnings if w["layer"] == LAYER],
             "model": gv.model() if gv else None,
             "is_game_view": bool(getattr(main_area().spaces.active, "is_game_view", False))}
 

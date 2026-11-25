@@ -40,6 +40,11 @@ hierarchy (transforms as empties), materials as RTX Remix materials (from
 AperturePBR when the file has it, else from the preview surface), lamps,
 cameras. Y-up and centimetre files come in Z up and in metres. What it
 cannot take is listed in the report, never dropped silently.
+
+Round 7 added the physics (UsdPhysics) both ways; round 8 armatures
+(UsdSkel): skeletons, skinned meshes and actions out and back, objects on
+bones (ours), and marks for the Remix View (each object's prim, the
+report's lines about it).
 """
 
 import math
@@ -123,7 +128,8 @@ class SceneExport(Export):
         self.picture_files = set()
         self.material_index = {}  # material name -> index in the scene's materials (None: not written)
         self.counts = {"objects": 0, "meshes": 0, "materials": 0, "lamps": 0, "cameras": 0, "empties": 0,
-                       "pictures": 0, "textures": 0, "copied": 0}
+                       "pictures": 0, "textures": 0, "copied": 0, "armatures": 0, "skinned": 0, "animations": 0}
+        self.times = []  # (round 8) the frames of the animations bound
         self.data = {"root": scene.name, "objects": [], "materials": []}
 
     # -- pictures -------------------------------------------------------------
@@ -332,6 +338,10 @@ class SceneExport(Export):
         # objects left out (a hemi lamp): kept as plain transforms when
         # something hangs from them
         has_children = set(ob.parent.name for ob in obs if ob.parent is not None)
+        # (round 8) the armatures' bones and animations, sampled first (it
+        # moves through the frames; everything is back where it was after)
+        armatures = self.armatures_of(obs)
+        self.index = index
         for ob in obs:
             p = ob.parent
             while p is not None and p.name not in index:
@@ -364,17 +374,28 @@ class SceneExport(Export):
                 entry["kind"] = "CAMERA"
                 entry["camera"] = self.camera_of(ob)
                 self.counts["cameras"] += 1
+            elif ob.type == 'ARMATURE':
+                entry["kind"] = "ARMATURE"
+                entry["skeleton"], entry["animations"] = armatures[ob.name]
+                entry["attrs"] = [("custom double", "bgeRemix:frame", float(self.scene.frame_current))]
+                self.counts["armatures"] += 1
             else:
                 if ob.type != 'EMPTY':
                     self.note("%s: a %s object has no USD form here: written as an empty" % (ob.name,
                                                                                          ob.type.lower()))
                 self.counts["empties"] += 1
+            if ob.parent_type == 'BONE' and ob.parent is not None and ob.parent.name in index and ob.parent_bone:
+                # (round 8) hanging from a bone: written where it is now
+                entry.setdefault("attrs", []).append(("custom string", "bgeRemix:parentBone", ob.parent_bone))
             local = w if parent < 0 else world[parent].inverted() * w
             entry["matrix"] = usd_rows(local)
             world[len(self.data["objects"])] = w
             index[ob.name] = len(self.data["objects"])
             self.data["objects"].append(entry)
         self.counts["objects"] = len(self.data["objects"])
+        if self.times:
+            self.data["time"] = {"start": min(a for a, _b in self.times), "end": max(b for _a, b in self.times),
+                                 "fps": self.scene.render.fps / self.scene.render.fps_base}
         # (round 7) the physics, now every object has its index
         self.index, self.world = index, world
         for ob in obs:
@@ -602,10 +623,18 @@ class SceneExport(Export):
                           ("custom bool", "bgeRemix:articulationBase", True)]}
 
     def mesh_of(self, ob):
+        # (round 8) a mesh an exported armature deforms: written at rest,
+        # skinned to its skeleton
+        mod, arm = self.deformer_of(ob)
+        if mod is not None:
+            mod.show_render = False
         try:
             me = ob.to_mesh(self.scene, True, 'RENDER')
         except RuntimeError:
             me = None
+        finally:
+            if mod is not None:
+                mod.show_render = True
         if me is None:
             self.note("%s: no mesh could be made of it: written as an empty" % ob.name)
             return None
@@ -625,9 +654,238 @@ class SceneExport(Export):
             elif used:
                 data["subsets"] = [{"name": "material_%d" % i, "faces": [f for f, j in enumerate(faces) if j == i],
                                     "material": self.material_of(mats[i])} for i in used]
+            if mod is not None:
+                data["skin"] = self.skin_of(ob, me, mod, arm)
+                self.counts["skinned"] += 1
+            if ob.data.shape_keys is not None and len(ob.data.shape_keys.key_blocks) > 1:
+                self.note("%s: its shape keys are left out (written as they are mixed now)" % ob.name)
             return data
         finally:
             bpy.data.meshes.remove(me)
+
+    # -- armatures (round 8) ---------------------------------------------------
+
+    @staticmethod
+    def bone_order(arm):
+        """the bones, parents first (as USD wants its joints)"""
+        out = []
+
+        def walk(b):
+            out.append(b)
+            for c in b.children:
+                walk(c)
+
+        for b in arm.bones:
+            if b.parent is None:
+                walk(b)
+        return out
+
+    @staticmethod
+    def joint_tokens(bones):
+        """each bone's joint: the path of its name and its parents' (names
+        as USD takes them, unique among their siblings)"""
+        used, token = {}, {}
+        for b in bones:
+            p = b.parent.name if b.parent else None
+            name = ident(b.name, used.setdefault(p, set()))
+            token[b.name] = (token[p] + "/" if p else "") + name
+        return [token[b.name] for b in bones]
+
+    def armatures_of(self, obs):
+        """each armature's skeleton and animations: {name: (skeleton,
+        [animations])}, sampled through the frames"""
+        out = {}
+        arms = [ob for ob in obs if ob.type == 'ARMATURE']
+        if not arms:
+            return out
+        scene = self.scene
+        frame = scene.frame_current, scene.frame_subframe
+        try:
+            for ob in arms:
+                scene.frame_set(frame[0], frame[1])  # (its rest: as it stands now)
+                out[ob.name] = self.armature_of(ob)
+        finally:
+            scene.frame_set(frame[0], frame[1])
+        return out
+
+    def poses(self, ob, bones):
+        """the bones' places now, each relative to its parent's (USD's joint
+        transforms): [(translation, rotation w x y z, scale)]"""
+        out = []
+        pose = ob.pose.bones
+        for b in bones:
+            P = pose[b.name].matrix
+            L = P if b.parent is None else pose[b.parent.name].matrix.inverted() * P
+            t, q, sc = L.decompose()
+            out.append(((t.x, t.y, t.z), (q.w, q.x, q.y, q.z), (sc.x, sc.y, sc.z)))
+        return out
+
+    def armature_of(self, ob):
+        arm = ob.data
+        bones = self.bone_order(arm)
+        tokens = self.joint_tokens(bones)
+        if not bones:
+            self.note("%s: an armature with no bones" % ob.name)
+        bind = [usd_rows(b.matrix_local) for b in bones]
+        # its rest: the bones as they stand now (what a file with no
+        # animation shows)
+        from mathutils import Matrix, Quaternion
+        rest = []
+        for t, q, sc in self.poses(ob, bones):
+            M = Matrix.Translation(t) * Quaternion(q).to_matrix().to_4x4() * \
+                Matrix(((sc[0], 0, 0, 0), (0, sc[1], 0, 0), (0, 0, sc[2], 0), (0, 0, 0, 1)))
+            rest.append(usd_rows(M))
+        skel = {"name": arm.name, "joints": tokens, "bind": bind, "rest": rest, "animation": None,
+                "attrs": [("custom string[]", "bgeRemix:boneNames", [b.name for b in bones]),
+                          ("custom float[]", "bgeRemix:boneLengths", [float(b.length) for b in bones]),
+                          ("custom int[]", "bgeRemix:boneConnect", [int(b.use_connect) for b in bones]),
+                          ("custom int[]", "bgeRemix:boneDeform", [int(b.use_deform) for b in bones]),
+                          ("custom int[]", "bgeRemix:boneInheritRotation", [int(b.use_inherit_rotation)
+                                                                            for b in bones]),
+                          ("custom int[]", "bgeRemix:boneInheritScale", [int(b.use_inherit_scale) for b in bones])]}
+        if any(len(pb.constraints) for pb in ob.pose.bones):
+            self.note("%s: its bone constraints are baked into the animations (the file keeps none)" % ob.name)
+        ad = ob.animation_data
+        if ad is not None and len(ad.drivers):
+            self.note("%s: its drivers are baked into the animations (the file keeps none)" % ob.name)
+        current = ad.action if ad is not None else None
+        names = set(b.name for b in bones)
+        import re
+        fits = []
+        for a in bpy.data.actions:
+            used = set(re.findall(r'pose\.bones\["((?:[^"\\]|\\.)*)"\]', " ".join(fc.data_path for fc in a.fcurves)))
+            if a == current or (used and used <= names):
+                fits.append(a)
+        fits.sort(key=lambda a: (a != current, a.name))
+        anims = []
+        if not fits:
+            return skel, anims
+        made = ad is None
+        if made:
+            ad = ob.animation_data_create()
+        use_nla = ad.use_nla
+        if use_nla and len(ad.nla_tracks):
+            self.note("%s: its NLA strips are left out (each action is written on its own)" % ob.name)
+        ad.use_nla = False
+        # each action from the rest pose (a bone it has no keys for stands at
+        # rest), the pose as it was after
+        keep = [(pb, pb.location.copy(), pb.rotation_quaternion.copy(), pb.rotation_euler.copy(),
+                 tuple(pb.rotation_axis_angle), pb.scale.copy()) for pb in ob.pose.bones]
+        try:
+            for a in fits:
+                for pb in ob.pose.bones:
+                    pb.matrix_basis = Matrix.Identity(4)
+                ad.action = a
+                first, last = a.frame_range
+                frames = range(int(math.floor(first)), int(math.ceil(last)) + 1)
+                samples = []
+                prev = None
+                for f in frames:
+                    self.scene.frame_set(f)
+                    pose = self.poses(ob, bones)
+                    if prev is not None:
+                        # each turn on the same side as the last (no flips)
+                        pose = [(t, q if sum(x * y for x, y in zip(q, pq)) >= 0.0 else tuple(-x for x in q), sc)
+                                for (t, q, sc), (_pt, pq, _ps) in zip(pose, prev)]
+                    prev = pose
+                    samples.append((float(f), [p[0] for p in pose], [p[1] for p in pose], [p[2] for p in pose]))
+                anims.append({"name": a.name, "joints": tokens, "samples": samples,
+                              "attrs": [("custom string", "bgeRemix:action", a.name)]})
+                self.counts["animations"] += 1
+                if a == current:
+                    skel["animation"] = len(anims) - 1
+                    self.times.append((float(frames[0]), float(frames[-1])))
+        finally:
+            ad.action = current
+            ad.use_nla = use_nla
+            if made:
+                ob.animation_data_clear()
+            for pb, loc, quat, euler, axis_angle, scale in keep:
+                pb.location, pb.rotation_quaternion, pb.rotation_euler = loc, quat, euler
+                pb.rotation_axis_angle, pb.scale = axis_angle, scale
+        if skel["animation"] is None:
+            self.times.extend((s["samples"][0][0], s["samples"][-1][0]) for s in anims[:1])
+        return skel, anims
+
+    def deformer_of(self, ob):
+        """the Armature modifier deforming ob with an armature written, and
+        that armature; (None, None) when there is none, or it cannot be
+        written as a skin"""
+        if ob.type != 'MESH':
+            return None, None
+        if ob.parent_type == 'ARMATURE' and ob.parent is not None:
+            self.note("%s: deformed through its parent (Armature parent type): written as it stands now, not "
+                      "skinned (an Armature modifier is)" % ob.name)
+        mods = [m for m in ob.modifiers if m.type == 'ARMATURE' and m.show_render and m.object is not None]
+        if not mods:
+            return None, None
+        mod = mods[0]
+        arm = mod.object
+        if len(mods) > 1:
+            self.note("%s: %d Armature modifiers: only the first (%s) is written as its skin" % (ob.name, len(mods),
+                                                                                              mod.name))
+        if arm.name not in self.index:
+            self.note("%s: deformed by %s, which is not written: written as it stands now" % (ob.name, arm.name))
+            return None, None
+        p = ob.parent
+        while p is not None and p != arm:
+            p = p.parent
+        if p is None:
+            self.note("%s: deformed by %s but not under it (USD skins only what is under its skeleton): written "
+                      "as it stands now, not skinned" % (ob.name, arm.name))
+            return None, None
+        if not mod.use_vertex_groups:
+            self.note("%s: its Armature modifier uses no vertex groups: written as it stands now" % ob.name)
+            return None, None
+        later = [m.name for m in ob.modifiers[list(ob.modifiers).index(mod) + 1:] if m.show_render]
+        if later:
+            self.note("%s: %s after its Armature modifier: in the file they come before the skinning" % (
+                ob.name, ", ".join(later)))
+        if mod.use_bone_envelopes:
+            self.note("%s: its bone envelopes are left out (only vertex groups are written)" % ob.name)
+        if mod.vertex_group:
+            self.note("%s: its Armature modifier's vertex group %s is left out" % (ob.name, mod.vertex_group))
+        return mod, arm
+
+    def skin_of(self, ob, me, mod, arm):
+        """the mesh's skin: up to 4 joints a vertex, weights adding up to 1"""
+        bones = self.bone_order(arm.data)
+        joint = {b.name: i for i, b in enumerate(bones) if b.use_deform}
+        group = {g.index: joint.get(g.name) for g in ob.vertex_groups}
+        influences = []
+        bare, cut = 0, 0
+        for v in me.vertices:
+            inf = {}
+            for g in v.groups:
+                j = group.get(g.group)
+                if j is not None and g.weight > 0.0:
+                    inf[j] = inf.get(j, 0.0) + g.weight
+            inf = sorted(inf.items(), key=lambda x: (-x[1], x[0]))
+            if len(inf) > 4:
+                cut += 1
+                inf = inf[:4]
+            total = sum(w for _j, w in inf)
+            if total <= 0.0:
+                bare += 1
+                inf = []
+            else:
+                inf = [(j, w / total) for j, w in inf]
+            influences.append(inf)
+        n = max([len(i) for i in influences] + [1])
+        indices, weights = [], []
+        for inf in influences:
+            inf = inf + [(0, 0.0)] * (n - len(inf))
+            indices += [j for j, _w in inf]
+            weights += [w for _j, w in inf]
+        if bare:
+            self.note("%s: %d vertices have no bone weights: Blender leaves them still, other tools may not"
+                      % (ob.name, bare))
+        if cut:
+            self.note("%s: %d vertices have more than 4 bones: the 4 strongest are written" % (ob.name, cut))
+        G = arm.matrix_world.inverted() * ob.matrix_world
+        return {"armature": self.index[arm.name], "element_size": n, "indices": indices, "weights": weights,
+                "geom_bind": usd_rows(G),
+                "method": "dualQuaternion" if mod.use_deform_preserve_volume else "classicLinear"}
 
     def camera_of(self, ob):
         cd = ob.data
@@ -877,9 +1135,26 @@ def import_usd(context, path, report):
         meshes[i] = (me, slots, subsets and len(set(f for sub in subsets for f in sub["faces"])) != m["faces"])
         return meshes[i]
 
+    import json
+    # (round 7) the physics; (round 8) the skeletons
+    try:
+        phys = json.loads(data.get("physics") or "{}")
+    except ValueError:
+        phys = {}
+        report.append("the file's physics could not be read")
+    try:
+        skel = json.loads(data.get("skeletons") or "{}")
+    except ValueError:
+        skel = {}
+        report.append("the file's skeletons could not be read")
+    skeletons = {sk["path"]: sk for sk in skel.get("skeletons") or ()}
+    skinned = {sk["path"]: sk for sk in skel.get("skinned") or ()}
+
     made, world = [], []
     camera = None
-    counts = {"objects": 0, "meshes": 0, "materials": 0, "lamps": 0, "cameras": 0, "empties": 0}
+    counts = {"objects": 0, "meshes": 0, "materials": 0, "lamps": 0, "cameras": 0, "empties": 0, "armatures": 0,
+              "skinned": 0, "animations": 0}
+    armatures = []  # (object, its skeleton)
     for o in objects:
         node = nodes[o["data_node"]]
         M = usd_matrix(node["matrix"])
@@ -888,6 +1163,11 @@ def import_usd(context, path, report):
             me, slots, whole_slot = mesh(node["index"])
             ob = bpy.data.objects.new(o["name"], me)
             w = K * M * Kinv
+            sk = skinned.get(node["path"])
+            if sk is not None and sk["skeleton"] in skeletons:
+                # (round 8) a skinned mesh: where its skeleton puts it (its
+                # own transform is not used: USD's rule)
+                w = K * usd_matrix(skeletons[sk["skeleton"]]["world"]) * usd_matrix(sk["geom_bind"]) * Kinv
             mats = []
             if slots:
                 mats = ([material(node["material"])] if whole_slot else []) + \
@@ -928,7 +1208,15 @@ def import_usd(context, path, report):
                 camera = ob
             counts["cameras"] += 1
             w = rigid(K * M * Sinv)
+        elif o["kind"] == "ARMATURE" and node["path"] in skeletons:
+            # (round 8) an armature: its bones once every object is made
+            ob = bpy.data.objects.new(o["name"], bpy.data.armatures.new(o["data_name"]))
+            armatures.append((ob, skeletons[node["path"]]))
+            counts["armatures"] += 1
+            w = K * M * Kinv
         else:
+            if o["kind"] == "ARMATURE":
+                report.append("%s: a skeleton OpenUSD could not read: comes in as an empty" % node["path"])
             w = K * M * Kinv
         if ob is None:
             ob = bpy.data.objects.new(o["name"], None)
@@ -949,15 +1237,23 @@ def import_usd(context, path, report):
         world.append(w)
     if camera is not None:
         scene.camera = camera
+    # (round 8) the armatures: bones, animations, skins, what hangs from bones
+    if armatures:
+        SkelImport(scene, data, skel, phys, objects, made, world, K, report, counts).apply(armatures)
     # (round 7) the physics
-    try:
-        import json
-        phys = json.loads(data.get("physics") or "{}")
-    except ValueError:
-        phys = {}
-        report.append("the file's physics could not be read")
+    notes = {}
     if phys:
-        PhysicsImport(scene, data, phys, objects, made, world, K, report).apply()
+        pi = PhysicsImport(scene, data, phys, objects, made, world, K, report)
+        pi.apply()
+        notes = pi.notes
+    # (round 8) for Remix View: each object's prim and what the report says
+    # of it
+    for o, ob in zip(objects, made):
+        ob["bge_remix_usd_prim"] = nodes[o["node"]]["path"]
+        mine = [l for l in report if any(_names_prim(l, nodes[n]["path"]) for n in (o["node"], o["data_node"]))]
+        mine += [l for l in notes.get(ob.name, ()) if l not in mine]
+        if mine:
+            ob["bge_remix_usd_notes"] = "\n".join(mine)
     counts["objects"] = len(made)
     counts["meshes"] = len(meshes)
     counts["materials"] = len(materials)
@@ -965,6 +1261,342 @@ def import_usd(context, path, report):
     scene.update()
     LAST.update({"scene": scene.name, "report": report, "counts": counts})
     return scene
+
+
+def _names_prim(line, path):
+    """whether a report line is about the prim at path (not one under it)"""
+    i = line.find(path)
+    while i >= 0:
+        end = i + len(path)
+        if end == len(line) or not (line[end].isalnum() or line[end] in "_/"):
+            return True
+        i = line.find(path, i + 1)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# the armatures coming in (round 8)
+
+class SkelImport:
+    """the file's skeletons (UsdSkel, as OpenUSD's skeleton reader gives
+    them) as armatures: bones from the bind transforms (ours as they were:
+    our own attributes keep the bones' names, lengths and switches), the
+    animations as actions (one key a sample, linear), skinned meshes as
+    vertex groups and an Armature modifier, objects hanging from bones
+    (ours) hanging from them again.
+
+    Another tool's joints have no bone shape: each bone points at its child
+    (its chain's), its roll to the joint's Z. The joint's own frame and the
+    bone's then differ by C (C = bind^-1 * bone): a pose P from the file is
+    P * C on the bone, so the mesh moves as the file's does."""
+
+    def __init__(self, scene, data, skel, phys, objects, made, world, K, report, counts):
+        self.scene, self.data, self.skel, self.report, self.counts = scene, data, skel, report, counts
+        self.custom = (phys or {}).get("custom") or {}
+        self.K, self.Kinv = K, K.inverted()
+        self.ours = data.get("creator") == ut.CREATOR
+        self.objects, self.made, self.world = objects, made, world
+        nodes = data["nodes"]
+        self.of_path = {}
+        for o, ob in zip(objects, made):
+            for n in (o["node"], o["data_node"]):
+                self.of_path[nodes[n]["path"]] = ob
+        self.animations = {a["path"]: a for a in skel.get("animations") or ()}
+        self.used_animations = set()
+        self.bone_names = {}  # an armature's name: its bones in its joints' order
+
+    def note(self, line):
+        if line not in self.report:
+            self.report.append(line)
+
+    def apply(self, armatures):
+        t = self.skel.get("time") or {}
+        if t.get("authored") or self.animations:
+            fps = float(t.get("fps") or 24.0)
+            if fps > 0.0:
+                r = self.scene.render
+                r.fps = max(1, int(round(fps)))
+                r.fps_base = r.fps / fps
+            if t.get("authored") and t.get("end") is not None and t.get("start") is not None:
+                self.scene.frame_start = int(math.floor(t["start"]))
+                self.scene.frame_end = max(int(math.ceil(t["end"])), self.scene.frame_start)
+        frame = None
+        for ob, sk in armatures:
+            f = self.armature(ob, sk)
+            if frame is None:
+                frame = f
+        for path, a in self.animations.items():
+            if path not in self.used_animations:
+                self.note("%s: an animation no skeleton uses: left out" % path)
+        self.scene.frame_set(int(frame) if frame is not None else self.scene.frame_start)
+        self.skins(armatures)
+        self.bone_parents()
+
+    # -- bones ------------------------------------------------------------------
+
+    def mode(self, ob, mode):
+        """ob into edit mode or out of it, in the new scene (not the one the
+        window shows: its base given too, as edit mode takes it from there)"""
+        self.scene.objects.active = ob
+        override = {"scene": self.scene, "object": ob, "active_object": ob, "edit_object": ob,
+                    "active_base": self.scene.object_bases.active, "selected_objects": [ob],
+                    "selected_editable_objects": [ob]}
+        bpy.ops.object.mode_set(override, mode=mode)
+        if (ob.mode == 'EDIT') != (mode == 'EDIT'):
+            raise UsdError("%s: Blender would not let the import %s its edit mode" % (
+                ob.name, "enter" if mode == 'EDIT' else "leave"))
+
+    def armature(self, ob, sk):
+        """the bones and actions of one armature; the frame it was written
+        at (ours) or None"""
+        from mathutils import Vector
+        arm = ob.data
+        K, Kinv = self.K, self.Kinv
+        n = len(sk["joints"])
+        parents = list(sk["parents"])
+        if not sk.get("valid", True):
+            self.note("%s: OpenUSD finds the skeleton broken (%s): its joints may come in wrong" % (
+                sk["path"], sk.get("problem")))
+        B = [K * usd_matrix(sk["bind"][i * 16:i * 16 + 16]) * Kinv for i in range(n)]
+        ours = self.custom.get(sk["path"]) or {} if self.ours else {}
+        names = ours.get("boneNames")
+        lengths = ours.get("boneLengths")
+        exact = isinstance(names, list) and len(names) == n and isinstance(lengths, list) and len(lengths) == n
+        if not exact:
+            names = [j.rsplit("/", 1)[-1] for j in sk["joints"]]
+        children = {}
+        for i, p in enumerate(parents):
+            children.setdefault(p, []).append(i)
+        if any(abs(s - 1.0) > 1e-4 for M in B for s in M.to_scale()):
+            self.note("%s: its joints are scaled in their bind pose: the bones come in unscaled" % sk["path"])
+
+        def flag(key, i, default):
+            v = ours.get(key) if exact else None
+            return bool(v[i]) if isinstance(v, list) and len(v) == n else default
+
+        descendants = [0] * n
+        for i in reversed(range(n)):
+            if parents[i] >= 0:
+                descendants[parents[i]] += descendants[i] + 1
+        self.mode(ob, 'EDIT')
+        try:
+            ebs = []
+            for i in range(n):
+                eb = arm.edit_bones.new(names[i] or "Bone")
+                head = B[i].to_translation()
+                if exact:
+                    eb.head = (0.0, 0.0, 0.0)
+                    eb.tail = (0.0, max(float(lengths[i]), 1e-4), 0.0)
+                    eb.matrix = B[i]
+                else:
+                    # pointed at its chain's child; no child: on along its
+                    # parent, as long
+                    kids = children.get(i, [])
+                    tail = None
+                    if kids:
+                        c = max(kids, key=lambda k: (descendants[k], -k))
+                        tail = B[c].to_translation()
+                        if (tail - head).length < 1e-5:
+                            tail = None
+                    if tail is None:
+                        p = parents[i]
+                        if p >= 0 and ebs[p].length > 1e-6:
+                            tail = head + (ebs[p].tail - ebs[p].head)
+                        else:
+                            y = B[i].to_3x3().normalized() * Vector((0.0, 1.0, 0.0))
+                            tail = head + y * 0.1
+                    eb.head, eb.tail = head, tail
+                    eb.align_roll(B[i].to_3x3().normalized() * Vector((0.0, 0.0, 1.0)))
+                if parents[i] >= 0:
+                    eb.parent = ebs[parents[i]]
+                eb.use_connect = flag("boneConnect", i, False)
+                eb.use_deform = flag("boneDeform", i, True)
+                ebs.append(eb)
+            names = [eb.name for eb in ebs]
+        finally:
+            self.mode(ob, 'OBJECT')
+        off = [k for k in ("boneInheritRotation", "boneInheritScale") if exact and not all(ours.get(k) or [1])]
+        if off:
+            self.note("%s: bones that inherit no rotation or scale come in inheriting them (the animation is "
+                      "written as it moves)" % ob.name)
+        R = [arm.bones[nm].matrix_local.copy() for nm in names]
+        C = [B[i].inverted() * R[i] for i in range(n)]
+        rest = sk["rest"] if sk.get("has_rest", True) and len(sk.get("rest") or ()) == 16 * n else None
+        L0 = []
+        for i in range(n):
+            if rest is not None:
+                L0.append(usd_matrix(rest[i * 16:i * 16 + 16]))
+            else:
+                Bs = usd_matrix(sk["bind"][i * 16:i * 16 + 16])
+                Bp = usd_matrix(sk["bind"][parents[i] * 16:parents[i] * 16 + 16]) if parents[i] >= 0 else None
+                L0.append(Bs if Bp is None else Bp.inverted() * Bs)
+        self.bone_names[ob.name] = names
+        # the pose with no animation: the rest transforms
+        for i, b in enumerate(self.basis(L0, parents, R, C)):
+            pb = ob.pose.bones[names[i]]
+            pb.rotation_mode = 'QUATERNION'
+            loc, rot, sc = b.decompose()
+            pb.location, pb.rotation_quaternion, pb.scale = loc, rot, sc
+        # the animations: the bound one, and (ours) the others it has
+        bound = sk.get("animation") or ""
+        paths = [bound] if bound else []
+        if self.ours:
+            root = sk.get("root") or ""
+            paths += sorted(p for p in self.animations if p != bound and p.startswith(root + "/"))
+        ad = ob.animation_data_create()
+        for path in paths:
+            a = self.animations.get(path)
+            if a is None:
+                continue
+            self.used_animations.add(path)
+            act = self.action(ob, sk, a, names, parents, R, C, L0)
+            if path == bound:
+                ad.action = act
+            else:
+                act.use_fake_user = True
+            self.counts["animations"] += 1
+        if not bound and paths:
+            ad.action = None
+        frame = (self.custom.get(self.data["nodes"][self.node_of(ob)]["path"]) or {}).get("frame") if self.ours \
+            else None
+        return frame
+
+    def node_of(self, ob):
+        for o, m in zip(self.objects, self.made):
+            if m == ob:
+                return o["node"]
+        return -1
+
+    def basis(self, L, parents, R, C):
+        """the bones' basis matrices for the file's joint transforms L (each
+        relative to its parent, in the file's space)"""
+        K, Kinv = self.K, self.Kinv
+        J = []
+        for i, Li in enumerate(L):
+            J.append(Li if parents[i] < 0 else J[parents[i]] * Li)
+        P = [K * J[i] * Kinv * C[i] for i in range(len(L))]
+        out = []
+        for i in range(len(L)):
+            p = parents[i]
+            if p < 0:
+                out.append(R[i].inverted() * P[i])
+            else:
+                out.append((R[p].inverted() * R[i]).inverted() * P[p].inverted() * P[i])
+        return out
+
+    def action(self, ob, sk, a, names, parents, R, C, L0):
+        from mathutils import Matrix, Quaternion
+        ours = self.custom.get(a["path"]) or {} if self.ours else {}
+        act = bpy.data.actions.new(ours.get("action") or a["path"].rsplit("/", 1)[-1])
+        index = {j: k for k, j in enumerate(a["joints"])}
+        which = [index.get(j) for j in sk["joints"]]
+        if a.get("blend_shapes"):
+            self.note("%s: its blend shape weights are left out" % a["path"])
+        times = a["times"]
+        if times and times[0] is None:
+            times = [float(self.scene.frame_start)]
+        keys = [[] for _ in names]  # each bone: [(frame, loc, quat, scale)]
+        for k, t in enumerate(times):
+            tr, ro, sc = a["translations"][k], a["rotations"][k], a["scales"][k]
+            L = []
+            for i in range(len(names)):
+                j = which[i]
+                if j is None or len(tr) < 3 * j + 3 or len(ro) < 4 * j + 4 or len(sc) < 3 * j + 3:
+                    L.append(L0[i])
+                    continue
+                S = Matrix(((sc[3 * j], 0, 0, 0), (0, sc[3 * j + 1], 0, 0), (0, 0, sc[3 * j + 2], 0), (0, 0, 0, 1)))
+                q = Quaternion((ro[4 * j], ro[4 * j + 1], ro[4 * j + 2], ro[4 * j + 3])).normalized()
+                L.append(Matrix.Translation((tr[3 * j], tr[3 * j + 1], tr[3 * j + 2])) * q.to_matrix().to_4x4() * S)
+            for i, b in enumerate(self.basis(L, parents, R, C)):
+                loc, rot, scale = b.decompose()
+                if keys[i]:
+                    prev = keys[i][-1][2]
+                    if rot.dot(prev) < 0.0:
+                        rot.negate()
+                keys[i].append((float(t), loc, rot, scale))
+        for i, nm in enumerate(names):
+            base = 'pose.bones["%s"].' % nm.replace("\\", "\\\\").replace('"', '\\"')
+            for prop, width, pick in (("location", 3, 1), ("rotation_quaternion", 4, 2), ("scale", 3, 3)):
+                for c in range(width):
+                    fc = act.fcurves.new(base + prop, c, nm)
+                    fc.keyframe_points.add(len(keys[i]))
+                    for kp, key in zip(fc.keyframe_points, keys[i]):
+                        kp.co = (key[0], key[pick][c])
+                        kp.interpolation = 'LINEAR'
+                    fc.update()
+        return act
+
+    # -- skins ------------------------------------------------------------------
+
+    def skins(self, armatures):
+        by_skel = {sk["path"]: ob for ob, sk in armatures}
+        joints_of = {sk["path"]: sk["joints"] for _ob, sk in armatures}
+        for s in self.skel.get("skinned") or ():
+            ob = self.of_path.get(s["path"])
+            arm = by_skel.get(s["skeleton"])
+            if ob is None or ob.type != 'MESH' or arm is None:
+                continue
+            me = ob.data
+            order = s["joints"] or joints_of[s["skeleton"]]
+            skel_index = {j: k for k, j in enumerate(joints_of[s["skeleton"]])}
+            bone_names = self.bone_names[arm.name]
+            to_bone = [bone_names[skel_index[j]] if j in skel_index else None for j in order]
+            if any(b is None for b in to_bone):
+                self.note("%s: it names joints its skeleton has not: their weights are left out" % s["path"])
+            n = int(s["element_size"])
+            idx, w = s["indices"], s["weights"]
+            nv = len(me.vertices)
+            if s["interpolation"] == "constant":
+                idx, w = list(idx[:n]) * nv, list(w[:n]) * nv
+            if n <= 0 or len(idx) != nv * n or len(w) != nv * n:
+                self.note("%s: its joint weights do not fit its %d vertices: not skinned" % (s["path"], nv))
+                continue
+            groups = {}
+            for v in range(nv):
+                for k in range(n):
+                    wt = w[v * n + k]
+                    j = idx[v * n + k]
+                    if wt <= 0.0 or j < 0 or j >= len(to_bone) or to_bone[j] is None:
+                        continue
+                    nm = to_bone[j]
+                    if nm not in groups:
+                        groups[nm] = ob.vertex_groups.get(nm) or ob.vertex_groups.new(nm)
+                    groups[nm].add([v], wt, 'ADD')
+            mod = ob.modifiers.new("Armature", 'ARMATURE')
+            mod.object = arm
+            mod.use_vertex_groups = True
+            mod.use_bone_envelopes = False
+            if s["method"] == "dualQuaternion":
+                mod.use_deform_preserve_volume = True
+            elif s["method"] not in ("classicLinear", ""):
+                self.note("%s: skinned %s: it comes in as linear skinning" % (s["path"], s["method"]))
+            if s.get("blend_shapes"):
+                self.note("%s: its blend shapes are left out" % s["path"])
+            self.counts["skinned"] += 1
+
+    def bone_parents(self):
+        """ours: objects that hung from a bone hang from it again, where
+        they are"""
+        if not self.ours:
+            return
+        nodes = self.data["nodes"]
+        todo = []
+        for o, ob, w in zip(self.objects, self.made, self.world):
+            bone = (self.custom.get(nodes[o["node"]]["path"]) or {}).get("parentBone")
+            p = ob.parent
+            if not bone or p is None or p.type != 'ARMATURE':
+                continue
+            if bone not in p.data.bones:
+                self.note("%s: it hung from bone %s, which %s has not" % (ob.name, bone, p.name))
+                continue
+            ob.parent_type = 'BONE'
+            ob.parent_bone = bone
+            todo.append((ob, w))
+        if todo:
+            self.scene.update()
+            for ob, w in todo:
+                ob.matrix_world = w
+            self.scene.update()
 
 
 # ---------------------------------------------------------------------------
@@ -1004,10 +1636,17 @@ class PhysicsImport:
             self.world[ob.name] = w
         self.made = made
         self.Matrix = Matrix
+        self.notes = {}  # (round 8) an object's name: its lines
 
-    def note(self, line):
+    def note(self, line, ob=None):
+        """a line for the report; (round 8) also the object's own, for Remix
+        View's marks"""
         if line not in self.report:
             self.report.append(line)
+        if ob is not None:
+            mine = self.notes.setdefault(ob.name, [])
+            if line not in mine:
+                mine.append(line)
 
     def owner(self, path):
         """the object a prim path is (or is under)"""
@@ -1145,9 +1784,9 @@ class PhysicsImport:
             if body.get("kinematic"):
                 g.physics_type = 'STATIC'
                 self.note("%s: a kinematic body: it comes in Static (moved by its animation, not by physics)"
-                          % ob.name)
+                          % ob.name, ob)
             if any(abs(x) > 1e-9 for x in (body.get("velocity") or ()) + (body.get("angular_velocity") or ())):
-                self.note("%s: its starting speed is left out (BGE sets speeds from logic)" % ob.name)
+                self.note("%s: its starting speed is left out (BGE sets speeds from logic)" % ob.name, ob)
         elif shapes or body is not None:
             g.physics_type = 'STATIC'
         else:
@@ -1163,19 +1802,19 @@ class PhysicsImport:
                 g.collision_bounds_type = APPROXIMATION_BOUNDS.get(approx, 'TRIANGLE_MESH')
                 if approx in ("convexDecomposition", "meshSimplification", "sdf"):
                     self.note("%s: its %s collision shape comes in as %s" % (
-                        ob.name, approx, g.collision_bounds_type.replace("_", " ").title()))
+                        ob.name, approx, g.collision_bounds_type.replace("_", " ").title()), ob)
                 elif approx not in APPROXIMATION_BOUNDS:
-                    self.note("%s: its %s collision shape comes in as a triangle mesh" % (ob.name, approx))
+                    self.note("%s: its %s collision shape comes in as a triangle mesh" % (ob.name, approx), ob)
             elif sh["kind"] in SHAPE_BOUNDS:
                 g.collision_bounds_type = SHAPE_BOUNDS[sh["kind"]]
                 if sh["kind"] == "sphere" and sh.get("radius"):
                     scale = max(abs(x) for x in (sh.get("local_scale") or (1.0, 1.0, 1.0)))
                     g.radius = float(sh["radius"]) * scale * self.s / max(max(self.world[ob.name].to_scale()), 1e-9)
             else:
-                self.note("%s: a %s collision shape: it comes in as a convex hull" % (ob.name, sh["kind"]))
+                self.note("%s: a %s collision shape: it comes in as a convex hull" % (ob.name, sh["kind"]), ob)
                 g.collision_bounds_type = 'CONVEX_HULL'
             if len(mine) > 1:
-                self.note("%s: %d collision shapes: the first one's kind is used" % (ob.name, len(mine)))
+                self.note("%s: %d collision shapes: the first one's kind is used" % (ob.name, len(mine)), ob)
         # a shape of a body above it: one compound body
         for sh in mine:
             owner = self.owner(sh.get("body") or "")
@@ -1291,7 +1930,7 @@ class PhysicsImport:
         if ob0 is None:
             p0, r0, ob0, ob1 = p1, r1, ob1, None
         if not j.get("enabled", True):
-            self.note("joint %s is switched off in the file: left out" % name)
+            self.note("joint %s is switched off in the file: left out" % name, ob0)
             return
         # its X along the joint's axis
         axis = j.get("axis") or "X"
@@ -1350,7 +1989,7 @@ class PhysicsImport:
             else:
                 for dof, l in (j.get("limits") or {}).items():
                     if dof == "distance":
-                        self.note("joint %s: its distance limit is left out" % name)
+                        self.note("joint %s: its distance limit is left out" % name, ob0)
                         continue
                     if not l.get("enabled", True):
                         continue
@@ -1383,9 +2022,9 @@ class PhysicsImport:
         drives = [j.get("drive") or {}] + list((j.get("drives") or {}).values())
         if any(d.get("enabled") for d in drives):
             self.note("joint %s: its drive (motor) is left out: Rigid Body Joints keep no motor in the file "
-                      "(a script sets it)" % con.name)
+                      "(a script sets it)" % con.name, ob0)
         if j.get("break_force", 1e300) < 1e29 or j.get("break_torque", 1e300) < 1e29:
-            self.note("joint %s: its breaking force is left out (BGE's joints do not break)" % con.name)
+            self.note("joint %s: its breaking force is left out (BGE's joints do not break)" % con.name, ob0)
 
     def in_articulation(self, path):
         return any(path in (a.get("joints") or ()) or path in (a.get("roots") or ())
@@ -1426,7 +2065,7 @@ class IMPORT_SCENE_OT_bge_remix_usd(Operator, ImportHelper):
         report = []
         try:
             scene = import_usd(context, self.filepath, report)
-        except RuntimeError as e:
+        except (RuntimeError, UsdError) as e:
             self.report({'ERROR'}, "Universal Scene Description: %s" % e)
             print("BGE-Remix USD import: error: %s" % e)
             return {'CANCELLED'}
@@ -1443,8 +2082,10 @@ class IMPORT_SCENE_OT_bge_remix_usd(Operator, ImportHelper):
             print("BGE-Remix USD import: " + line)
         c = LAST["counts"]
         self.report({'INFO'}, "Universal Scene Description: %d objects, %d meshes, %d materials, %d lamps, "
-                              "%d cameras%s" % (c["objects"], c["meshes"], c["materials"], c["lamps"], c["cameras"],
-                                                "; %d note(s), see the Info log" % len(report) if report else ""))
+                              "%d cameras, %d armatures%s" % (
+                                  c["objects"], c["meshes"], c["materials"], c["lamps"], c["cameras"],
+                                  c.get("armatures", 0), "; %d note(s), see the Info log" % len(report) if report
+                                  else ""))
         return {'FINISHED'}
 
 

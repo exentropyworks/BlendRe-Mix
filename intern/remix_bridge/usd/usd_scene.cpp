@@ -64,6 +64,7 @@
 #include "pxr/usd/usdLux/shapingAPI.h"
 #include "pxr/usd/usdLux/sphereLight.h"
 #include "pxr/usd/usdPhysics/collisionAPI.h"
+#include "pxr/usd/usdSkel/skeleton.h"
 #include "pxr/usd/usdShade/material.h"
 #include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "pxr/usd/usdShade/shader.h"
@@ -114,7 +115,8 @@ struct bru_scene {
 	double meters_per_unit = 1.0;
 	bool z_up = false;
 	double time = 0.0;
-	std::string default_prim, creator, report, physics;
+	std::string default_prim, creator, report, physics, skeletons;
+	brb::usd::Skel skel;
 	int usd_errors = 0;
 	std::vector<Node> nodes;
 	std::vector<Mesh> meshes;
@@ -466,6 +468,10 @@ void walk(bru_scene &sc, UsdGeomXformCache &xf, const UsdPrim &prim, int parent)
 			camera_node(sc, xf, c, parent);
 			continue;
 		}
+		if (c.IsA<UsdSkelSkeleton>()) {
+			add_node(sc, xf, c, parent, BRU_NODE_SKELETON);  /* round 8: read with the skeletons */
+			continue;
+		}
 		if (c.IsA<UsdGeomPointInstancer>()) {
 			sc.note(c.GetPath().GetString() + ": a point instancer: not imported (its prototypes and their copies "
 			        "are left out)");
@@ -549,6 +555,7 @@ bru_scene *scene_open(const char *plugin_dir, const char *path, char *r_error, i
 	{
 		std::string notes;
 		sc->physics = brb::usd::physics_json(stage, sc->time, notes);
+		sc->skeletons = sc->skel.read(stage, sc->time, notes);
 		if (!notes.empty())
 			sc->report += notes;
 	}
@@ -691,6 +698,21 @@ const char *scene_physics(const bru_scene *sc)
 	return sc->physics.c_str();
 }
 
+const char *scene_skeletons(const bru_scene *sc)
+{
+	return sc->skeletons.c_str();
+}
+
+int scene_skinned_points(const bru_scene *sc, const char *mesh_path, double time, float *r_points, int max_points)
+{
+	try {
+		return sc->skel.skinned_points(mesh_path, time, r_points, max_points);
+	}
+	catch (...) {
+		return -1;
+	}
+}
+
 int scene_camera(const bru_scene *sc, int i, bru_camera *r)
 {
 	if (i < 0 || size_t(i) >= sc->cameras.size())
@@ -741,6 +763,7 @@ bru_scene *api_open(const char *plugin_dir, const char *path, char *r_error, int
 const bru_scene_api kSceneApi = {
     BRU_ABI_VERSION, api_open,      scene_close,          scene_info,  scene_node,   scene_mesh,
     scene_subset,    scene_material, scene_material_input, scene_light, scene_camera, scene_physics,
+    scene_skeletons, scene_skinned_points,
 };
 
 int convert(const char *plugin_dir, const char *src, const char *dst, char *r_error, int max_bytes)

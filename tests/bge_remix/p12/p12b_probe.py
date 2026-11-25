@@ -26,6 +26,26 @@ argv (after --):
   physics_other <out.json> <folder>
       (T12.e4) another tool's physics file (usd_files.physics_other)
       imported; its physics written out.
+  character <out.json> <folder>
+      (round 8, T12.f1, T12.f2) the character made by script (want: its
+      bones, skin, both actions frame by frame, its body deformed at frames
+      1, 12 and 24, its ragdoll), exported as character.usda and
+      character.usdc; each read with the bridge's OpenUSD (its skeletons as
+      OpenUSD's skeleton reader gives them; OpenUSD's own skinning of the
+      body at frame 12 against Blender's) and imported into an emptied file
+      (got_usda, got_usdc). For T12.f4 the character and the .usda imported
+      are saved to play (<folder>/character.blend, imported.blend; the
+      ragdoll's capsules taken out), Walk played by an Action actuator, with
+      a script that writes every bone's pose at tics 30 and 60.
+  character_other <out.json> <folder>
+      (T12.f3) another tool's character (usd_files.character_other)
+      imported; its bones, and its body deformed at frames 1, 15 and 30
+      against OpenUSD's own skinning of the file.
+  usd_view <out.json> <folder>
+      (T12.f5) for the Remix View: the physics room saved as it is
+      (room.blend), exported as physics.usda and imported (imported.blend),
+      and another tool's physics file imported (other.blend), each with its
+      3D view a Remix View in Check mode.
 
 The physics room (PhysX on the CPU, gravity 9.81, metres):
   Floor      Static, Box bounds, 12 x 12 x 0.2 m (FloorRubber: friction 0.8,
@@ -44,6 +64,22 @@ The physics room (PhysX on the CPU, gravity 9.81, metres):
              rest locked: it drops 0.3 m
   Wall       a destructible of six pieces (Strength 50, Anchored)
   Pool       a water fluid volume (current 0.5 m/s along X)
+
+The character (round 8; PhysX on the CPU, 24 frames a second):
+  Rig        an armature at (0.5, 0, 0), turned 20 degrees about Z: 12
+             bones, Hips (1 m up), Spine, Neck, Head (connected, up the
+             middle), UpperArm and ForeArm left and right (the arms rolled
+             30 degrees), Thigh and Shin left and right
+    Body     a mesh of boxes along the bones (three rings of four vertices
+             each), skinned by an Armature modifier: one bone on a vertex
+             in the middle of a bone, two at its ends, three at the middle
+             of the spine
+  Walk       frames 1 to 24 (a linear key every frame): legs and arms
+             swing, the shins bend, the spine twists, the hips bob; the
+             armature's own action
+  Wave       frames 1 to 12: the right arm up and waving, the head scaled
+             1.25 from frame 7 (a constant key)
+  capsules   a ragdoll made from it by Make Ragdoll (P11)
 
 The exchange room (metres, Z up):
   Furniture        an empty at (1, 2, 0)
@@ -336,7 +372,7 @@ def clear():
         if sc != keep:
             bpy.data.scenes.remove(sc, do_unlink=True)
     for coll in (bpy.data.objects, bpy.data.meshes, bpy.data.materials, bpy.data.lamps, bpy.data.cameras,
-                 bpy.data.textures, bpy.data.images):
+                 bpy.data.textures, bpy.data.images, bpy.data.armatures, bpy.data.actions):
         for x in list(coll):
             try:
                 coll.remove(x, do_unlink=True)
@@ -788,6 +824,415 @@ def physics_other(argv, out):
     out["got"] = r
 
 
+# -- round 8: the character ----------------------------------------------------
+
+# bone: parent, head, tail, connected, roll (degrees)
+BONES = [
+    ("Hips", None, (0.0, 0.0, 1.0), (0.0, 0.0, 1.1), False, 0.0),
+    ("Spine", "Hips", (0.0, 0.0, 1.1), (0.0, 0.0, 1.45), True, 0.0),
+    ("Neck", "Spine", (0.0, 0.0, 1.45), (0.0, 0.0, 1.55), True, 0.0),
+    ("Head", "Neck", (0.0, 0.0, 1.55), (0.0, 0.0, 1.8), True, 0.0),
+    ("UpperArm.L", "Spine", (0.15, 0.0, 1.42), (0.45, 0.0, 1.42), False, 30.0),
+    ("ForeArm.L", "UpperArm.L", (0.45, 0.0, 1.42), (0.72, 0.0, 1.42), True, 30.0),
+    ("UpperArm.R", "Spine", (-0.15, 0.0, 1.42), (-0.45, 0.0, 1.42), False, -30.0),
+    ("ForeArm.R", "UpperArm.R", (-0.45, 0.0, 1.42), (-0.72, 0.0, 1.42), True, -30.0),
+    ("Thigh.L", "Hips", (0.1, 0.0, 1.0), (0.1, 0.0, 0.55), False, 0.0),
+    ("Shin.L", "Thigh.L", (0.1, 0.0, 0.55), (0.1, 0.0, 0.1), True, 0.0),
+    ("Thigh.R", "Hips", (-0.1, 0.0, 1.0), (-0.1, 0.0, 0.55), False, 0.0),
+    ("Shin.R", "Thigh.R", (-0.1, 0.0, 0.55), (-0.1, 0.0, 0.1), True, 0.0),
+]
+CHAIN = {"Hips": "Spine", "Spine": "Neck", "Neck": "Head", "UpperArm.L": "ForeArm.L", "UpperArm.R": "ForeArm.R",
+         "Thigh.L": "Shin.L", "Thigh.R": "Shin.R"}
+DEFORM_FRAMES = (1, 12, 24)
+CHAR_PLAY_TICS = (30, 60)
+CHAR_PLAY_SCRIPT = """import json, os
+import bge
+scene = bge.logic.getCurrentScene()
+st = bge.logic.globalDict.setdefault("p12f", {"tic": 0, "poses": {}})
+st["tic"] += 1
+if st["tic"] in TICS:
+    rig = scene.objects.get("Rig")
+    pose = {}
+    if rig is not None:
+        for ch in rig.channels:
+            pose[ch.name] = {"head": list(ch.pose_head), "tail": list(ch.pose_tail),
+                             "matrix": [list(r) for r in ch.pose_matrix]}
+        st["poses"][str(st["tic"])] = {"frame": rig.getActionFrame(0), "bones": pose}
+    if st["tic"] == max(TICS):
+        path = os.environ.get("BGE_REMIX_P12_OUT")
+        if path:
+            with open(path, "w") as f:
+                json.dump({"tic": st["tic"], "poses": st["poses"]}, f)
+"""
+
+
+def _keys(act, bone, prop, frames_values, interpolation='LINEAR'):
+    """keys on one bone's property: [(frame, (values))]"""
+    width = len(frames_values[0][1])
+    for i in range(width):
+        fc = act.fcurves.new('pose.bones["%s"].%s' % (bone, prop), i, bone)
+        for f, v in frames_values:
+            kp = fc.keyframe_points.insert(f, v[i])
+            kp.interpolation = interpolation
+        fc.update()
+
+
+def make_character(folder):
+    import make_scenes_p6 as m6
+    from mathutils import Quaternion, Vector
+    scene = m6.base("P12 Character")
+    m6.set_engine(scene, 'PHYSX', 'CPU')
+    scene.render.fps = 24
+    scene.render.fps_base = 1.0
+    scene.frame_start, scene.frame_end = 1, 24
+    arm = bpy.data.armatures.new("RigData")
+    rig = bpy.data.objects.new("Rig", arm)
+    scene.objects.link(rig)
+    rig.location = (0.5, 0.0, 0.0)
+    rig.rotation_euler = (0.0, 0.0, math.radians(20.0))
+    scene.objects.active = rig
+    for o in scene.objects:
+        o.select = o == rig
+    scene.update()
+    bpy.ops.object.mode_set(mode='EDIT')
+    ebs = {}
+    for name, parent, head, tail, connect, roll in BONES:
+        eb = arm.edit_bones.new(name)
+        eb.head, eb.tail = head, tail
+        eb.roll = math.radians(roll)
+        if parent:
+            eb.parent = ebs[parent]
+            eb.use_connect = connect
+        ebs[name] = eb
+    bpy.ops.object.mode_set(mode='OBJECT')
+    for pb in rig.pose.bones:
+        pb.rotation_mode = 'QUATERNION'
+    # the body: boxes along the bones, three rings each
+    import bmesh
+    bm = bmesh.new()
+    weights = []
+    children = {}
+    for name, parent, _h, _t, _c, _r in BONES:
+        children.setdefault(parent, []).append(name)
+    for name, parent, head, tail, _c, _r in BONES:
+        h, t = Vector(head), Vector(tail)
+        d = (t - h).normalized()
+        side = d.cross(Vector((0.0, 1.0, 0.0)))
+        if side.length < 1e-6:
+            side = d.cross(Vector((1.0, 0.0, 0.0)))
+        side.normalize()
+        up = d.cross(side).normalized()
+        rings = []
+        for k, f in enumerate((0.05, 0.5, 0.95)):
+            c = h + (t - h) * f
+            ring = [bm.verts.new(c + side * u * 0.04 + up * v * 0.04) for u, v in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+            if k == 0:
+                w = {name: 0.6, parent: 0.4} if parent else {name: 1.0}
+            elif k == 1:
+                w = {"Spine": 0.6, "UpperArm.L": 0.2, "UpperArm.R": 0.2} if name == "Spine" else {name: 1.0}
+            else:
+                w = {name: 0.7, CHAIN[name]: 0.3} if name in CHAIN else {name: 1.0}
+            weights += [w] * 4
+            rings.append(ring)
+        for a, b in ((0, 1), (1, 2)):
+            for i in range(4):
+                bm.faces.new((rings[a][i], rings[a][(i + 1) % 4], rings[b][(i + 1) % 4], rings[b][i]))
+        bm.faces.new(list(reversed(rings[0])))
+        bm.faces.new(rings[2])
+    me = bpy.data.meshes.new("BodyMesh")
+    bm.to_mesh(me)
+    bm.free()
+    body = bpy.data.objects.new("Body", me)
+    scene.objects.link(body)
+    body.parent = rig
+    body.game.physics_type = 'NO_COLLISION'
+    for v, w in enumerate(weights):
+        for g, x in w.items():
+            vg = body.vertex_groups.get(g) or body.vertex_groups.new(g)
+            vg.add([v], x, 'REPLACE')
+    mod = body.modifiers.new("Armature", 'ARMATURE')
+    mod.object = rig
+    # the actions
+    # a key every frame (unit turns): the game, playing between frames, moves
+    # the same through these keys as through the file's samples
+    ph = {f: math.sin(2.0 * math.pi * (f - 1) / 23.0) for f in range(1, 25)}
+    X, Y, Z = Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))
+
+    def q(axis, deg):
+        return tuple(Quaternion(axis, math.radians(deg)))
+    walk = bpy.data.actions.new("Walk")
+    for bone, axis, most in (("Thigh.L", X, 30.0), ("Thigh.R", X, -30.0), ("UpperArm.L", X, -20.0),
+                             ("UpperArm.R", X, 20.0), ("Spine", Y, 10.0)):
+        _keys(walk, bone, "rotation_quaternion", [(f, q(axis, most * p)) for f, p in sorted(ph.items())])
+    for bone in ("Shin.L", "Shin.R"):
+        _keys(walk, bone, "rotation_quaternion", [(f, q(X, 20.0 * abs(p))) for f, p in sorted(ph.items())])
+    _keys(walk, "Hips", "location", [(f, (0.0, 0.03 * abs(p), 0.0)) for f, p in sorted(ph.items())])
+    wave = bpy.data.actions.new("Wave")
+    wph = {1: 0.0, 4: 1.0, 7: -1.0, 10: 1.0, 12: 0.0}
+    _keys(wave, "UpperArm.R", "rotation_quaternion", [(f, q(Z, -80.0 * (1.0 if f > 1 else 0.0)))
+                                                      for f in sorted(wph)])
+    _keys(wave, "ForeArm.R", "rotation_quaternion", [(f, q(X, 30.0 * p)) for f, p in sorted(wph.items())])
+    _keys(wave, "Head", "scale", [(1, (1.0, 1.0, 1.0)), (7, (1.25, 1.25, 1.25))], 'CONSTANT')
+    wave.use_fake_user = True
+    rig.animation_data_create().action = walk
+    # the ragdoll
+    scene.objects.active = rig
+    for o in scene.objects:
+        o.select = o == rig
+    ret = bpy.ops.object.bge_remix_make_ragdoll()
+    if 'FINISHED' not in ret:
+        raise RuntimeError("Make Ragdoll: %s" % ret)
+    import make_scenes_p2 as p2
+    p2.camera(scene, (0.0, -6.0, 1.5), (0.0, 0.0, 1.0), lens=35.0)
+    scene.frame_set(1)
+    scene.update()
+    return scene
+
+
+def _rows(m):
+    return [list(r) for r in m]
+
+
+def _deformed(scene, ob):
+    me = ob.to_mesh(scene, True, 'RENDER')
+    try:
+        W = ob.matrix_world
+        return [list(W * v.co) for v in me.vertices]
+    finally:
+        bpy.data.meshes.remove(me)
+
+
+def character_dump(scene):
+    """the armature's bones, the body's skin, both actions frame by frame,
+    the body deformed, the ragdoll's capsules"""
+    from mathutils import Matrix
+    d = {"fps": scene.render.fps / scene.render.fps_base, "frames": [scene.frame_start, scene.frame_end]}
+    rig = scene.objects.get("Rig")
+    body = scene.objects.get("Body")
+    if rig is None or rig.type != 'ARMATURE':
+        d["error"] = "no armature Rig"
+        return d
+    d["rig"] = {"matrix": _rows(rig.matrix_world), "type": rig.type, "bones": {}}
+    for b in rig.data.bones:
+        d["rig"]["bones"][b.name] = {"parent": b.parent.name if b.parent else None, "head": list(b.head_local),
+                                     "tail": list(b.tail_local), "matrix": _rows(b.matrix_local),
+                                     "connect": b.use_connect, "deform": b.use_deform}
+    ad = rig.animation_data
+    current = ad.action if ad else None
+    d["action"] = current.name if current else None
+    d["actions"] = {}
+    if body is not None:
+        d["body"] = {"type": body.type, "parent": body.parent.name if body.parent else None,
+                     "modifiers": [(m.type, m.object.name if getattr(m, "object", None) else None)
+                                   for m in body.modifiers],
+                     "groups": [{body.vertex_groups[g.group].name: g.weight for g in v.groups}
+                                for v in body.data.vertices] if body.type == 'MESH' else []}
+    frame = scene.frame_current
+    if ad is None:
+        ad = rig.animation_data_create()
+    for name in ("Walk", "Wave"):
+        act = bpy.data.actions.get(name)
+        if act is None:
+            continue
+        # (from the rest pose: a bone the action has no keys for stands at rest)
+        for pb in rig.pose.bones:
+            pb.matrix_basis = Matrix.Identity(4)
+        ad.action = act
+        poses = {}
+        first, last = act.frame_range
+        for f in range(int(first), int(last) + 1):
+            scene.frame_set(f)
+            poses[str(f)] = {pb.name: _rows(pb.matrix) for pb in rig.pose.bones}
+            if name == "Walk" and f in DEFORM_FRAMES and body is not None:
+                d.setdefault("deformed", {})[str(f)] = _deformed(scene, body)
+        d["actions"][name] = {"range": [first, last], "poses": poses, "fake_user": act.use_fake_user}
+    for pb in rig.pose.bones:
+        pb.matrix_basis = Matrix.Identity(4)
+    ad.action = current
+    scene.frame_set(frame)
+    caps = {}
+    phys = physics_dump(scene)
+    for ob in scene.objects:
+        if "bge_ragdoll_bone" in ob:
+            caps[ob.name] = {"parent": ob.parent.name if ob.parent else None, "parent_type": ob.parent_type,
+                             "parent_bone": ob.parent_bone, "matrix": _rows(ob.matrix_world),
+                             "physics": phys["objects"].get(ob.name)}
+    d["capsules"] = caps
+    return d
+
+
+def save_to_play_character(scene, path):
+    import make_scenes_p2 as p2
+    import make_scenes_p9 as m9
+    for sc in list(bpy.data.scenes):
+        if sc != scene:
+            bpy.data.scenes.remove(sc, do_unlink=True)
+    for ob in [o for o in scene.objects if "bge_ragdoll_bone" in o]:
+        scene.objects.unlink(ob)
+        bpy.data.objects.remove(ob)
+    rig = scene.objects["Rig"]
+    walk = bpy.data.actions["Walk"]
+    scene.objects.active = rig
+    bpy.ops.logic.sensor_add(type='ALWAYS', object=rig.name)
+    bpy.ops.logic.controller_add(type='LOGIC_AND', object=rig.name)
+    bpy.ops.logic.actuator_add(type='ACTION', object=rig.name)
+    s, c, a = rig.game.sensors[-1], rig.game.controllers[-1], rig.game.actuators[-1]
+    a.action = walk
+    a.play_mode = 'PLAY'
+    a.frame_start, a.frame_end = 1, 24
+    s.link(c)
+    c.link(actuator=a)
+    m9.logic(scene, "P12fPlay", CHAR_PLAY_SCRIPT.replace("TICS", repr(CHAR_PLAY_TICS)))
+    p2.add_probe(scene)
+    scene["bge_remix"] = 0
+    scene.update()
+    bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
+
+
+def _usd_standard(path, mesh_name, frame):
+    """the file as OpenUSD reads it: its skeletons, and OpenUSD's own
+    skinning of the mesh at frame (in the file's space)"""
+    import _bge_remix
+    try:
+        read = _bge_remix.usd_read(path)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    skel = json.loads(read.get("skeletons") or "{}")
+    out = {"skeletons": skel, "usd_errors": read.get("usd_errors"), "report": read.get("report"),
+           "meters_per_unit": read.get("meters_per_unit"), "z_up": read.get("z_up")}
+    mesh = [s["path"] for s in skel.get("skinned") or () if s["path"].rsplit("/", 1)[-1] == mesh_name]
+    out["mesh_path"] = mesh[0] if mesh else None
+    out["skinned"] = {}
+    if mesh:
+        from array import array
+        for f in (frame if isinstance(frame, (list, tuple)) else (frame,)):
+            b = _bge_remix.usd_skinned_points(path, mesh[0], float(f))
+            if b is not None:
+                a = array("f")
+                a.frombytes(bytes(b))
+                v = a.tolist()
+                out["skinned"][str(f)] = [v[i:i + 3] for i in range(0, len(v), 3)]
+    return out
+
+
+def character(argv, out):
+    from bl_operators import bge_remix_usd
+    from bl_operators.bge_remix_usd import SceneExport
+    folder = argv[2]
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder, exist_ok=True)
+    scene = make_character(folder)
+    out["want"] = character_dump(scene)
+    rig = scene.objects["Rig"]
+    bones = SceneExport.bone_order(rig.data)
+    out["want_joints"] = SceneExport.joint_tokens(bones)
+    for ext in ("usda", "usdc"):
+        path = os.path.join(folder, "character." + ext)
+        try:
+            ret = bpy.ops.export_scene.bge_remix_usd({"scene": scene}, filepath=path)
+            out["export_" + ext] = {"result": sorted(ret)}
+        except RuntimeError as e:
+            out["export_" + ext] = {"result": ["CANCELLED"], "error": str(e)}
+        last = bge_remix_usd.LAST
+        out["export_" + ext].update({"report": list(last.get("report") or []), "counts": last.get("counts"),
+                                     "exists": os.path.isfile(path)})
+        out["standard_" + ext] = _usd_standard(path, "BodyMesh", 12)
+    save_to_play_character(scene, os.path.join(folder, "character.blend"))
+    for ext in ("usda", "usdc"):
+        r = import_file(os.path.join(folder, "character." + ext))
+        name = (r.get("scene") or {}).get("name")
+        if name and name in bpy.data.scenes:
+            sc = bpy.data.scenes[name]
+            r["character"] = character_dump(sc)
+            r["marks"] = {ob.name: ob.get("bge_remix_usd_prim") for ob in sc.objects}
+            if ext == "usda":
+                save_to_play_character(sc, os.path.join(folder, "imported.blend"))
+        out["got_" + ext] = r
+
+
+def character_other(argv, out):
+    folder = argv[2]
+    shutil.rmtree(folder, ignore_errors=True)
+    path = uf.character_other(folder)
+    E = uf.character_expect()
+    frames = (1, 15, 30)
+    out["standard"] = _usd_standard(path, "Body", list(frames))
+    r = import_file(path)
+    name = (r.get("scene") or {}).get("name")
+    if name and name in bpy.data.scenes:
+        sc = bpy.data.scenes[name]
+        arm = [o for o in sc.objects if o.type == 'ARMATURE']
+        body = sc.objects.get("Body")
+        d = {"armatures": [o.name for o in arm], "fps": sc.render.fps / sc.render.fps_base,
+             "frames": [sc.frame_start, sc.frame_end]}
+        if arm:
+            a = arm[0]
+            W = a.matrix_world
+            d["bones"] = {b.name: {"head": list(W * b.head_local), "tail": list(W * b.tail_local),
+                                   "parent": b.parent.name if b.parent else None} for b in a.data.bones}
+            d["action"] = a.animation_data.action.name if a.animation_data and a.animation_data.action else None
+        if body is not None:
+            d["body"] = {"parent": body.parent.name if body.parent else None, "vertices": len(body.data.vertices),
+                         "groups": len(body.vertex_groups),
+                         "modifiers": [m.type for m in body.modifiers]}
+            d["deformed"] = {}
+            for f in frames:
+                sc.frame_set(f)
+                d["deformed"][str(f)] = _deformed(sc, body)
+        r["character"] = d
+    out["got"] = r
+    out["expect"] = E
+
+
+def remix_view_save(scene, path):
+    """the scene alone, saved with its 3D view a Remix View in Check mode"""
+    for win in bpy.context.window_manager.windows:
+        win.screen.scene = scene
+    for sc in list(bpy.data.scenes):
+        if sc != scene:
+            bpy.data.scenes.remove(sc, do_unlink=True)
+    made = 0
+    for screen in bpy.data.screens:
+        screen.scene = scene
+        areas = sorted((a for a in screen.areas if a.type == 'VIEW_3D'), key=lambda a: -a.width * a.height)
+        for area in areas[:1]:
+            space = area.spaces.active
+            space.is_game_view = True
+            space.game_view_mode = 'CHECK'
+            made += 1
+    scene.update()
+    bpy.ops.wm.save_as_mainfile(filepath=path, check_existing=False, compress=False)
+    return made
+
+
+def usd_view(argv, out):
+    folder = argv[2]
+    shutil.rmtree(folder, ignore_errors=True)
+    os.makedirs(folder, exist_ok=True)
+    scene = make_physics_room(folder)
+    path = os.path.join(folder, "physics.usda")
+    try:
+        out["export"] = sorted(bpy.ops.export_scene.bge_remix_usd({"scene": scene}, filepath=path))
+    except RuntimeError as e:
+        out["export"] = ["CANCELLED", str(e)]
+    out["room_screens"] = remix_view_save(scene, os.path.join(folder, "room.blend"))
+    out["room_bodies"] = sorted(n for n, o in physics_dump(scene)["objects"].items()
+                                if o["game"]["physics_type"] in ('STATIC', 'RIGID_BODY', 'DYNAMIC'))
+    for tag, src in (("imported", path), ("other", uf.physics_other(os.path.join(folder, "other")))):
+        r = import_file(src)
+        name = (r.get("scene") or {}).get("name")
+        if name and name in bpy.data.scenes:
+            sc = bpy.data.scenes[name]
+            r["marks"] = {ob.name: {"prim": ob.get("bge_remix_usd_prim"), "notes": ob.get("bge_remix_usd_notes"),
+                                    "physics": ob.game.physics_type,
+                                    "joints": [c.name for c in ob.constraints if c.type == 'RIGID_BODY_JOINT']}
+                          for ob in sc.objects}
+            r["usd"] = dict(sc.get("bge_remix_usd") or {})
+            r["screens"] = remix_view_save(sc, os.path.join(folder, tag + ".blend"))
+        r.pop("scene", None)
+        out[tag] = r
+
+
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     mode = argv[0]
@@ -795,7 +1240,8 @@ def main():
     path = argv[1] if len(argv) > 1 else os.path.join(os.getcwd(), "p12b_probe.json")
     try:
         {"exchange": exchange, "other": other, "unsupported": unsupported, "physics": physics,
-         "physics_other": physics_other}[mode](argv, out)
+         "physics_other": physics_other, "character": character, "character_other": character_other,
+         "usd_view": usd_view}[mode](argv, out)
     except Exception:
         out["traceback"] = traceback.format_exc()
     with open(path, "w") as f:

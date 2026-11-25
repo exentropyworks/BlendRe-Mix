@@ -1349,11 +1349,69 @@ void GVBuilder::Rendering()
 /* ------------------------------------------------------------------------- */
 /* Factor: Physics */
 
+/* P12 round 8: what File > Import > Universal Scene Description made
+ * (bge_remix_usd.py): the scene's file (bge_remix_usd: path), each object's
+ * place in it (bge_remix_usd_prim) and what the import could not take for
+ * it (bge_remix_usd_notes: a line each) */
+static const char *usd_file(const Scene *scene)
+{
+	IDProperty *g = scene && scene->id.properties ? IDP_GetPropertyFromGroup(scene->id.properties, "bge_remix_usd")
+	                                              : NULL;
+	IDProperty *p = (g && g->type == IDP_GROUP) ? IDP_GetPropertyFromGroup(g, "path") : NULL;
+	return (p && p->type == IDP_STRING) ? IDP_String(p) : NULL;
+}
+
+static const char *usd_prim(const Object *ob)
+{
+	IDProperty *p = ob->id.properties ? IDP_GetPropertyFromGroup(ob->id.properties, "bge_remix_usd_prim") : NULL;
+	return (p && p->type == IDP_STRING) ? IDP_String(p) : NULL;
+}
+
+static std::vector<std::string> usd_notes(const Object *ob)
+{
+	/* one line each (a string: ID property names are cut at 63 bytes) */
+	std::vector<std::string> out;
+	IDProperty *p = ob->id.properties ? IDP_GetPropertyFromGroup(ob->id.properties, "bge_remix_usd_notes") : NULL;
+	if (p && p->type == IDP_STRING) {
+		std::string line;
+		for (const char *c = IDP_String(p); ; c++) {
+			if (*c == '\n' || *c == '\0') {
+				if (!line.empty()) {
+					out.push_back(line);
+				}
+				line.clear();
+				if (*c == '\0') {
+					break;
+				}
+			}
+			else {
+				line += *c;
+			}
+		}
+	}
+	return out;
+}
+
+static std::string base_name(const char *path)
+{
+	const char *s = path;
+	for (const char *c = path; *c; c++) {
+		if (*c == '/' || *c == '\\') {
+			s = c + 1;
+		}
+	}
+	return s;
+}
+
 void GVBuilder::Physics()
 {
 	static const char *engines[] = {"Bullet", "PhysX (CPU)", "PhysX (GPU)"};
+	std::string scene_info = "the scene's physics engine (World > Physics)";
+	if (const char *file = usd_file(m_scene)) {
+		scene_info += fmt("; the scene came from USD (%s)", base_name(file).c_str());
+	}
 	Add(m_physx < 0 ? "engine:NONE" : (m_physx == 0 ? "engine:BULLET" : "engine:PHYSX"),
-	    m_physx < 0 ? "no physics" : engines[m_physx], NULL, "the scene's physics engine (World > Physics)");
+	    m_physx < 0 ? "no physics" : engines[m_physx], NULL, scene_info.c_str());
 	int bodies = 0;
 	std::map<std::string, int> body_el;
 	for (Object *ob : m_objects) {
@@ -1372,6 +1430,12 @@ void GVBuilder::Physics()
 		if (ob->gameflag & OB_GHOST) info += ", Ghost";
 		if (ob->gameflag & OB_ACTOR) info += ", Actor";
 		const int el = Add(fmt("body:%s", physics_id(t)).c_str(), name_of(ob), ob, info.c_str());
+		if (usd_prim(ob)) {
+			/* P12 round 8 (its info says so at the end, below) */
+			for (const std::string &note : usd_notes(ob)) {
+				Warn(el, "USD_NOTE", GV_WARN_NOTE, ("from USD: " + note).c_str());
+			}
+		}
 		body_el[name_of(ob)] = el;
 		if (moving(t) && InGame(ob)) {
 			bodies++;
@@ -1778,6 +1842,9 @@ void GVBuilder::Physics()
 			if (articulated) {
 				info += fmt(", in %s's articulation", art_joint[con].c_str());
 			}
+			if (usd_prim(ob)) {
+				info += "; from USD";  /* P12 round 8: its owner came from a USD file */
+			}
 			const int el = Add(jid ? fmt("joint:%s", jid).c_str() : "joint:OTHER", con->name, ob, info.c_str());
 			int s = Shape(GV_SHAPE_SPHERE, GV_LAYER_PHYSICS, el);
 			shapes[s].p[0] = 0.08f;
@@ -1851,6 +1918,17 @@ void GVBuilder::Physics()
 		Warn(0, "PHY_BODIES", GV_WARN_NOTE,
 		     fmt("%d moving bodies: more than the target's %d", bodies, m_targets.bodies).c_str(), false, true);
 		m_warn[0].back().layer = GV_LAYER_PHYSICS;
+	}
+	/* P12 round 8: a body that came from a USD file says so, and where it was
+	 * in the file, last (after the articulation, destructible and fluid lines
+	 * above have set its info) */
+	for (Object *ob : m_objects) {
+		const char *prim = usd_prim(ob);
+		std::map<std::string, int>::iterator it = body_el.find(name_of(ob));
+		if (prim && it != body_el.end()) {
+			const std::string info = std::string(elements[it->second].info) + fmt("; from USD: %s", prim);
+			BLI_strncpy(elements[it->second].info, info.c_str(), sizeof(elements[it->second].info));
+		}
 	}
 }
 

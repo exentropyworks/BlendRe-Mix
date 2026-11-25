@@ -27,6 +27,7 @@
 #define __USD_READ_H__
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,23 @@ void copy_matrix(const PXR_NS::GfMatrix4d &m, double r[16]);
 /* P12 round 7 (usd_physics.cpp): the stage's physics as JSON (bge_remix_usd.h
  * bru_scene_api physics); what could not be read goes to r_notes */
 std::string physics_json(const PXR_NS::UsdStageRefPtr &stage, double time, std::string &r_notes);
+
+/* P12 round 8 (usd_skel.cpp): the stage's skeletons, skinned meshes and
+ * animations as JSON (bge_remix_usd.h bru_scene_api skeletons), and
+ * OpenUSD's own skinning of a mesh at a time, in the world */
+class Skel {
+  public:
+	Skel();
+	~Skel();
+	std::string read(const PXR_NS::UsdStageRefPtr &stage, double time, std::string &r_notes);
+	/* the mesh's points skinned at time, in the world (x y z each); their
+	 * number, or -1 for no skinned mesh at that path */
+	int skinned_points(const char *mesh_path, double time, float *r_points, int max_points) const;
+
+  private:
+	struct Impl;
+	std::unique_ptr<Impl> impl;
+};
 std::string errors_since(const PXR_NS::TfErrorMark &mark);
 
 }  // namespace usd

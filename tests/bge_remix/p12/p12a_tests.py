@@ -741,14 +741,17 @@ def t_asset_edges(args, out, tests):
 VIEW_PROBE = os.path.join(HERE, "p12a_view_probe.py")
 
 
-def view_run(args, out, tag, blend):
-    """our Blender with its window on blend: the Remix layer, built"""
+def view_run(args, out, tag, blend, layer=None):
+    """our Blender with its window on blend: the Remix layer (or, round 8,
+    another one), built"""
     res = os.path.join(out, tag + "_view.json")
     if os.path.isfile(res):
         os.remove(res)
     e = p2.base_env(out, tag)
     e.update(p8.GL_ENV)
     e["BGE_REMIX_P12V_OUT"] = res
+    if layer:
+        e["BGE_REMIX_P12V_LAYER"] = layer
     code, text, secs = p2.run([p2.exe(args.ours, "blender"), "--disable-crash-handler"] + p8.WINDOW +
                               [blend, "--python", VIEW_PROBE], e, os.path.join(out, tag + ".log"), timeout=600,
                               cwd=out)

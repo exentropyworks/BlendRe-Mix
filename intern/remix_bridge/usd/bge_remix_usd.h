@@ -47,8 +47,9 @@ extern "C" {
  * (reading RTX Remix captures: bru_capture_get_api). 3: P12 round 3 (any
  * stage written out as JSON: bru_stage_dump). 4: P12 round 6 (any tool's
  * scene read: bru_scene_get_api; text to binary: bru_stage_convert). 5: P12
- * round 7 (the scene's physics: bru_scene_api physics). */
-#define BRU_ABI_VERSION 5
+ * round 7 (the scene's physics: bru_scene_api physics). 6: P12 round 8 (its
+ * skeletons: bru_scene_api skeletons, skinned_points; BRU_NODE_SKELETON). */
+#define BRU_ABI_VERSION 6
 
 BRU_API int bru_abi_version(void);
 
@@ -213,6 +214,7 @@ enum {
 	BRU_NODE_MESH = 1,
 	BRU_NODE_LIGHT = 2,
 	BRU_NODE_CAMERA = 3,
+	BRU_NODE_SKELETON = 4,  /* round 8: a UsdSkel Skeleton (see skeletons) */
 };
 
 typedef struct bru_scene_info {
@@ -305,6 +307,18 @@ typedef struct bru_scene_api {
 	 * stage's own units, angles in degrees. Collision shapes that are not
 	 * meshes (a Cube, a Capsule...) are read only here, not as nodes. */
 	const char *(*physics)(const bru_scene *sc);
+	/* P12 round 8: the stage's skeletons as JSON, read with OpenUSD's own
+	 * skeleton reader (usd_skel.cpp): skeletons (joints in order, parents,
+	 * bind and rest transforms in the skeleton's space, the animation bound,
+	 * the skeleton's local to world), skinned meshes (joint influences,
+	 * geometry bind transform, skinning method, blend shapes), every
+	 * SkelAnimation (joints, time samples), the stage's frame range and
+	 * rate. Each matrix as USD's 16 numbers (rows). */
+	const char *(*skeletons)(const bru_scene *sc);
+	/* OpenUSD's own skinning of the mesh at mesh_path at time, in the world:
+	 * x y z for each point into r_points (at most max_points); their number,
+	 * or -1 when that mesh is not skinned */
+	int (*skinned_points)(const bru_scene *sc, const char *mesh_path, double time, float *r_points, int max_points);
 } bru_scene_api;
 
 BRU_API const bru_scene_api *bru_scene_get_api(void);

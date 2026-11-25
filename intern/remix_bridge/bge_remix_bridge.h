@@ -68,8 +68,10 @@ extern "C" {
  * 16: P12 round 6 (any tool's scene read: brb_usd_scene_api; a layer
  *     written in another format: brb_usd_convert).
  * 17: P12 round 7 (the scene reader gives the scene's physics:
- *     bru_scene_api physics, bge_remix_usd.dll ABI 5). */
-#define BRB_ABI_VERSION 17
+ *     bru_scene_api physics, bge_remix_usd.dll ABI 5).
+ * 18: P12 round 8 (and its skeletons: bru_scene_api skeletons,
+ *     skinned_points, bge_remix_usd.dll ABI 6). */
+#define BRB_ABI_VERSION 18
 
 typedef enum brb_status {
 	BRB_STATUS_NOT_LOADED = 0,           /* nothing tried yet */

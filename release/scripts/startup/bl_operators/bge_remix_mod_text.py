@@ -117,7 +117,8 @@ def value(kind, v):
         return str(int(round(float(v))))
     if kind == "bool":
         return "1" if v else "0"
-    if kind in ("color3f", "float3", "float2", "vector3f", "point3f", "normal3f", "texCoord2f"):
+    if kind in ("color3f", "float3", "float2", "vector3f", "point3f", "normal3f", "texCoord2f", "half3", "quatf",
+                "float4"):
         return vec(v)
     if kind == "asset":
         return "@" + str(v) + "@"

@@ -22,6 +22,23 @@ unsupported(folder): unsupported.usda (metres, Z up): a floor and a box
 (meshes, which come in), the floor bound to a material whose only shader is
 a custom one; a BasisCurves "Hair"; a PointInstancer "Rocks" with a
 prototype mesh under it.
+
+character_other(folder) (round 8, T12.f3): character_other.usda, a
+character the way Maya writes one: centimetres, Y up, 30 frames a second
+(frames 1 to 30, a sample every frame):
+
+  /World/Character               a SkelRoot, moved (50, 0, -20) cm
+    Skel                         a Skeleton of 7 joints with no length,
+                                 each one's X along its limb (Maya's): root
+                                 (hips, 1 m up), spine, chest, arm_l,
+                                 hand_l, leg_l, foot_l; bound to Anim
+      Anim                       a SkelAnimation of 4 of them, in an order of
+                                 its own (root bobs 3 cm, the spine bends
+                                 15 degrees, the arm swings 40, the leg 25),
+                                 and the blend shape Smile's weight
+    Body                         a Mesh of six boxes along the limbs, every
+                                 vertex on 4 joints, its geometry bind
+                                 transform 2 cm up; a blend shape Smile
 """
 
 import math
@@ -362,3 +379,222 @@ PHYSICS_OTHER = {
     "report": ("Rope", "distance joint", "Debris", "convexDecomposition"),
     "gravity": 9.81,
 }
+
+
+# ---------------------------------------------------------------------------
+# round 8: another tool's character (Maya's way)
+
+def m_inverse(m):
+    """the inverse of a 4 x 4 (USD rows)"""
+    a = [list(m[r * 4:r * 4 + 4]) + [1.0 if r == c else 0.0 for c in range(4)] for r in range(4)]
+    for c in range(4):
+        p = max(range(c, 4), key=lambda r: abs(a[r][c]))
+        a[c], a[p] = a[p], a[c]
+        d = a[c][c]
+        a[c] = [x / d for x in a[c]]
+        for r in range(4):
+            if r != c:
+                f = a[r][c]
+                a[r] = [x - f * y for x, y in zip(a[r], a[c])]
+    return [a[r][4 + c] for r in range(4) for c in range(4)]
+
+
+def m_rotate(axis, deg):
+    """row vectors: p' = p M, a turn of deg about the X, Y or Z axis"""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    if axis == "X":
+        return [1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]
+    if axis == "Y":
+        return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]
+    return [c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+
+
+def m_point(m, p):
+    return tuple(sum(p[k] * m[k * 4 + c] for k in range(3)) + m[12 + c] for c in range(3))
+
+
+def quat_of(m):
+    """the turn of a rows matrix as a quaternion (w, x, y, z)"""
+    # the column form R = M^T
+    R = [[m[c * 4 + r] for c in range(3)] for r in range(3)]
+    tr = R[0][0] + R[1][1] + R[2][2]
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        q = (0.25 * s, (R[2][1] - R[1][2]) / s, (R[0][2] - R[2][0]) / s, (R[1][0] - R[0][1]) / s)
+    elif R[0][0] > R[1][1] and R[0][0] > R[2][2]:
+        s = math.sqrt(1.0 + R[0][0] - R[1][1] - R[2][2]) * 2.0
+        q = ((R[2][1] - R[1][2]) / s, 0.25 * s, (R[0][1] + R[1][0]) / s, (R[0][2] + R[2][0]) / s)
+    elif R[1][1] > R[2][2]:
+        s = math.sqrt(1.0 + R[1][1] - R[0][0] - R[2][2]) * 2.0
+        q = ((R[0][2] - R[2][0]) / s, (R[0][1] + R[1][0]) / s, 0.25 * s, (R[1][2] + R[2][1]) / s)
+    else:
+        s = math.sqrt(1.0 + R[2][2] - R[0][0] - R[1][1]) * 2.0
+        q = ((R[1][0] - R[0][1]) / s, (R[0][2] + R[2][0]) / s, (R[1][2] + R[2][1]) / s, 0.25 * s)
+    return q if q[0] >= 0.0 else tuple(-x for x in q)
+
+
+# joint: parent, its place in the skeleton (cm), its X's turn about Z
+# (degrees: 90 up, -90 down, 0 along +X)
+CHARACTER_JOINTS = [
+    ("root", None, (0.0, 100.0, 0.0), 90.0),
+    ("root/spine", "root", (0.0, 130.0, 0.0), 90.0),
+    ("root/spine/chest", "root/spine", (0.0, 160.0, 0.0), 90.0),
+    ("root/spine/chest/arm_l", "root/spine/chest", (20.0, 150.0, 0.0), 0.0),
+    ("root/spine/chest/arm_l/hand_l", "root/spine/chest/arm_l", (50.0, 150.0, 0.0), 0.0),
+    ("root/leg_l", "root", (10.0, 95.0, 0.0), -90.0),
+    ("root/leg_l/foot_l", "root/leg_l", (10.0, 10.0, 0.0), -90.0),
+]
+# the animated joints (an order of their own): the axis each turns about
+# (its own), the most it turns
+CHARACTER_ANIMATED = [("root/leg_l", "Z", 25.0), ("root", None, 0.0), ("root/spine/chest/arm_l", "Y", 40.0),
+                      ("root/spine", "Z", 15.0)]
+CHARACTER_ROOT = m_translate(50.0, 0.0, -20.0)
+CHARACTER_SEGMENTS = [("root", "root/spine"), ("root/spine", "root/spine/chest"),
+                      ("root/spine/chest/arm_l", "root/spine/chest/arm_l/hand_l"), ("root", "root/leg_l"),
+                      ("root/leg_l", "root/leg_l/foot_l"), ("root/spine/chest", "root/spine/chest/arm_l")]
+GEOM_BIND = m_translate(0.0, 2.0, 0.0)
+
+
+def character_binds():
+    """each joint's bind transform (in the skeleton's space) and rest one
+    (relative to its parent)"""
+    names = [j[0] for j in CHARACTER_JOINTS]
+    bind = {}
+    for name, _parent, pos, turn in CHARACTER_JOINTS:
+        bind[name] = m_mul(m_rotate("Z", turn), m_translate(*pos))
+    rest = {}
+    for name, parent, _pos, _turn in CHARACTER_JOINTS:
+        rest[name] = bind[name] if parent is None else m_mul(bind[name], m_inverse(bind[parent]))
+    return names, bind, rest
+
+
+def character_frame(f):
+    """the animated joints at frame f: [(translation, rotation w x y z,
+    scale)], the blend shape's weight"""
+    _names, _bind, rest = character_binds()
+    phase = math.sin(2.0 * math.pi * (f - 1) / 29.0)
+    out = []
+    for name, axis, most in CHARACTER_ANIMATED:
+        L = rest[name]
+        if axis is not None:
+            L = m_mul(m_rotate(axis, most * phase), L)
+        t = (L[12], L[13], L[14])
+        if name == "root":
+            t = (t[0], t[1] + 3.0 * phase, t[2])
+        out.append((t, quat_of(L), (1.0, 1.0, 1.0)))
+    return out, 0.5 + 0.5 * phase
+
+
+def character_mesh():
+    """six boxes along the limbs (points in the mesh's own space: the
+    geometry bind transform puts them in the skeleton's), every vertex on 4
+    joints"""
+    names, bind, _rest = character_binds()
+    index = {n: i for i, n in enumerate(names)}
+    pts, counts, idx, joints, weights = [], [], [], [], []
+    to_mesh = m_inverse(GEOM_BIND)
+    quads = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+    for a, b in CHARACTER_SEGMENTS:
+        pa, pb = m_point(bind[a], (0, 0, 0)), m_point(bind[b], (0, 0, 0))
+        d = [y - x for x, y in zip(pa, pb)]
+        n = math.sqrt(sum(x * x for x in d))
+        d = [x / n for x in d]
+        side = (0.0, 0.0, 1.0)
+        up = (d[1] * side[2] - d[2] * side[1], d[2] * side[0] - d[0] * side[2], d[0] * side[1] - d[1] * side[0])
+        others = [index[j] for j in ("root", "root/spine/chest", "root/spine", "root/leg_l")
+                  if j not in (a, b)][:2]
+        first = len(pts)
+        for t in (0.1, 0.9):
+            centre = [x + (y - x) * t for x, y in zip(pa, pb)]
+            for u in (-3.0, 3.0):
+                for v in (-3.0, 3.0):
+                    p = tuple(c + u * s + v * w for c, s, w in zip(centre, side, up))
+                    pts.append(m_point(to_mesh, p))
+                    near, far = (index[a], index[b]) if t < 0.5 else (index[b], index[a])
+                    joints += [near, far] + others
+                    weights += [0.6, 0.25, 0.1, 0.05] if t < 0.5 else [0.55, 0.3, 0.1, 0.05]
+        for q in quads:
+            counts.append(4)
+            idx += [first + i for i in q]
+    return pts, counts, idx, joints, weights
+
+
+def _rows(m):
+    return "( " + ", ".join(_v(m[r * 4:r * 4 + 4]) for r in range(4)) + " )"
+
+
+def character_other(folder):
+    os.makedirs(folder, exist_ok=True)
+    names, bind, rest = character_binds()
+    pts, counts, idx, joints, weights = character_mesh()
+    t = '#usda 1.0\n(\n    defaultPrim = "World"\n    endTimeCode = 30\n    framesPerSecond = 30\n' \
+        '    metersPerUnit = 0.01\n    startTimeCode = 1\n    timeCodesPerSecond = 30\n    upAxis = "Y"\n)\n\n'
+    t += 'def Xform "World"\n{\n'
+    t += '    def SkelRoot "Character"\n    {\n'
+    t += "        matrix4d xformOp:transform = %s\n" % _rows(CHARACTER_ROOT)
+    t += '        uniform token[] xformOpOrder = ["xformOp:transform"]\n'
+    t += '        def Skeleton "Skel" (\n            prepend apiSchemas = ["SkelBindingAPI"]\n        )\n        {\n'
+    t += "            uniform token[] joints = [%s]\n" % ", ".join('"%s"' % n for n in names)
+    t += "            uniform matrix4d[] bindTransforms = [%s]\n" % ", ".join(_rows(bind[n]) for n in names)
+    t += "            uniform matrix4d[] restTransforms = [%s]\n" % ", ".join(_rows(rest[n]) for n in names)
+    t += "            rel skel:animationSource = </World/Character/Skel/Anim>\n"
+    t += '            def SkelAnimation "Anim"\n            {\n'
+    t += "                uniform token[] joints = [%s]\n" % ", ".join('"%s"' % a[0] for a in CHARACTER_ANIMATED)
+    t += '                uniform token[] blendShapes = ["Smile"]\n'
+    frames = range(1, 31)
+    samples = {f: character_frame(f) for f in frames}
+    for attr, kind, k in (("translations", "float3[]", 0), ("rotations", "quatf[]", 1), ("scales", "half3[]", 2)):
+        t += "                %s %s.timeSamples = {\n" % (kind, attr)
+        for f in frames:
+            t += "                    %d: [%s],\n" % (f, ", ".join(_v(j[k]) for j in samples[f][0]))
+        t += "                }\n"
+    t += "                float[] blendShapeWeights.timeSamples = {\n"
+    for f in frames:
+        t += "                    %d: [%s],\n" % (f, _f(samples[f][1]))
+    t += "                }\n            }\n        }\n"
+    t += '        def Mesh "Body" (\n            prepend apiSchemas = ["SkelBindingAPI"]\n        )\n        {\n'
+    t += '            uniform token subdivisionScheme = "none"\n'
+    t += "            int[] faceVertexCounts = [%s]\n" % ", ".join(str(c) for c in counts)
+    t += "            int[] faceVertexIndices = [%s]\n" % ", ".join(str(i) for i in idx)
+    t += "            point3f[] points = [%s]\n" % ", ".join(_v(p) for p in pts)
+    t += "            matrix4d primvars:skel:geomBindTransform = %s\n" % _rows(GEOM_BIND)
+    t += "            int[] primvars:skel:jointIndices = [%s] (\n                elementSize = 4\n" \
+         '                interpolation = "vertex"\n            )\n' % ", ".join(str(j) for j in joints)
+    t += "            float[] primvars:skel:jointWeights = [%s] (\n                elementSize = 4\n" \
+         '                interpolation = "vertex"\n            )\n' % ", ".join(_f(w) for w in weights)
+    t += "            rel skel:skeleton = </World/Character/Skel>\n"
+    t += '            uniform token[] skel:blendShapes = ["Smile"]\n'
+    t += "            rel skel:blendShapeTargets = [</World/Character/Body/Smile>]\n"
+    t += '            def BlendShape "Smile"\n            {\n'
+    t += "                uniform vector3f[] offsets = [(0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0)]\n"
+    t += "                uniform int[] pointIndices = [8, 9, 10, 11]\n            }\n"
+    t += "        }\n    }\n}\n"
+    path = os.path.join(folder, "character_other.usda")
+    with open(path, "w") as f:
+        f.write(t)
+    return path
+
+
+def character_expect():
+    """what the import must make of character_other (metres, Z up): each
+    bone's head and, for a bone with a child in its chain, its tail (that
+    child's head)"""
+    names, bind, _rest = character_binds()
+    children = {}
+    for name, parent, _p, _t in CHARACTER_JOINTS:
+        children.setdefault(parent, []).append(name)
+
+    def count(n):
+        return sum(1 + count(c) for c in children.get(n, ()))
+
+    heads, tails = {}, {}
+    for n in names:
+        p = m_point(m_mul(bind[n], CHARACTER_ROOT), (0, 0, 0))
+        heads[n.rsplit("/", 1)[-1]] = to_blender(p, 0.01, False)
+    for n in names:
+        kids = children.get(n, ())
+        if kids:
+            c = max(kids, key=lambda k: (count(k), -names.index(k)))
+            tails[n.rsplit("/", 1)[-1]] = heads[c.rsplit("/", 1)[-1]]
+    return {"heads": heads, "tails": tails, "bones": len(names), "fps": 30, "frames": (1, 30),
+            "vertices": len(character_mesh()[0]), "report": ("Smile", "blend shape")}
